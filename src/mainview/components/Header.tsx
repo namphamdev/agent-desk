@@ -1,48 +1,87 @@
+import type { ConnectionStatePayload } from "../../shared/rpc";
+
 interface HeaderProps {
   title: string;
   project: string;
+  /** Full project path shown on hover when available. */
+  cwd?: string;
   branch: string;
+  connection?: ConnectionStatePayload;
+  onToggleSidebar?: () => void;
+  onOpenSettings?: () => void;
 }
 
-export function Header({ title, project, branch }: HeaderProps) {
+const statusColor: Record<string, string> = {
+  idle: "bg-gray-500",
+  connecting: "bg-amber-400 animate-pulse",
+  ready: "bg-emerald-400",
+  prompting: "bg-blue-400 animate-pulse",
+  error: "bg-red-400",
+  disconnected: "bg-gray-600",
+};
+
+export function Header({
+  title,
+  project,
+  cwd,
+  branch,
+  connection,
+  onToggleSidebar,
+  onOpenSettings,
+}: HeaderProps) {
+  const status = connection?.status ?? "idle";
+  const folderName = cwd ? cwd.split("/").filter(Boolean).pop() : undefined;
   return (
     <header className="header-bg flex h-14 shrink-0 items-center justify-between border-b border-[#2e2e2e] px-6">
       <div className="flex items-center space-x-4">
-        <h1 className="text-sm font-semibold">{title}</h1>
+        <button
+          onClick={onToggleSidebar}
+          className="rounded p-1 text-gray-500 hover:bg-[#2a2a2a] hover:text-gray-300 md:hidden"
+          aria-label="Toggle sidebar"
+        >
+          <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h16" />
+          </svg>
+        </button>
+        <h1 className="max-w-md truncate text-sm font-semibold">{title}</h1>
         <div className="flex items-center space-x-2 text-xs text-gray-400">
-          <span className="flex items-center rounded bg-[#2a2a2a] px-2 py-1">
-            <svg className="mr-1 h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+          <span
+            className="flex max-w-[220px] items-center truncate rounded bg-[#2a2a2a] px-2 py-1"
+            title={cwd || project}
+          >
+            <svg className="mr-1 h-3 w-3 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
               <path d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
             </svg>
-            {project}
+            <span className="truncate">{folderName ?? project}</span>
           </span>
           <span className="flex items-center rounded bg-[#2a2a2a] px-2 py-1">
             <svg className="mr-1 h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
-              <path d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z" />
+              <path d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
             </svg>
             {branch}
-            <svg className="ml-1 h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
-              <path d="M19 9l-7 7-7-7" />
-            </svg>
           </span>
         </div>
       </div>
       <div className="flex items-center space-x-3 text-gray-400">
-        <div className="flex rounded bg-[#2a2a2a] p-0.5">
-          <button className="rounded bg-[#3a3a3a] p-1 text-gray-200">
-            <svg className="h-4 w-4" fill="currentColor" viewBox="0 0 20 20">
-              <path clipRule="evenodd" d="M10 9a3 3 0 100-6 3 3 0 000 6zm-7 9a7 7 0 1114 0H3z" fillRule="evenodd" />
-            </svg>
-          </button>
-          <button className="rounded p-1 hover:bg-[#3a3a3a]">
-            <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
-              <path d="M19 9l-7 7-7-7" />
-            </svg>
-          </button>
-        </div>
-        <button className="hover:text-gray-200">
+        {connection && (
+          <div
+            className="flex items-center gap-1.5 rounded bg-[#2a2a2a] px-2 py-1 text-[11px]"
+            title={connection.error ?? connection.agentName ?? status}
+          >
+            <span className={`h-1.5 w-1.5 rounded-full ${statusColor[status] ?? "bg-gray-500"}`} />
+            <span className="max-w-[120px] truncate">
+              {connection.agentName ?? status}
+            </span>
+          </div>
+        )}
+        <button
+          className="hover:text-gray-200"
+          onClick={onOpenSettings}
+          aria-label="Settings"
+        >
           <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
-            <path d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            <path d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+            <path d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
           </svg>
         </button>
       </div>

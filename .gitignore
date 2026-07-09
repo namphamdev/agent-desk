@@ -11,3 +11,4 @@ build
 # OS/editor
 .DS_Store
 *.log
+/.omc

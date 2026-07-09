@@ -32,16 +32,28 @@ const statusLabel: Record<ToolCall["status"], string> = {
  * Collapsible card for a tool call: kind icon, title, status indicator, file
  * locations, and rendered body (content blocks + diffs + terminals).
  */
-export function ToolCallCard({ toolCall }: { toolCall: ToolCall }) {
+export function ToolCallCard({
+  toolCall,
+  onOpenFile,
+}: {
+  toolCall: ToolCall;
+  onOpenFile?: (path: string, line?: number) => void;
+}) {
   const kind = toolCall.kind ?? "other";
   const loc = toolCall.locations?.[0];
 
   return (
-    <div className="rounded-xl border border-[#2e2e2e] bg-[#181818]">
+    <div
+      className="rounded-xl border border-[#2e2e2e] bg-[#181818]"
+      aria-label={`Tool call ${toolCall.title}, ${statusLabel[toolCall.status]}`}
+    >
       <div className="flex items-center gap-2 px-3 py-2 text-sm">
-        <span>{kindIcon[kind]}</span>
+        <span aria-hidden>{kindIcon[kind]}</span>
         <span className="font-medium text-gray-200">{toolCall.title}</span>
-        <span className={`flex items-center gap-1 text-xs ${statusStyle[toolCall.status]}`}>
+        <span
+          className={`flex items-center gap-1 text-xs ${statusStyle[toolCall.status]}`}
+          aria-live="polite"
+        >
           {toolCall.status === "in_progress" && (
             <span className="inline-block h-3 w-3 animate-spin rounded-full border border-amber-400 border-t-transparent" />
           )}
@@ -50,10 +62,15 @@ export function ToolCallCard({ toolCall }: { toolCall: ToolCall }) {
           {statusLabel[toolCall.status]}
         </span>
         {loc && (
-          <span className="ml-auto truncate font-mono text-[11px] text-gray-500">
+          <button
+            type="button"
+            onClick={() => onOpenFile?.(loc.path, loc.line)}
+            className="ml-auto truncate font-mono text-[11px] text-gray-500 hover:text-blue-400 hover:underline"
+            title="Open in editor"
+          >
             {loc.path}
             {loc.line ? `:${loc.line}` : ""}
-          </span>
+          </button>
         )}
       </div>
 

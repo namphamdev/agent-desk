@@ -1,22 +1,32 @@
 import { useEffect, useRef, useState } from "react";
-import mermaid from "mermaid";
-
-mermaid.initialize({
-  startOnLoad: false,
-  theme: "dark",
-  securityLevel: "strict",
-  fontFamily: "Inter, sans-serif",
-});
 
 const cache = new Map<string, string>();
+let mermaidReady: Promise<typeof import("mermaid")> | null = null;
+
+function loadMermaid() {
+  if (!mermaidReady) {
+    mermaidReady = import("mermaid").then((mod) => {
+      mod.default.initialize({
+        startOnLoad: false,
+        theme: "dark",
+        securityLevel: "strict",
+        fontFamily: "Inter, sans-serif",
+      });
+      return mod;
+    });
+  }
+  return mermaidReady;
+}
 
 /**
- * Renders a Mermaid diagram source string to SVG. Results are memoized per
- * source so streaming re-renders don't re-run the layout.
+ * Lazily loads Mermaid and renders a diagram. Results are memoized per source
+ * so streaming re-renders don't re-run the layout. Dynamic import keeps the
+ * main bundle small (~1MB saved at first paint).
  */
 export function MermaidDiagram({ source }: { source: string }) {
   const ref = useRef<HTMLDivElement>(null);
   const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(!cache.has(source));
 
   useEffect(() => {
     let cancelled = false;
@@ -26,16 +36,22 @@ export function MermaidDiagram({ source }: { source: string }) {
       try {
         let svg = cache.get(source);
         if (!svg) {
-          const { svg: rendered } = await mermaid.render(id, source);
+          setLoading(true);
+          const mermaid = await loadMermaid();
+          const { svg: rendered } = await mermaid.default.render(id, source);
           svg = rendered;
           cache.set(source, svg);
         }
         if (!cancelled && ref.current) {
           ref.current.innerHTML = svg;
           setError(null);
+          setLoading(false);
         }
       } catch (e) {
-        if (!cancelled) setError(e instanceof Error ? e.message : String(e));
+        if (!cancelled) {
+          setError(e instanceof Error ? e.message : String(e));
+          setLoading(false);
+        }
       }
     })();
 
@@ -54,8 +70,11 @@ export function MermaidDiagram({ source }: { source: string }) {
   }
 
   return (
-    <div className="my-3 flex justify-center overflow-x-auto rounded-xl border border-[#2e2e2e] bg-[#1e1e1e] p-4 [&_svg]:max-w-full">
-      <div ref={ref} />
+    <div className="my-3 flex min-h-[80px] justify-center overflow-x-auto rounded-xl border border-[#2e2e2e] bg-[#1e1e1e] p-4 [&_svg]:max-w-full">
+      {loading && (
+        <div className="self-center text-xs text-gray-500">Rendering diagram…</div>
+      )}
+      <div ref={ref} className={loading ? "hidden" : undefined} />
     </div>
   );
 }

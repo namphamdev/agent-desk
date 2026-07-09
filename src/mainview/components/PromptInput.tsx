@@ -1,46 +1,154 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import type { AvailableCommand } from "../../shared/rpc";
 
 const models = ["GLM-5.2", "GPT-5", "Claude Sonnet 4.5"];
 const efforts = ["High", "Medium", "Low"];
 
+type Props = {
+  disabled?: boolean;
+  prompting?: boolean;
+  commands?: AvailableCommand[];
+  mode?: string;
+  onSubmit: (text: string) => void | Promise<void>;
+  onCancel?: () => void | Promise<void>;
+};
+
 /**
- * Bottom input bar. In M1 it's a no-op (prompts aren't sent anywhere); in M2
- * it'll send prompts over Electrobun RPC to the ACP agent.
+ * Bottom input bar. Sends prompts over Electrobun RPC to the ACP agent.
+ * Supports Stop while streaming, and a `/commands` picker from
+ * available_commands_update.
  */
-export function PromptInput() {
+export function PromptInput({
+  disabled,
+  prompting,
+  commands = [],
+  mode,
+  onSubmit,
+  onCancel,
+}: Props) {
   const [value, setValue] = useState("");
-  const [model, setModel] = useState(models[0]);
-  const [effort, setEffort] = useState(efforts[0]);
+  const [model, setModel] = useState(models[0]!);
+  const [effort, setEffort] = useState(efforts[0]!);
+  const [showCommands, setShowCommands] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (value.startsWith("/") && commands.length > 0) {
+      setShowCommands(true);
+    } else {
+      setShowCommands(false);
+    }
+  }, [value, commands.length]);
+
+  const filteredCommands = commands.filter((c) =>
+    c.name.toLowerCase().includes(value.slice(1).toLowerCase()),
+  );
+
+  const submit = async () => {
+    const text = value.trim();
+    if (!text || disabled) return;
+    setValue("");
+    setShowCommands(false);
+    await onSubmit(text);
+    inputRef.current?.focus();
+  };
 
   return (
-    <div className="pointer-events-none absolute bottom-6 left-64 right-0 flex justify-center px-6">
-      <div className="input-bg pointer-events-auto flex w-full max-w-4xl flex-col overflow-hidden rounded-2xl border shadow-lg">
-        <div className="px-4 py-3">
+    <div className="pointer-events-none absolute bottom-6 left-0 right-0 px-6">
+      <div className="input-bg pointer-events-auto flex w-full flex-col rounded-2xl border shadow-lg">
+        <div className="relative px-4 py-3">
           <input
+            ref={inputRef}
             value={value}
+            disabled={disabled}
             onChange={(e) => setValue(e.target.value)}
-            className="w-full border-none bg-transparent text-[15px] text-gray-200 placeholder-gray-500 focus:ring-0"
-            placeholder="Ask for follow-up changes"
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                void submit();
+              }
+              if (e.key === "Escape" && prompting) {
+                void onCancel?.();
+              }
+            }}
+            className="w-full border-none bg-transparent text-[15px] text-gray-200 placeholder-gray-500 focus:outline-none focus:ring-0 disabled:opacity-50"
+            placeholder={
+              disabled
+                ? "Connecting to agent…"
+                : prompting
+                  ? "Agent is working… (Esc to stop)"
+                  : "Ask anything — or / for commands"
+            }
+            aria-label="Prompt input"
           />
+          {showCommands && filteredCommands.length > 0 && (
+            <div
+              className="absolute bottom-full left-0 right-0 z-50 mb-1 max-h-48 overflow-y-auto rounded-xl border border-[#3a3a3a] bg-[#1e1e1e] py-1 shadow-xl"
+              role="listbox"
+            >
+              {filteredCommands.map((c) => (
+                <button
+                  key={c.name}
+                  role="option"
+                  onClick={() => {
+                    setValue(`/${c.name} `);
+                    setShowCommands(false);
+                    inputRef.current?.focus();
+                  }}
+                  className="flex w-full flex-col px-3 py-2 text-left hover:bg-[#2a2a2a]"
+                >
+                  <span className="text-sm text-gray-200">/{c.name}</span>
+                  {c.description && (
+                    <span className="text-xs text-gray-500">{c.description}</span>
+                  )}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
         <div className="flex items-center justify-between border-t border-[#2e2e2e] px-3 py-2">
           <div className="flex items-center space-x-3">
-            <button className="rounded-md p-1.5 text-gray-400 hover:bg-[#2a2a2a] hover:text-gray-200">
-              <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
-                <path d="M12 4v16m8-8H4" />
-              </svg>
-            </button>
+            {mode && mode !== "default" && (
+              <span className="rounded-full bg-[#2a2a2a] px-2 py-0.5 text-[11px] font-medium text-amber-400">
+                {mode}
+              </span>
+            )}
             <div className="h-4 w-px bg-[#333]" />
             <Selector value={model} options={models} onChange={setModel} accent="text-[#d97706]" />
           </div>
           <div className="flex items-center space-x-3">
             <Selector value={effort} options={efforts} onChange={setEffort} />
-            <Selector value={model} options={models} onChange={setModel} prefix="⚡" />
-            <button className="ml-1 rounded-md bg-gray-600 p-1.5 text-gray-200 hover:bg-gray-500">
-              <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
-                <path d="M5 10l7-7m0 0l7 7m-7-7v18" />
-              </svg>
-            </button>
+            {prompting ? (
+              <button
+                onClick={() => void onCancel?.()}
+                className="ml-1 flex items-center gap-1 rounded-md bg-red-900/60 px-2.5 py-1.5 text-xs font-medium text-red-200 hover:bg-red-800/60"
+                aria-label="Stop generation"
+              >
+                <svg className="h-3.5 w-3.5" fill="currentColor" viewBox="0 0 20 20">
+                  <rect x="5" y="5" width="10" height="10" rx="1" />
+                </svg>
+                Stop
+              </button>
+            ) : (
+              <button
+                onClick={() => void submit()}
+                disabled={disabled || !value.trim()}
+                className="ml-1 rounded-md bg-gray-600 p-1.5 text-gray-200 hover:bg-gray-500 disabled:opacity-40"
+                aria-label="Send prompt"
+              >
+                <svg
+                  className="h-4 w-4"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                  strokeWidth={2}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <path d="M5 10l7-7m0 0l7 7m-7-7v18" />
+                </svg>
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -70,12 +178,20 @@ function Selector({
       >
         {prefix && <span>{prefix}</span>}
         <span>{value}</span>
-        <svg className="h-3 w-3 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+        <svg
+          className="h-3 w-3 text-gray-500"
+          fill="none"
+          stroke="currentColor"
+          viewBox="0 0 24 24"
+          strokeWidth={2}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
           <path d="M19 9l-7 7-7-7" />
         </svg>
       </button>
       {open && (
-        <div className="absolute bottom-full mb-1 w-40 rounded-lg border border-[#3a3a3a] bg-[#1e1e1e] py-1 shadow-xl">
+        <div className="absolute bottom-full left-0 z-50 mb-1 w-40 rounded-lg border border-[#3a3a3a] bg-[#1e1e1e] py-1 shadow-xl">
           {options.map((o) => (
             <button
               key={o}

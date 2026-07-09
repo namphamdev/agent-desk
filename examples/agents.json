@@ -1,0 +1,17 @@
+{
+  "defaultAgentId": "demo",
+  "agents": [
+    {
+      "id": "claude-code",
+      "name": "Claude Code (ACP)",
+      "command": "claude-agent-acp",
+      "args": []
+    },
+    {
+      "id": "gemini",
+      "name": "Gemini CLI",
+      "command": "gemini",
+      "args": ["--acp"]
+    }
+  ]
+}

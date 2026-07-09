@@ -12,6 +12,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@agentclientprotocol/sdk": "^1.2.1",
     "diff": "^7.0.0",
     "mermaid": "^11.6.0",
     "react": "^18.3.1",
@@ -30,6 +31,7 @@
     "concurrently": "^9.1.0",
     "electrobun": "^1.18.1",
     "highlight.js": "^11.10.0",
+    "react-grab": "^0.1.48",
     "tailwindcss": "^4.1.0",
     "typescript": "^5.7.2",
     "vite": "^6.0.3",

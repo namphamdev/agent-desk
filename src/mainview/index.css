@@ -2,38 +2,114 @@
 
 @import "highlight.js/styles/github-dark.css";
 
-:root {
-  /* Theme tokens carried over from the original ui.html mockup. */
+/*
+ * Theme tokens. Components use the utility classes below (.sidebar-bg, etc.)
+ * which read CSS variables so Settings can switch dark/light without a full
+ * re-theme of every Tailwind class.
+ */
+:root,
+:root[data-theme="dark"] {
   color-scheme: dark;
+  --bg-app: #1a1a1a;
+  --bg-main: #141414;
+  --bg-sidebar: #1f1f1f;
+  --bg-header: #1a1a1a;
+  --bg-input: #1e1e1e;
+  --bg-elevated: #2a2a2a;
+  --border: #2e2e2e;
+  --border-strong: #333;
+  --text: #e5e5e5;
+  --text-muted: #9ca3af;
+  --text-faint: #6b7280;
+  --link: #60a5fa;
+  --code-bg: #1e1e1e;
+  --code-inline-bg: #2a2a2a;
+  --scroll-thumb: #333;
+  --scroll-thumb-hover: #444;
+  --prose: #d1d5db;
+  --prose-heading: #f3f4f6;
+  --table-head: #1e1e1e;
+  --blockquote-border: #3a3a3a;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg-app: #f5f5f5;
+  --bg-main: #ffffff;
+  --bg-sidebar: #f0f0f0;
+  --bg-header: #fafafa;
+  --bg-input: #ffffff;
+  --bg-elevated: #e8e8e8;
+  --border: #e0e0e0;
+  --border-strong: #d0d0d0;
+  --text: #1a1a1a;
+  --text-muted: #6b7280;
+  --text-faint: #9ca3af;
+  --link: #2563eb;
+  --code-bg: #f3f4f6;
+  --code-inline-bg: #e5e7eb;
+  --scroll-thumb: #ccc;
+  --scroll-thumb-hover: #bbb;
+  --prose: #374151;
+  --prose-heading: #111827;
+  --table-head: #f3f4f6;
+  --blockquote-border: #d1d5db;
+}
+
+@media (prefers-color-scheme: light) {
+  :root[data-theme="system"] {
+    color-scheme: light;
+    --bg-app: #f5f5f5;
+    --bg-main: #ffffff;
+    --bg-sidebar: #f0f0f0;
+    --bg-header: #fafafa;
+    --bg-input: #ffffff;
+    --bg-elevated: #e8e8e8;
+    --border: #e0e0e0;
+    --border-strong: #d0d0d0;
+    --text: #1a1a1a;
+    --text-muted: #6b7280;
+    --text-faint: #9ca3af;
+    --link: #2563eb;
+    --code-bg: #f3f4f6;
+    --code-inline-bg: #e5e7eb;
+    --scroll-thumb: #ccc;
+    --scroll-thumb-hover: #bbb;
+    --prose: #374151;
+    --prose-heading: #111827;
+    --table-head: #f3f4f6;
+    --blockquote-border: #d1d5db;
+  }
 }
 
 html,
 body,
 #root {
   height: 100%;
+  width: 100%;
 }
 
 body {
-  font-family: "Inter", sans-serif;
-  background-color: #1a1a1a;
-  color: #e5e5e5;
+  font-family: "Inter", system-ui, sans-serif;
+  background-color: var(--bg-app);
+  color: var(--text);
 }
 
 .sidebar-bg {
-  background-color: #1f1f1f;
+  background-color: var(--bg-sidebar);
 }
 .main-bg {
-  background-color: #141414;
+  background-color: var(--bg-main);
 }
 .header-bg {
-  background-color: #1a1a1a;
+  background-color: var(--bg-header);
 }
 .input-bg {
-  background-color: #1e1e1e;
-  border-color: #333;
+  background-color: var(--bg-input);
+  border-color: var(--border-strong);
 }
 .table-border {
-  border-color: #2e2e2e;
+  border-color: var(--border);
 }
 
 /* Scrollbars */
@@ -45,24 +121,24 @@ body {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: #333;
+  background: var(--scroll-thumb);
   border-radius: 3px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #444;
+  background: var(--scroll-thumb-hover);
 }
 
 /* Markdown content typography. Scoped to .prose-chat so it doesn't leak. */
 .prose-chat {
   font-size: 15px;
   line-height: 1.7;
-  color: #d4d4d4;
+  color: var(--prose);
 }
 .prose-chat h1,
 .prose-chat h2,
 .prose-chat h3,
 .prose-chat h4 {
-  color: #fff;
+  color: var(--prose-heading);
   font-weight: 600;
   line-height: 1.3;
   margin-top: 1.3em;
@@ -81,7 +157,7 @@ body {
   margin: 0.75em 0;
 }
 .prose-chat a {
-  color: #60a5fa;
+  color: var(--link);
   text-decoration: underline;
   text-underline-offset: 2px;
 }
@@ -100,25 +176,26 @@ body {
   margin: 0.25em 0;
 }
 .prose-chat blockquote {
-  border-left: 3px solid #404040;
+  border-left: 3px solid var(--blockquote-border);
   padding-left: 1em;
-  color: #a3a3a3;
+  color: var(--text-muted);
   margin: 0.75em 0;
 }
 .prose-chat code:not(pre code) {
-  background: #2a2a2a;
-  color: #d4d4d4;
+  background: var(--code-inline-bg);
+  color: var(--prose-heading);
   padding: 0.1em 0.4em;
   border-radius: 0.25rem;
   font-size: 0.85em;
-  border: 1px solid #333;
+  border: 1px solid var(--border);
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
 }
 .prose-chat pre {
   margin: 0.9em 0;
   border-radius: 0.75rem;
   overflow: hidden;
-  border: 1px solid #2e2e2e;
+  border: 1px solid var(--border);
+  background: var(--code-bg);
 }
 .prose-chat pre code.hljs {
   display: block;
@@ -133,29 +210,29 @@ body {
   width: 100%;
   border-collapse: collapse;
   margin: 1em 0;
-  border: 1px solid #2e2e2e;
+  border: 1px solid var(--border);
   border-radius: 0.75rem;
   overflow: hidden;
   font-size: 0.875rem;
 }
 .prose-chat thead {
-  background: #232323;
-  color: #a3a3a3;
+  background: var(--table-head);
+  color: var(--prose-heading);
 }
 .prose-chat th,
 .prose-chat td {
   padding: 0.6rem 0.9rem;
   text-align: left;
-  border-bottom: 1px solid #2e2e2e;
+  border-bottom: 1px solid var(--border);
 }
 .prose-chat tbody tr:last-child td {
   border-bottom: none;
 }
 .prose-chat tbody tr:hover {
-  background: #252525;
+  background: var(--bg-elevated);
 }
 .prose-chat hr {
   border: none;
-  border-top: 1px solid #2e2e2e;
+  border-top: 1px solid var(--border);
   margin: 1.5em 0;
 }
