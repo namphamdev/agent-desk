@@ -1,14 +1,20 @@
 import type { ConnectionStatePayload } from "../../shared/rpc";
 
+type WindowControlAction = "close" | "minimize" | "maximize";
+
 interface HeaderProps {
   title: string;
   project: string;
   /** Full project path shown on hover when available. */
   cwd?: string;
-  branch: string;
+  /** Current git branch for the project folder, if any. */
+  branch?: string | null;
   connection?: ConnectionStatePayload;
   onToggleSidebar?: () => void;
   onOpenSettings?: () => void;
+  /** When the sidebar is hidden, show traffic lights here. */
+  showWindowControls?: boolean;
+  onWindowControl?: (action: WindowControlAction) => void;
 }
 
 const statusColor: Record<string, string> = {
@@ -20,6 +26,17 @@ const statusColor: Record<string, string> = {
   disconnected: "bg-gray-600",
 };
 
+/** Format agent RSS for the header chip (e.g. 142 MB, 1.2 GB). */
+function formatRss(bytes: number | null | undefined): string | null {
+  if (bytes == null || !Number.isFinite(bytes) || bytes < 0) return null;
+  const mb = bytes / (1024 * 1024);
+  if (mb < 1024) {
+    // Show one decimal under 100 MB for more signal while loading.
+    return mb < 100 ? `${mb.toFixed(1)} MB` : `${Math.round(mb)} MB`;
+  }
+  return `${(mb / 1024).toFixed(1)} GB`;
+}
+
 export function Header({
   title,
   project,
@@ -28,15 +45,50 @@ export function Header({
   connection,
   onToggleSidebar,
   onOpenSettings,
+  showWindowControls,
+  onWindowControl,
 }: HeaderProps) {
   const status = connection?.status ?? "idle";
   const folderName = cwd ? cwd.split("/").filter(Boolean).pop() : undefined;
+  const memoryLabel = formatRss(connection?.memoryRssBytes);
+  const agentLabel = connection?.agentName ?? status;
+  const memoryTitle =
+    memoryLabel && connection?.memorySampledAt
+      ? `Agent RAM (process tree): ${memoryLabel}`
+      : memoryLabel
+        ? `Agent RAM: ${memoryLabel}`
+        : undefined;
   return (
-    <header className="header-bg flex h-14 shrink-0 items-center justify-between border-b border-[#2e2e2e] px-6">
+    <header className="electrobun-webkit-app-region-drag header-bg flex h-14 shrink-0 items-center justify-between border-b border-[#2e2e2e] px-6">
       <div className="flex items-center space-x-4">
+        {showWindowControls && (
+          <div className="electrobun-webkit-app-region-no-drag flex space-x-1.5">
+            <button
+              type="button"
+              aria-label="Close"
+              title="Close"
+              onClick={() => onWindowControl?.("close")}
+              className="h-3 w-3 rounded-full bg-[#ff5f56] hover:brightness-110"
+            />
+            <button
+              type="button"
+              aria-label="Minimize"
+              title="Minimize"
+              onClick={() => onWindowControl?.("minimize")}
+              className="h-3 w-3 rounded-full bg-[#ffbd2e] hover:brightness-110"
+            />
+            <button
+              type="button"
+              aria-label="Maximize"
+              title="Maximize"
+              onClick={() => onWindowControl?.("maximize")}
+              className="h-3 w-3 rounded-full bg-[#27c93f] hover:brightness-110"
+            />
+          </div>
+        )}
         <button
           onClick={onToggleSidebar}
-          className="rounded p-1 text-gray-500 hover:bg-[#2a2a2a] hover:text-gray-300 md:hidden"
+          className="electrobun-webkit-app-region-no-drag rounded p-1 text-gray-500 hover:bg-[#2a2a2a] hover:text-gray-300 md:hidden"
           aria-label="Toggle sidebar"
         >
           <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
@@ -54,24 +106,38 @@ export function Header({
             </svg>
             <span className="truncate">{folderName ?? project}</span>
           </span>
-          <span className="flex items-center rounded bg-[#2a2a2a] px-2 py-1">
-            <svg className="mr-1 h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
-              <path d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
-            </svg>
-            {branch}
-          </span>
+          {branch && (
+            <span
+              className="flex items-center rounded bg-[#2a2a2a] px-2 py-1"
+              title={`Git branch: ${branch}`}
+            >
+              <svg className="mr-1 h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+                <path d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
+              </svg>
+              {branch}
+            </span>
+          )}
         </div>
       </div>
-      <div className="flex items-center space-x-3 text-gray-400">
+      <div className="electrobun-webkit-app-region-no-drag flex items-center space-x-3 text-gray-400">
         {connection && (
           <div
             className="flex items-center gap-1.5 rounded bg-[#2a2a2a] px-2 py-1 text-[11px]"
-            title={connection.error ?? connection.agentName ?? status}
+            title={
+              connection.error ??
+              ([agentLabel, memoryTitle].filter(Boolean).join(" · ") || status)
+            }
           >
             <span className={`h-1.5 w-1.5 rounded-full ${statusColor[status] ?? "bg-gray-500"}`} />
-            <span className="max-w-[120px] truncate">
-              {connection.agentName ?? status}
-            </span>
+            <span className="max-w-[140px] truncate">{agentLabel}</span>
+            {memoryLabel && (
+              <span
+                className="shrink-0 tabular-nums text-gray-500"
+                title={memoryTitle}
+              >
+                · {memoryLabel}
+              </span>
+            )}
           </div>
         )}
         <button

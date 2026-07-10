@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   translateAvailableCommands,
+  translateConfigOptions,
   translateSessionUpdate,
 } from "./translate";
 import type { SessionUpdate as WireUpdate } from "@agentclientprotocol/sdk";
@@ -78,6 +79,14 @@ describe("translateSessionUpdate", () => {
     const wire = {
       sessionUpdate: "available_commands_update",
       availableCommands: [{ name: "test", description: "d" }],
+    } as WireUpdate;
+    expect(translateSessionUpdate(wire)).toBeNull();
+  });
+
+  it("drops config_option_update (handled separately)", () => {
+    const wire = {
+      sessionUpdate: "config_option_update",
+      configOptions: [],
     } as WireUpdate;
     expect(translateSessionUpdate(wire)).toBeNull();
   });
@@ -279,5 +288,62 @@ describe("translateAvailableCommands", () => {
       sessionUpdate: "available_commands_update",
     } as Extract<WireUpdate, { sessionUpdate: "available_commands_update" }>);
     expect(cmds).toEqual([]);
+  });
+});
+
+describe("translateConfigOptions", () => {
+  it("maps select options and flattens groups", () => {
+    const opts = translateConfigOptions([
+      {
+        id: "model",
+        name: "Model",
+        category: "model",
+        type: "select",
+        currentValue: "m1",
+        options: [
+          { value: "m1", name: "Model 1", description: "fast" },
+          {
+            group: "pro",
+            name: "Pro",
+            options: [{ value: "m2", name: "Model 2" }],
+          },
+        ],
+      },
+      {
+        id: "brave",
+        name: "Brave Mode",
+        type: "boolean",
+        currentValue: true,
+      },
+    ] as Parameters<typeof translateConfigOptions>[0]);
+
+    expect(opts).toEqual([
+      {
+        id: "model",
+        name: "Model",
+        description: undefined,
+        category: "model",
+        type: "select",
+        currentValue: "m1",
+        options: [
+          { value: "m1", name: "Model 1", description: "fast" },
+          { value: "m2", name: "Model 2", description: undefined },
+        ],
+      },
+      {
+        id: "brave",
+        name: "Brave Mode",
+        description: undefined,
+        category: null,
+        type: "boolean",
+        currentValue: true,
+      },
+    ]);
+  });
+
+  it("returns empty for missing options", () => {
+    expect(translateConfigOptions(null)).toEqual([]);
+    expect(translateConfigOptions(undefined)).toEqual([]);
+    expect(translateConfigOptions([])).toEqual([]);
   });
 });

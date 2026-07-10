@@ -1,36 +1,74 @@
-import { useEffect, useRef, useState } from "react";
-import type { AvailableCommand } from "../../shared/rpc";
-
-const models = ["GLM-5.2", "GPT-5", "Claude Sonnet 4.5"];
-const efforts = ["High", "Medium", "Low"];
+import { useEffect, useMemo, useRef, useState } from "react";
+import type {
+  AvailableCommand,
+  SessionConfigOption,
+} from "../../shared/rpc";
 
 type Props = {
   disabled?: boolean;
   prompting?: boolean;
   commands?: AvailableCommand[];
   mode?: string;
+  /** ACP session config options (model, thought_level, …). */
+  configOptions?: SessionConfigOption[];
   onSubmit: (text: string) => void | Promise<void>;
   onCancel?: () => void | Promise<void>;
+  onSetConfigOption?: (
+    configId: string,
+    value: string | boolean,
+  ) => void | Promise<void>;
 };
+
+/** Find the first select option matching a category (or id fallback). */
+function findSelectOption(
+  options: SessionConfigOption[],
+  category: string,
+  idFallback?: string,
+): Extract<SessionConfigOption, { type: "select" }> | null {
+  const byCategory = options.find(
+    (o) => o.type === "select" && o.category === category,
+  );
+  if (byCategory && byCategory.type === "select") return byCategory;
+  if (idFallback) {
+    const byId = options.find(
+      (o) => o.type === "select" && o.id === idFallback,
+    );
+    if (byId && byId.type === "select") return byId;
+  }
+  return null;
+}
 
 /**
  * Bottom input bar. Sends prompts over Electrobun RPC to the ACP agent.
  * Supports Stop while streaming, and a `/commands` picker from
- * available_commands_update.
+ * available_commands_update. Model / effort selectors come from ACP
+ * `configOptions` (categories `model` and `thought_level`).
  */
 export function PromptInput({
   disabled,
   prompting,
   commands = [],
   mode,
+  configOptions = [],
   onSubmit,
   onCancel,
+  onSetConfigOption,
 }: Props) {
   const [value, setValue] = useState("");
-  const [model, setModel] = useState(models[0]!);
-  const [effort, setEffort] = useState(efforts[0]!);
   const [showCommands, setShowCommands] = useState(false);
+  const [settingConfig, setSettingConfig] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  /** Prevents Enter+click or repeated keydown from double-submitting. */
+  const submittingRef = useRef(false);
+
+  const modelOption = useMemo(
+    () => findSelectOption(configOptions, "model", "model"),
+    [configOptions],
+  );
+  const effortOption = useMemo(
+    () => findSelectOption(configOptions, "thought_level", "thought_level"),
+    [configOptions],
+  );
 
   useEffect(() => {
     if (value.startsWith("/") && commands.length > 0) {
@@ -46,12 +84,34 @@ export function PromptInput({
 
   const submit = async () => {
     const text = value.trim();
-    if (!text || disabled) return;
+    if (!text || disabled || submittingRef.current) return;
+    submittingRef.current = true;
     setValue("");
     setShowCommands(false);
-    await onSubmit(text);
-    inputRef.current?.focus();
+    try {
+      await onSubmit(text);
+    } finally {
+      submittingRef.current = false;
+      inputRef.current?.focus();
+    }
   };
+
+  const changeConfig = async (configId: string, nextValue: string) => {
+    if (!onSetConfigOption || settingConfig) return;
+    setSettingConfig(true);
+    try {
+      await onSetConfigOption(configId, nextValue);
+    } finally {
+      setSettingConfig(false);
+    }
+  };
+
+  const modelLabel =
+    modelOption?.options.find((o) => o.value === modelOption.currentValue)
+      ?.name ?? modelOption?.currentValue;
+  const effortLabel =
+    effortOption?.options.find((o) => o.value === effortOption.currentValue)
+      ?.name ?? effortOption?.currentValue;
 
   return (
     <div className="pointer-events-none absolute bottom-6 left-0 right-0 px-6">
@@ -113,11 +173,38 @@ export function PromptInput({
                 {mode}
               </span>
             )}
-            <div className="h-4 w-px bg-[#333]" />
-            <Selector value={model} options={models} onChange={setModel} accent="text-[#d97706]" />
+            {modelOption && modelLabel && (
+              <>
+                {(mode && mode !== "default") && (
+                  <div className="h-4 w-px bg-[#333]" />
+                )}
+                <Selector
+                  value={modelOption.currentValue}
+                  displayValue={modelLabel}
+                  options={modelOption.options.map((o) => ({
+                    value: o.value,
+                    label: o.name,
+                  }))}
+                  onChange={(v) => void changeConfig(modelOption.id, v)}
+                  accent="text-[#d97706]"
+                  disabled={disabled || settingConfig}
+                />
+              </>
+            )}
           </div>
           <div className="flex items-center space-x-3">
-            <Selector value={effort} options={efforts} onChange={setEffort} />
+            {effortOption && effortLabel && (
+              <Selector
+                value={effortOption.currentValue}
+                displayValue={effortLabel}
+                options={effortOption.options.map((o) => ({
+                  value: o.value,
+                  label: o.name,
+                }))}
+                onChange={(v) => void changeConfig(effortOption.id, v)}
+                disabled={disabled || settingConfig}
+              />
+            )}
             {prompting ? (
               <button
                 onClick={() => void onCancel?.()}
@@ -158,26 +245,32 @@ export function PromptInput({
 
 function Selector({
   value,
+  displayValue,
   options,
   onChange,
   accent,
   prefix,
+  disabled,
 }: {
   value: string;
-  options: string[];
+  displayValue?: string;
+  options: Array<{ value: string; label: string }>;
   onChange: (v: string) => void;
   accent?: string;
   prefix?: string;
+  disabled?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   return (
     <div className="relative">
       <button
+        type="button"
+        disabled={disabled || options.length === 0}
         onClick={() => setOpen((o) => !o)}
-        className={`flex items-center space-x-1.5 rounded px-2 py-1 text-sm font-medium hover:bg-[#3a270a] ${accent ?? "text-gray-400 hover:text-gray-200"}`}
+        className={`flex items-center space-x-1.5 rounded px-2 py-1 text-sm font-medium hover:bg-[#3a270a] disabled:opacity-50 ${accent ?? "text-gray-400 hover:text-gray-200"}`}
       >
         {prefix && <span>{prefix}</span>}
-        <span>{value}</span>
+        <span>{displayValue ?? value}</span>
         <svg
           className="h-3 w-3 text-gray-500"
           fill="none"
@@ -191,19 +284,20 @@ function Selector({
         </svg>
       </button>
       {open && (
-        <div className="absolute bottom-full left-0 z-50 mb-1 w-40 rounded-lg border border-[#3a3a3a] bg-[#1e1e1e] py-1 shadow-xl">
+        <div className="absolute bottom-full left-0 z-50 mb-1 max-h-64 min-w-[10rem] overflow-y-auto rounded-lg border border-[#3a3a3a] bg-[#1e1e1e] py-1 shadow-xl">
           {options.map((o) => (
             <button
-              key={o}
+              type="button"
+              key={o.value}
               onClick={() => {
-                onChange(o);
+                onChange(o.value);
                 setOpen(false);
               }}
               className={`block w-full px-3 py-1.5 text-left text-sm hover:bg-[#2a2a2a] ${
-                o === value ? "text-gray-200" : "text-gray-400"
+                o.value === value ? "text-gray-200" : "text-gray-400"
               }`}
             >
-              {o}
+              {o.label}
             </button>
           ))}
         </div>

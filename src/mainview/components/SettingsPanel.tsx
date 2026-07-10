@@ -1,5 +1,7 @@
 import { useState } from "react";
 import type { AgentInfo, AppSettings } from "../../shared/rpc";
+import { ensureNotificationPermission } from "../completionAlert";
+import { Select } from "./Select";
 
 type Props = {
   settings: AppSettings;
@@ -7,6 +9,12 @@ type Props = {
   onClose: () => void;
   onSave: (patch: Partial<AppSettings>) => void | Promise<void>;
 };
+
+const THEME_OPTIONS = [
+  { value: "dark", label: "Dark" },
+  { value: "light", label: "Light" },
+  { value: "system", label: "System" },
+] as const;
 
 export function SettingsPanel({ settings, agents, onClose, onSave }: Props) {
   const [draft, setDraft] = useState(settings);
@@ -21,6 +29,11 @@ export function SettingsPanel({ settings, agents, onClose, onSave }: Props) {
       setSaving(false);
     }
   };
+
+  const agentOptions =
+    agents.length === 0
+      ? [{ value: "", label: "No agents configured", disabled: true }]
+      : agents.map((a) => ({ value: a.id, label: a.name }));
 
   return (
     <div
@@ -48,20 +61,17 @@ export function SettingsPanel({ settings, agents, onClose, onSave }: Props) {
 
         <div className="space-y-4 px-5 py-4 text-sm">
           <Field label="Theme">
-            <select
+            <Select
               value={draft.theme}
-              onChange={(e) =>
+              options={[...THEME_OPTIONS]}
+              onChange={(theme) =>
                 setDraft((d) => ({
                   ...d,
-                  theme: e.target.value as AppSettings["theme"],
+                  theme: theme as AppSettings["theme"],
                 }))
               }
-              className="w-full rounded-md border border-[#333] bg-[#121212] px-2 py-1.5 text-gray-200"
-            >
-              <option value="dark">Dark</option>
-              <option value="light">Light</option>
-              <option value="system">System</option>
-            </select>
+              aria-label="Theme"
+            />
           </Field>
 
           <Field label="Editor command">
@@ -79,22 +89,16 @@ export function SettingsPanel({ settings, agents, onClose, onSave }: Props) {
           </Field>
 
           <Field label="Default agent">
-            <select
+            <Select
               value={draft.defaultAgentId ?? agents[0]?.id ?? ""}
-              onChange={(e) =>
-                setDraft((d) => ({ ...d, defaultAgentId: e.target.value }))
+              options={agentOptions}
+              onChange={(defaultAgentId) =>
+                setDraft((d) => ({ ...d, defaultAgentId }))
               }
-              className="w-full rounded-md border border-[#333] bg-[#121212] px-2 py-1.5 text-gray-200"
-            >
-              {agents.length === 0 ? (
-                <option value="">No agents configured</option>
-              ) : null}
-              {agents.map((a) => (
-                <option key={a.id} value={a.id}>
-                  {a.name}
-                </option>
-              ))}
-            </select>
+              placeholder="No agents configured"
+              disabled={agents.length === 0}
+              aria-label="Default agent"
+            />
             <p className="mt-1 text-[11px] text-gray-500">
               Configure agents in ~/.terminal-react/agents.json
             </p>
@@ -118,6 +122,64 @@ export function SettingsPanel({ settings, agents, onClose, onSave }: Props) {
             Off by default. When on, the agent may read and write files via ACP
             fs/* methods.
           </p>
+
+          <div className="border-t border-[#2e2e2e] pt-4">
+            <span className="mb-2 block text-xs font-medium uppercase tracking-wider text-gray-500">
+              Completion alerts
+            </span>
+            <div className="space-y-3">
+              <div>
+                <label className="flex items-center gap-2 text-gray-300">
+                  <input
+                    type="checkbox"
+                    checked={draft.enableNotifications ?? true}
+                    onChange={(e) =>
+                      setDraft((d) => ({
+                        ...d,
+                        enableNotifications: e.target.checked,
+                      }))
+                    }
+                    className="rounded border-[#444]"
+                  />
+                  System notification when a task completes
+                </label>
+                <p className="mt-1 text-[11px] text-gray-500">
+                  Native OS banner via Electrobun. macOS may ask for permission
+                  the first time a notification is shown — allow “terminal-react”
+                  under System Settings → Notifications if banners don’t appear.
+                </p>
+              </div>
+              <div>
+                <label className="flex items-center gap-2 text-gray-300">
+                  <input
+                    type="checkbox"
+                    checked={draft.enableSound ?? true}
+                    onChange={(e) =>
+                      setDraft((d) => ({
+                        ...d,
+                        enableSound: e.target.checked,
+                      }))
+                    }
+                    className="rounded border-[#444]"
+                  />
+                  Play sound when a task completes
+                </label>
+                <p className="mt-1 text-[11px] text-gray-500">
+                  OS notification sound when banners are on; otherwise a short
+                  in-app chime.
+                </p>
+              </div>
+              {draft.enableNotifications && (
+                <button
+                  type="button"
+                  onClick={() => void ensureNotificationPermission()}
+                  className="rounded-md border border-[#333] px-2.5 py-1 text-xs text-gray-300 hover:bg-[#2a2a2a] hover:text-gray-100"
+                >
+                  Send test notification
+                </button>
+              )}
+            </div>
+          </div>
         </div>
 
         <div className="flex justify-end gap-2 border-t border-[#2e2e2e] px-5 py-3">
@@ -148,11 +210,11 @@ function Field({
   children: React.ReactNode;
 }) {
   return (
-    <label className="block">
+    <div className="block">
       <span className="mb-1 block text-xs font-medium uppercase tracking-wider text-gray-500">
         {label}
       </span>
       {children}
-    </label>
+    </div>
   );
 }

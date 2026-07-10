@@ -1,3 +1,4 @@
+import { useState } from "react";
 import type { ToolCall, ToolKind } from "../../../session/types";
 import { Content } from "../content/Content";
 import { DiffView } from "../content/DiffView";
@@ -15,10 +16,10 @@ const kindIcon: Record<ToolKind, string> = {
 };
 
 const statusStyle: Record<ToolCall["status"], string> = {
-  pending: "text-gray-500",
-  in_progress: "text-amber-400",
-  completed: "text-emerald-400",
-  failed: "text-red-400",
+  pending: "text-[var(--text-faint)]",
+  in_progress: "text-amber-500",
+  completed: "text-emerald-600",
+  failed: "text-red-500",
 };
 
 const statusLabel: Record<ToolCall["status"], string> = {
@@ -28,9 +29,29 @@ const statusLabel: Record<ToolCall["status"], string> = {
   failed: "failed",
 };
 
+function formatRaw(value: unknown): string {
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
+function hasBody(toolCall: ToolCall): boolean {
+  return (
+    toolCall.content.length > 0 ||
+    toolCall.rawInput !== undefined ||
+    toolCall.rawOutput !== undefined
+  );
+}
+
 /**
  * Collapsible card for a tool call: kind icon, title, status indicator, file
- * locations, and rendered body (content blocks + diffs + terminals).
+ * locations, and rendered body (content blocks + diffs + terminals + raw I/O).
+ *
+ * Completed/failed cards start collapsed; pending/running start expanded so
+ * live work is visible. Header is always clickable when there is a body.
  */
 export function ToolCallCard({
   toolCall,
@@ -41,31 +62,56 @@ export function ToolCallCard({
 }) {
   const kind = toolCall.kind ?? "other";
   const loc = toolCall.locations?.[0];
+  const body = hasBody(toolCall);
+  const [expanded, setExpanded] = useState(
+    () =>
+      toolCall.status === "pending" ||
+      toolCall.status === "in_progress",
+  );
 
   return (
     <div
-      className="rounded-xl border border-[#2e2e2e] bg-[#181818]"
+      className="rounded-xl border border-[var(--border)] bg-[var(--bg-input)]"
       aria-label={`Tool call ${toolCall.title}, ${statusLabel[toolCall.status]}`}
     >
       <div className="flex items-center gap-2 px-3 py-2 text-sm">
-        <span aria-hidden>{kindIcon[kind]}</span>
-        <span className="font-medium text-gray-200">{toolCall.title}</span>
-        <span
-          className={`flex items-center gap-1 text-xs ${statusStyle[toolCall.status]}`}
-          aria-live="polite"
+        <button
+          type="button"
+          onClick={() => body && setExpanded((e) => !e)}
+          disabled={!body}
+          className={`flex min-w-0 flex-1 items-center gap-2 text-left ${
+            body
+              ? "cursor-pointer hover:opacity-90"
+              : "cursor-default"
+          }`}
+          aria-expanded={body ? expanded : undefined}
         >
-          {toolCall.status === "in_progress" && (
-            <span className="inline-block h-3 w-3 animate-spin rounded-full border border-amber-400 border-t-transparent" />
+          {body && (
+            <span className="shrink-0 text-[var(--text-faint)]" aria-hidden>
+              {expanded ? "▾" : "▸"}
+            </span>
           )}
-          {toolCall.status === "completed" && <span>✓</span>}
-          {toolCall.status === "failed" && <span>✕</span>}
-          {statusLabel[toolCall.status]}
-        </span>
+          <span aria-hidden>{kindIcon[kind]}</span>
+          <span className="truncate font-medium text-[var(--text)]">
+            {toolCall.title}
+          </span>
+          <span
+            className={`flex shrink-0 items-center gap-1 text-xs ${statusStyle[toolCall.status]}`}
+            aria-live="polite"
+          >
+            {toolCall.status === "in_progress" && (
+              <span className="inline-block h-3 w-3 animate-spin rounded-full border border-amber-500 border-t-transparent" />
+            )}
+            {toolCall.status === "completed" && <span>✓</span>}
+            {toolCall.status === "failed" && <span>✕</span>}
+            {statusLabel[toolCall.status]}
+          </span>
+        </button>
         {loc && (
           <button
             type="button"
             onClick={() => onOpenFile?.(loc.path, loc.line)}
-            className="ml-auto truncate font-mono text-[11px] text-gray-500 hover:text-blue-400 hover:underline"
+            className="ml-1 max-w-[40%] shrink-0 truncate font-mono text-[11px] text-[var(--text-faint)] hover:text-[var(--link)] hover:underline"
             title="Open in editor"
           >
             {loc.path}
@@ -74,8 +120,8 @@ export function ToolCallCard({
         )}
       </div>
 
-      {toolCall.content.length > 0 && (
-        <div className="space-y-1 border-t border-[#2e2e2e] px-3 py-2">
+      {body && expanded && (
+        <div className="space-y-2 border-t border-[var(--border)] px-3 py-2">
           {toolCall.content.map((item, i) => {
             if (item.type === "diff") {
               return (
@@ -91,7 +137,7 @@ export function ToolCallCard({
               return (
                 <div
                   key={i}
-                  className="rounded border border-[#2e2e2e] bg-black/40 px-2 py-1 font-mono text-xs text-gray-400"
+                  className="rounded border border-[var(--border)] bg-[var(--code-bg)] px-2 py-1 font-mono text-xs text-[var(--text-muted)]"
                 >
                   terminal {item.terminalId}
                 </div>
@@ -99,8 +145,28 @@ export function ToolCallCard({
             }
             return <Content key={i} block={item.content} />;
           })}
+
+          {toolCall.rawInput !== undefined && (
+            <RawBlock label="Input" value={toolCall.rawInput} />
+          )}
+          {toolCall.rawOutput !== undefined && (
+            <RawBlock label="Output" value={toolCall.rawOutput} />
+          )}
         </div>
       )}
+    </div>
+  );
+}
+
+function RawBlock({ label, value }: { label: string; value: unknown }) {
+  return (
+    <div className="overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--code-bg)]">
+      <div className="border-b border-[var(--border)] px-2 py-1 font-mono text-[10px] uppercase tracking-wider text-[var(--text-faint)]">
+        {label}
+      </div>
+      <pre className="max-h-64 overflow-auto px-2 py-1.5 font-mono text-[11px] leading-relaxed text-[var(--text-muted)]">
+        <code>{formatRaw(value)}</code>
+      </pre>
     </div>
   );
 }

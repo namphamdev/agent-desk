@@ -31,6 +31,8 @@ describe("settings", () => {
   it("exposes sensible defaults", () => {
     expect(DEFAULT_SETTINGS.theme).toBe("dark");
     expect(DEFAULT_SETTINGS.enableFsCapabilities).toBe(false);
+    expect(DEFAULT_SETTINGS.enableNotifications).toBe(true);
+    expect(DEFAULT_SETTINGS.enableSound).toBe(true);
     expect(DEFAULT_SETTINGS.defaultAgentId).toBeNull();
     expect(DEFAULT_SETTINGS.defaultEffort).toBe("High");
     expect(DEFAULT_SETTINGS.editorCommand).toBeTruthy();

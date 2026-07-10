@@ -21,7 +21,7 @@ export default defineConfig({
     rollupOptions: {
       output: {
         manualChunks: {
-          mermaid: ["mermaid"],
+          mermaid: ["beautiful-mermaid"],
         },
       },
     },

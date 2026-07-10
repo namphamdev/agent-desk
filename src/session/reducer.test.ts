@@ -27,6 +27,27 @@ describe("session reducer", () => {
     }
   });
 
+  it("concatenates duplicate user chunks (callers must not double-apply)", () => {
+    // Regression guard for the "hellohello" UI bug: optimistic handlePrompt
+    // plus a re-emitted user_message_chunk would merge into one bubble.
+    const s = reduceAll([
+      {
+        sessionUpdate: "user_message_chunk",
+        content: { type: "text", text: "hello" },
+      },
+      {
+        sessionUpdate: "user_message_chunk",
+        content: { type: "text", text: "hello" },
+      },
+    ]);
+    expect(s.timeline).toHaveLength(1);
+    const entry = s.timeline[0];
+    expect(entry.type).toBe("message");
+    if (entry.type === "message") {
+      expect(entry.content[0]).toEqual({ type: "text", text: "hellohello" });
+    }
+  });
+
   it("starts a new message when the role changes", () => {
     const s = reduceAll([
       {

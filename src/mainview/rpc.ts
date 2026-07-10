@@ -10,6 +10,7 @@ import type {
   ConnectionStatePayload,
   PermissionRequest,
   RecentProject,
+  SessionConfigOption,
   SessionListPayload,
   SessionLoadedPayload,
   TerminalRPC,
@@ -26,6 +27,10 @@ export type RpcListeners = {
   onSessionLoaded?: (payload: SessionLoadedPayload) => void;
   onCommands?: (sessionId: string, commands: AvailableCommand[]) => void;
   onMode?: (sessionId: string, mode: string) => void;
+  onConfigOptions?: (
+    sessionId: string,
+    configOptions: SessionConfigOption[],
+  ) => void;
 };
 
 type RpcClient = {
@@ -42,6 +47,10 @@ type RpcClient = {
       project?: string;
       cwd?: string;
       agentId?: string;
+      seedContext?: {
+        text: string;
+        role?: "user" | "agent" | "thought";
+      };
     }) => Promise<
       | { ok: true; session: SessionListPayload["sessions"][number] }
       | { ok: false; error: string }
@@ -75,6 +84,32 @@ type RpcClient = {
       | { ok: false; cancelled?: boolean; error?: string }
     >;
     listRecentProjects: () => Promise<{ projects: RecentProject[] }>;
+    removeRecentProject: (p: {
+      cwd: string;
+    }) => Promise<{ ok: boolean; projects: RecentProject[] }>;
+    writeClipboard: (p: {
+      text: string;
+    }) => Promise<{ ok: boolean; error?: string }>;
+    getGitBranch: (p: {
+      cwd: string;
+    }) => Promise<{ branch: string | null }>;
+    windowControl: (p: {
+      action: "close" | "minimize" | "maximize";
+    }) => Promise<{ ok: true } | { ok: false; error?: string }>;
+    setConfigOption: (p: {
+      sessionId?: string;
+      configId: string;
+      value: string | boolean;
+    }) => Promise<
+      | { ok: true; configOptions: SessionConfigOption[] }
+      | { ok: false; error: string }
+    >;
+    showDesktopNotification: (p: {
+      title: string;
+      body?: string;
+      subtitle?: string;
+      silent?: boolean;
+    }) => Promise<{ ok: boolean; error?: string }>;
   };
 };
 
@@ -125,6 +160,9 @@ export function initRpc(): RpcClient {
           onMode: ({ sessionId, mode }) => {
             listeners.onMode?.(sessionId, mode);
           },
+          onConfigOptions: ({ sessionId, configOptions }) => {
+            listeners.onConfigOptions?.(sessionId, configOptions);
+          },
         },
       },
     });
@@ -148,6 +186,10 @@ function createBrowserMock(): RpcClient {
   };
   const sessions: SessionListPayload["sessions"] = [];
   let activeSessionId: string | null = null;
+  /** sessionId → recorded session/update stream (for browser demo reload). */
+  const sessionUpdates = new Map<string, SessionUpdate[]>();
+  const dismissedRecentCwds = new Set<string>();
+  let demoSeedPromise: Promise<void> | null = null;
 
   const emit = {
     update: (sessionId: string, update: SessionUpdate) =>
@@ -172,6 +214,35 @@ function createBrowserMock(): RpcClient {
       }),
   };
 
+  async function ensureDemoSession() {
+    if (sessions.length > 0) return;
+    if (!demoSeedPromise) {
+      demoSeedPromise = (async () => {
+        if (sessions.length > 0) return;
+        const { demoUpdates } = await import("../fixtures/demo");
+        const session = {
+          id: "demo-session",
+          title: "Demo session",
+          project: "demo",
+          cwd: "/tmp/demo-project",
+          agentId: "demo",
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        };
+        sessions.push(session);
+        activeSessionId = session.id;
+        sessionUpdates.set(session.id, demoUpdates);
+        // Defer so App's setRpcListeners has run before we push state.
+        setTimeout(() => {
+          emit.list();
+          emit.loaded(session, demoUpdates);
+          emit.conn({ status: "ready", agentName: "Demo (browser)" });
+        }, 0);
+      })();
+    }
+    await demoSeedPromise;
+  }
+
   // Kick ready state.
   setTimeout(() => emit.conn(status), 0);
 
@@ -191,17 +262,24 @@ function createBrowserMock(): RpcClient {
         return { agents: [] };
       },
       async listSessions() {
+        // Browser-only: seed one demo chat so Timeline/LegendList is testable.
+        await ensureDemoSession();
         return { sessions: [...sessions], activeSessionId };
       },
-      async createSession({ title, project, cwd, agentId }) {
+      async createSession({ title, project, cwd, agentId, seedContext }) {
         const folder = cwd || "/tmp/demo-project";
         const name =
           project ||
           folder.replace(/[\\/]+$/, "").split(/[\\/]/).filter(Boolean).pop() ||
           "local";
+        const seedText = seedContext?.text?.trim() ?? "";
         const session = {
           id: `local-${Date.now()}`,
-          title: title || "New session",
+          title:
+            title ||
+            (seedText
+              ? seedText.replace(/\s+/g, " ").slice(0, 60) || "New thread"
+              : "New session"),
           project: name,
           cwd: folder,
           agentId: agentId || "",
@@ -210,8 +288,25 @@ function createBrowserMock(): RpcClient {
         };
         sessions.unshift(session);
         activeSessionId = session.id;
+        const seedUpdates: SessionUpdate[] = [];
+        if (seedText) {
+          const content = { type: "text" as const, text: seedText };
+          const role = seedContext?.role ?? "agent";
+          if (role === "user") {
+            seedUpdates.push({ sessionUpdate: "user_message_chunk", content });
+          } else if (role === "thought") {
+            seedUpdates.push({
+              sessionUpdate: "thought_sequence_chunk",
+              content,
+            });
+          } else {
+            seedUpdates.push({ sessionUpdate: "agent_message_chunk", content });
+          }
+        }
+        sessionUpdates.set(session.id, seedUpdates);
         emit.list();
-        emit.loaded(session, []);
+        emit.loaded(session, seedUpdates);
+        emit.conn({ status: "ready", agentName: "Demo (browser)" });
         return { ok: true as const, session };
       },
       async switchSession({ sessionId }) {
@@ -219,7 +314,7 @@ function createBrowserMock(): RpcClient {
         if (!session) return { ok: false as const, error: "not found" };
         activeSessionId = sessionId;
         emit.list();
-        emit.loaded(session, []);
+        emit.loaded(session, sessionUpdates.get(sessionId) ?? []);
         return { ok: true as const, session };
       },
       async deleteSession({ sessionId }) {
@@ -241,6 +336,8 @@ function createBrowserMock(): RpcClient {
           theme: "dark" as const,
           defaultAgentId: null,
           enableFsCapabilities: false,
+          enableNotifications: true,
+          enableSound: true,
         };
       },
       async saveSettings(patch) {
@@ -249,6 +346,8 @@ function createBrowserMock(): RpcClient {
           theme: "dark" as const,
           defaultAgentId: null,
           enableFsCapabilities: false,
+          enableNotifications: true,
+          enableSound: true,
           ...patch,
         };
       },
@@ -278,7 +377,7 @@ function createBrowserMock(): RpcClient {
         const seen = new Set<string>();
         const projects: RecentProject[] = [];
         for (const s of sessions) {
-          if (!s.cwd || seen.has(s.cwd)) continue;
+          if (!s.cwd || seen.has(s.cwd) || dismissedRecentCwds.has(s.cwd)) continue;
           seen.add(s.cwd);
           projects.push({
             project: s.project,
@@ -287,6 +386,68 @@ function createBrowserMock(): RpcClient {
           });
         }
         return { projects };
+      },
+      async removeRecentProject({ cwd }) {
+        const trimmed = cwd.trim();
+        if (trimmed) dismissedRecentCwds.add(trimmed);
+        const seen = new Set<string>();
+        const projects: RecentProject[] = [];
+        for (const s of sessions) {
+          if (!s.cwd || seen.has(s.cwd) || dismissedRecentCwds.has(s.cwd)) continue;
+          seen.add(s.cwd);
+          projects.push({
+            project: s.project,
+            cwd: s.cwd,
+            updatedAt: s.updatedAt,
+          });
+        }
+        return { ok: true, projects };
+      },
+      async writeClipboard({ text }) {
+        try {
+          if (navigator.clipboard?.writeText) {
+            await navigator.clipboard.writeText(text);
+            return { ok: true };
+          }
+          return { ok: false, error: "Clipboard API unavailable" };
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          return { ok: false, error: message };
+        }
+      },
+async getGitBranch() {
+        return { branch: null };
+      },
+      async windowControl() {
+        // Browser mock — no native window to control.
+        return { ok: true as const };
+      },
+      async setConfigOption() {
+        return {
+          ok: false as const,
+          error: "Config options only available in the desktop app with an ACP agent.",
+        };
+      },
+      async showDesktopNotification({ title, body, silent }) {
+        if (typeof window !== "undefined" && "Notification" in window) {
+          try {
+            let permission = Notification.permission;
+            if (permission === "default") {
+              permission = await Notification.requestPermission();
+            }
+            if (permission === "granted") {
+              new Notification(title, {
+                body: body ?? "",
+                silent: silent ?? true,
+              });
+              return { ok: true };
+            }
+          } catch {
+            /* ignore */
+          }
+        }
+        console.info("[rpc] showDesktopNotification (mock):", title, body);
+        return { ok: true };
       },
     },
   };

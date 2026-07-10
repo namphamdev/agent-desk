@@ -1,12 +1,23 @@
 import { useMemo, useState } from "react";
 import type { SessionSummary } from "../../shared/rpc";
 
+type WindowControlAction = "close" | "minimize" | "maximize";
+
+/** Sidebar status for a chat while/after an agent turn. */
+export type SessionActivity = "processing" | "done";
+
 type Props = {
   sessions: SessionSummary[];
   activeSessionId: string | null;
+  /** Per-session activity for loading spinner / blue completion indicator. */
+  sessionActivity?: Record<string, SessionActivity>;
   onSelect: (id: string) => void;
   onNew: () => void;
+  onNewInProject?: (project: string) => void;
+  onDeleteProject?: (project: string) => void;
+  onDeleteSession?: (id: string) => void;
   onOpenSettings: () => void;
+  onWindowControl?: (action: WindowControlAction) => void;
 };
 
 function timeAgo(ts: number): string {
@@ -23,12 +34,20 @@ function timeAgo(ts: number): string {
 export function Sidebar({
   sessions,
   activeSessionId,
+  sessionActivity = {},
   onSelect,
   onNew,
+  onNewInProject,
+  onDeleteProject,
+  onDeleteSession,
   onOpenSettings,
+  onWindowControl,
 }: Props) {
   const [query, setQuery] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [projectOrder, setProjectOrder] = useState<string[]>([]);
 
   const grouped = useMemo(() => {
     const filtered = query
@@ -44,23 +63,68 @@ export function Sidebar({
       if (!map.has(key)) map.set(key, []);
       map.get(key)!.push(s);
     }
-    return [...map.entries()];
-  }, [sessions, query]);
+    const entries = [...map.entries()];
+    const indexed = new Map(entries);
+    const ordered: [string, SessionSummary[]][] = [];
+    for (const p of projectOrder) {
+      const v = indexed.get(p);
+      if (v) {
+        ordered.push([p, v]);
+        indexed.delete(p);
+      }
+    }
+    for (const [p, v] of indexed) ordered.push([p, v]);
+    return ordered;
+  }, [sessions, query, projectOrder]);
+
+  const moveProject = (project: string, dir: -1 | 1) => {
+    const names = grouped.map(([p]) => p);
+    const i = names.indexOf(project);
+    const j = i + dir;
+    if (i < 0 || j < 0 || j >= names.length) return;
+    const next = [...names];
+    [next[i], next[j]] = [next[j], next[i]];
+    setProjectOrder(next);
+  };
 
   return (
     <aside className="sidebar-bg flex w-64 flex-shrink-0 flex-col border-r border-[#2e2e2e]">
-      <div className="flex h-14 items-center border-b border-[#2e2e2e] px-4">
-        <div className="flex space-x-1.5">
-          <div className="h-3 w-3 rounded-full bg-[#ff5f56]" />
-          <div className="h-3 w-3 rounded-full bg-[#ffbd2e]" />
-          <div className="h-3 w-3 rounded-full bg-[#27c93f]" />
+      <div className="electrobun-webkit-app-region-drag flex h-14 items-center border-b border-[#2e2e2e] px-4">
+        <div className="electrobun-webkit-app-region-no-drag flex space-x-1.5">
+          <button
+            type="button"
+            aria-label="Close"
+            title="Close"
+            onClick={() => void onWindowControl?.("close")}
+            className="group h-3 w-3 rounded-full bg-[#ff5f56] hover:brightness-110"
+          >
+            <span className="sr-only">Close</span>
+          </button>
+          <button
+            type="button"
+            aria-label="Minimize"
+            title="Minimize"
+            onClick={() => void onWindowControl?.("minimize")}
+            className="group h-3 w-3 rounded-full bg-[#ffbd2e] hover:brightness-110"
+          >
+            <span className="sr-only">Minimize</span>
+          </button>
+          <button
+            type="button"
+            aria-label="Maximize"
+            title="Maximize"
+            onClick={() => void onWindowControl?.("maximize")}
+            className="group h-3 w-3 rounded-full bg-[#27c93f] hover:brightness-110"
+          >
+            <span className="sr-only">Maximize</span>
+          </button>
         </div>
         <div className="flex flex-1 justify-end space-x-1 text-gray-500">
           <span className="text-[11px] uppercase tracking-wider">sessions</span>
         </div>
       </div>
 
-      <div className="space-y-1 p-3">
+      <div className="electrobun-webkit-app-region-no-drag space-y-1 p-3">
         <QuickAction
           icon={<PlusIcon />}
           label="New task"
@@ -94,35 +158,158 @@ export function Sidebar({
             No sessions yet. New task → choose a project folder.
           </div>
         )}
-        {grouped.map(([project, tasks]) => (
+        {grouped.map(([project, tasks], idx) => {
+          const isCollapsed = collapsed.has(project);
+          const toggleCollapse = () =>
+            setCollapsed((prev) => {
+              const next = new Set(prev);
+              if (next.has(project)) next.delete(project);
+              else next.add(project);
+              return next;
+            });
+          return (
           <div key={project} className="mb-4">
-            <div className="flex items-center px-4 py-1 text-xs font-semibold uppercase tracking-wider text-gray-500">
-              <FolderIcon />
-              {project}
+            <div className="group flex items-center justify-between px-4 py-1 text-xs font-semibold uppercase tracking-wider text-gray-500">
+              <button
+                type="button"
+                onClick={toggleCollapse}
+                className="flex flex-1 items-center overflow-hidden"
+                aria-expanded={!isCollapsed}
+                title={isCollapsed ? "Expand" : "Collapse"}
+              >
+                <ChevronIcon
+                  className={`mr-1 h-3 w-3 shrink-0 transition-transform ${
+                    isCollapsed ? "-rotate-90" : ""
+                  }`}
+                />
+                <FolderIcon />
+                <span className="truncate">{project}</span>
+              </button>
+              <span className="flex items-center space-x-1 opacity-0 transition-opacity group-hover:opacity-100">
+                <button
+                  type="button"
+                  aria-label="Move project up"
+                  title="Move up"
+                  disabled={idx === 0}
+                  onClick={() => moveProject(project, -1)}
+                  className="text-gray-500 hover:text-gray-200 disabled:cursor-not-allowed disabled:opacity-30"
+                >
+                  <ChevronUpMiniIcon />
+                </button>
+                <button
+                  type="button"
+                  aria-label="Move project down"
+                  title="Move down"
+                  disabled={idx === grouped.length - 1}
+                  onClick={() => moveProject(project, 1)}
+                  className="text-gray-500 hover:text-gray-200 disabled:cursor-not-allowed disabled:opacity-30"
+                >
+                  <ChevronDownMiniIcon />
+                </button>
+                <span className="mx-1 h-3 w-px bg-[#3a3a3a]" />
+                <button
+                  type="button"
+                  aria-label="New task in project"
+                  title="New task"
+                  onClick={() => onNewInProject?.(project)}
+                  className="text-gray-500 hover:text-gray-200"
+                >
+                  <PlusMiniIcon />
+                </button>
+                <button
+                  type="button"
+                  aria-label="Delete project"
+                  title="Delete"
+                  onClick={() => onDeleteProject?.(project)}
+                  className="text-gray-500 hover:text-red-400"
+                >
+                  <TrashIcon />
+                </button>
+              </span>
             </div>
+            {!isCollapsed && (() => {
+              const LIMIT = 5;
+              const isExpanded = expanded.has(project);
+              const visible = isExpanded ? tasks : tasks.slice(0, LIMIT);
+              const hiddenCount = tasks.length - LIMIT;
+              return (
+            <>
             <div className="space-y-0.5">
-              {tasks.map((t) => {
+              {visible.map((t) => {
                 const isActive = t.id === activeSessionId;
+                const activity = sessionActivity[t.id];
                 return (
-                  <button
+                  <div
                     key={t.id}
                     onClick={() => onSelect(t.id)}
-                    className={`flex w-full justify-between rounded-r-full px-6 py-1.5 text-left text-sm ${
+                    className={`group flex w-full cursor-pointer items-center justify-between rounded-r-full px-6 py-1.5 text-left text-sm ${
                       isActive
                         ? "mr-2 bg-[#3a3a3a] text-gray-200"
                         : "text-gray-400 hover:bg-[#2a2a2a] hover:text-gray-200"
                     }`}
                   >
                     <span className="truncate">{t.title}</span>
-                    <span className="ml-2 shrink-0 text-xs text-gray-500">
-                      {timeAgo(t.updatedAt)}
+                    <span className="relative ml-2 flex shrink-0 items-center gap-1.5">
+                      {activity === "processing" ? (
+                        <span
+                          role="status"
+                          aria-label="Agent processing"
+                          title="Agent processing"
+                          className="inline-block h-3 w-3 animate-spin rounded-full border border-gray-400 border-t-transparent"
+                        />
+                      ) : activity === "done" ? (
+                        <span
+                          role="status"
+                          aria-label="Turn complete"
+                          title="Turn complete"
+                          className="inline-block h-2 w-2 rounded-full bg-blue-500"
+                        />
+                      ) : (
+                        <>
+                          <span className="text-xs text-gray-500 group-hover:opacity-0">
+                            {timeAgo(t.updatedAt)}
+                          </span>
+                          <button
+                            type="button"
+                            aria-label="Delete session"
+                            title="Delete"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onDeleteSession?.(t.id);
+                            }}
+                            className="absolute right-0 text-gray-500 opacity-0 transition-opacity hover:text-red-400 group-hover:opacity-100"
+                          >
+                            <TrashMiniIcon />
+                          </button>
+                        </>
+                      )}
                     </span>
-                  </button>
+                  </div>
                 );
               })}
             </div>
+            {hiddenCount > 0 && (
+              <button
+                type="button"
+                onClick={() =>
+                  setExpanded((prev) => {
+                    const next = new Set(prev);
+                    if (next.has(project)) next.delete(project);
+                    else next.add(project);
+                    return next;
+                  })
+                }
+                className="ml-6 mt-0.5 text-xs text-gray-500 hover:text-gray-300"
+              >
+                {isExpanded ? "Show less" : `Show more (${hiddenCount})`}
+              </button>
+            )}
+            </>
+            );
+            })()}
           </div>
-        ))}
+          );
+        })}
       </div>
 
       <div className="flex items-center justify-between border-t border-[#2e2e2e] p-4">
@@ -186,6 +373,42 @@ const s = {
 const PlusIcon = () => (
   <svg {...s}>
     <path d="M12 4v16m8-8H4" />
+  </svg>
+);
+const PlusMiniIcon = () => (
+  <svg {...s} className="h-3.5 w-3.5">
+    <path d="M12 5v14M5 12h14" />
+  </svg>
+);
+const ChevronUpMiniIcon = () => (
+  <svg {...s} className="h-3.5 w-3.5">
+    <path d="M18 15l-6-6-6 6" />
+  </svg>
+);
+const ChevronDownMiniIcon = () => (
+  <svg {...s} className="h-3.5 w-3.5">
+    <path d="M6 9l6 6 6-6" />
+  </svg>
+);
+const TrashMiniIcon = () => (
+  <svg {...s} className="h-3.5 w-3.5">
+    <path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2" />
+  </svg>
+);
+const ChevronIcon = ({ className }: { className?: string }) => (
+  <svg
+    {...s}
+    className={className}
+    fill="none"
+    stroke="currentColor"
+    viewBox="0 0 24 24"
+  >
+    <path d="M6 9l6 6 6-6" />
+  </svg>
+);
+const TrashIcon = () => (
+  <svg {...s} className="h-3.5 w-3.5">
+    <path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2" />
   </svg>
 );
 const SearchIcon = () => (

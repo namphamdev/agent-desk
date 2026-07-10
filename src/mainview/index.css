@@ -87,12 +87,46 @@ body,
 #root {
   height: 100%;
   width: 100%;
+  min-height: 0;
+}
+
+/* Electrobun custom titlebar: drag / no-drag regions */
+.electrobun-webkit-app-region-drag {
+  -webkit-app-region: drag;
+  app-region: drag;
+}
+.electrobun-webkit-app-region-no-drag {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+/* Transparent host so rounded window corners show desktop behind them. */
+html,
+body {
+  background: transparent;
 }
 
 body {
   font-family: "Inter", system-ui, sans-serif;
-  background-color: var(--bg-app);
   color: var(--text);
+}
+
+/* Ensure the React tree fills the Electrobun/webview viewport. */
+#root {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: 8px;
+  background-color: var(--bg-app);
+  border: 1px solid var(--border);
+  box-sizing: border-box;
+}
+
+/* App shell clips children to the rounded window. */
+.app-shell {
+  border-radius: 8px;
+  overflow: hidden;
+  background-color: var(--bg-app);
 }
 
 .sidebar-bg {
@@ -197,7 +231,25 @@ body {
   border: 1px solid var(--border);
   background: var(--code-bg);
 }
-.prose-chat pre code.hljs {
+/* Nested pre inside .code-block already has outer chrome. */
+.prose-chat .code-block pre {
+  margin: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+}
+
+/*
+ * Legend List hides the item layer (opacity:0) until readyToRender.
+ * If initial layout stalls, messages never appear — only ListHeader ("Ready").
+ * Force visibility; absolute positioning still works for virtualization.
+ */
+.legend-list-content-container > div {
+  opacity: 1 !important;
+  pointer-events: auto !important;
+}
+.prose-chat pre code.hljs,
+.prose-chat .code-block pre code.hljs {
   display: block;
   padding: 1rem;
   overflow-x: auto;

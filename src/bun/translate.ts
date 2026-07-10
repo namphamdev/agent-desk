@@ -20,6 +20,7 @@ import type {
   ToolCallStatus,
   ToolKind,
 } from "../session/types";
+import type { SessionConfigOption } from "../shared/rpc";
 
 function translateContent(block: WireContent): ContentBlock | null {
   switch (block.type) {
@@ -197,6 +198,9 @@ export function translateSessionUpdate(
     case "available_commands_update":
       // Handled separately by the session manager (not a timeline entry).
       return null;
+    case "config_option_update":
+      // Handled separately by the session manager (prompt-bar selectors).
+      return null;
     default:
       return null;
   }
@@ -212,4 +216,86 @@ export function translateAvailableCommands(
       ? { hint: "hint" in c.input ? (c.input as { hint?: string }).hint : undefined }
       : undefined,
   }));
+}
+
+/** Loose wire shape — ACP SDK SessionConfigOption is a complex intersection. */
+type WireConfigOptionLike = {
+  id?: string;
+  name?: string;
+  description?: string | null;
+  category?: string | null;
+  type?: string;
+  currentValue?: string | boolean;
+  options?: Array<
+    | { value: string; name: string; description?: string | null }
+    | {
+        group: string;
+        name: string;
+        options?: Array<{
+          value: string;
+          name: string;
+          description?: string | null;
+        }>;
+      }
+  > | null;
+};
+
+function flattenSelectOptions(
+  options: WireConfigOptionLike["options"],
+): Array<{ value: string; name: string; description?: string }> {
+  if (!options?.length) return [];
+  const out: Array<{ value: string; name: string; description?: string }> = [];
+  for (const entry of options) {
+    if (entry && typeof entry === "object" && "group" in entry) {
+      for (const opt of entry.options ?? []) {
+        out.push({
+          value: opt.value,
+          name: opt.name,
+          description: opt.description ?? undefined,
+        });
+      }
+    } else if (entry && typeof entry === "object" && "value" in entry) {
+      out.push({
+        value: entry.value,
+        name: entry.name,
+        description: entry.description ?? undefined,
+      });
+    }
+  }
+  return out;
+}
+
+/** Map wire ACP config options into the shared UI type. */
+export function translateConfigOptions(
+  options: readonly WireConfigOptionLike[] | null | undefined,
+): SessionConfigOption[] {
+  if (!options?.length) return [];
+  const out: SessionConfigOption[] = [];
+  for (const opt of options) {
+    if (!opt?.id || !opt?.name) continue;
+    if (opt.type === "boolean") {
+      out.push({
+        id: opt.id,
+        name: opt.name,
+        description: opt.description ?? undefined,
+        category: opt.category ?? null,
+        type: "boolean",
+        currentValue: Boolean(opt.currentValue),
+      });
+      continue;
+    }
+    // Default / select — agents may omit type for select historically.
+    if (opt.type === "select" || !opt.type || opt.options) {
+      out.push({
+        id: opt.id,
+        name: opt.name,
+        description: opt.description ?? undefined,
+        category: opt.category ?? null,
+        type: "select",
+        currentValue: String(opt.currentValue ?? ""),
+        options: flattenSelectOptions(opt.options),
+      });
+    }
+  }
+  return out;
 }

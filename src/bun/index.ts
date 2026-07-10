@@ -2,6 +2,11 @@ import { BrowserView, BrowserWindow, Updater, Utils } from "electrobun/bun";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import type { TerminalRPC } from "../shared/rpc";
+import {
+  notifyTurnComplete,
+  showDesktopNotification,
+  showNotificationsEnabledToast,
+} from "./notify";
 import { SessionManager } from "./session-manager";
 
 async function pickFolderDialog(startingFolder?: string): Promise<
@@ -104,7 +109,24 @@ const terminalRPC = BrowserView.defineRPC<TerminalRPC>({
         return manager.getSettings();
       },
       saveSettings: async (patch) => {
-        return manager.saveSettings(patch);
+        const before = manager.getSettings();
+        const next = manager.saveSettings(patch);
+        // First enable → sample banner (macOS prompts for notification permission here).
+        if (next.enableNotifications && !before.enableNotifications) {
+          showNotificationsEnabledToast();
+        }
+        return next;
+      },
+      showDesktopNotification: async (params) => {
+        const ok = showDesktopNotification({
+          title: params.title,
+          body: params.body,
+          subtitle: params.subtitle,
+          silent: params.silent,
+        });
+        return ok
+          ? { ok: true as const }
+          : { ok: false as const, error: "Failed to show notification" };
       },
       getConnectionState: async () => {
         return manager.getConnectionState();
@@ -117,6 +139,63 @@ const terminalRPC = BrowserView.defineRPC<TerminalRPC>({
       },
       listRecentProjects: async () => {
         return { projects: manager.listRecentProjects() };
+      },
+      removeRecentProject: async ({ cwd }) => {
+        const projects = manager.removeRecentProject(cwd);
+        return { ok: true as const, projects };
+      },
+      writeClipboard: async ({ text }) => {
+        try {
+          const value = text ?? "";
+          Utils.clipboardWriteText(value);
+          // Verify the write landed (some sandboxed builds no-op).
+          const readBack = Utils.clipboardReadText();
+          if (readBack !== value) {
+            console.warn(
+              "[clipboard] write/read mismatch",
+              { wrote: value.length, read: readBack?.length ?? null },
+            );
+          } else {
+            console.info("[clipboard] bun wrote", value.length, "chars");
+          }
+          return { ok: true as const };
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          console.warn("[clipboard] bun write error:", message);
+          return { ok: false as const, error: message };
+        }
+      },
+      getGitBranch: async ({ cwd }) => {
+        return manager.getGitBranch(cwd);
+      },
+      setConfigOption: async ({ sessionId, configId, value }) => {
+        return manager.setConfigOption(configId, value, sessionId);
+      },
+      windowControl: async ({ action }) => {
+        if (!mainWindow) return { ok: false as const, error: "no window" };
+        try {
+          switch (action) {
+            case "close":
+              mainWindow.close();
+              break;
+            case "minimize":
+              mainWindow.minimize();
+              break;
+            case "maximize":
+              if (mainWindow.isMaximized()) {
+                mainWindow.unmaximize();
+              } else {
+                mainWindow.maximize();
+              }
+              break;
+            default:
+              return { ok: false as const, error: `unknown action: ${action}` };
+          }
+          return { ok: true as const };
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          return { ok: false as const, error: message };
+        }
       },
     },
     messages: {},
@@ -136,6 +215,24 @@ manager = new SessionManager(dataDir, {
       rpc()?.send.onTurnEnd({ sessionId, stopReason });
     } catch (err) {
       console.warn("[rpc] onTurnEnd failed:", err);
+    }
+    // Native notification from Bun — Web Notification API is unreliable in WKWebView.
+    try {
+      const settings = manager.getSettings();
+      if (!settings.enableNotifications) return;
+      const sessions = manager.listSessions().sessions;
+      const session = sessions.find((s) => s.id === sessionId);
+      notifyTurnComplete({
+        title: session?.title ? `Done: ${session.title}` : "Task complete",
+        body: session?.project
+          ? `${session.project} · agent finished responding`
+          : "The agent finished responding.",
+        // OS sound when the user wants sound; webview also plays a chime when
+        // notifications are off (see mainview completionAlert).
+        withSound: settings.enableSound,
+      });
+    } catch (err) {
+      console.warn("[notify] turn-end notification failed:", err);
     }
   },
   onConnectionState: (state) => {
@@ -173,9 +270,22 @@ manager = new SessionManager(dataDir, {
       console.warn("[rpc] onMode failed:", err);
     }
   },
-  onSessionLoaded: (session, updates, mode, commands) => {
+  onConfigOptions: (sessionId, configOptions) => {
     try {
-      rpc()?.send.onSessionLoaded({ session, updates, mode, commands });
+      rpc()?.send.onConfigOptions({ sessionId, configOptions });
+    } catch (err) {
+      console.warn("[rpc] onConfigOptions failed:", err);
+    }
+  },
+  onSessionLoaded: (session, updates, mode, commands, configOptions) => {
+    try {
+      rpc()?.send.onSessionLoaded({
+        session,
+        updates,
+        mode,
+        commands,
+        configOptions,
+      });
     } catch (err) {
       console.warn("[rpc] onSessionLoaded failed:", err);
     }
@@ -190,6 +300,10 @@ mainWindow = new BrowserWindow({
   title: "Terminal React",
   url,
   rpc: terminalRPC,
+  // Custom chrome: hide system titlebar; Sidebar traffic lights control the window.
+  // Transparent so CSS can round the window corners (16px shell).
+  titleBarStyle: "hidden",
+  transparent: true,
   frame: {
     width: 1280,
     height: 840,

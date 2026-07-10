@@ -8,10 +8,13 @@ export const DEFAULT_SETTINGS: AppSettings = {
   theme: "dark",
   defaultAgentId: null,
   enableFsCapabilities: false,
+  enableNotifications: true,
+  enableSound: true,
   dataDir: join(homedir(), ".terminal-react"),
   defaultModel: undefined,
   defaultEffort: "High",
   lastProjectCwd: null,
+  dismissedRecentCwds: [],
 };
 
 const SETTINGS_KEY = "app_settings";

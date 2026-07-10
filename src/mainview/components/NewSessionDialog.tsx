@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import type { AgentInfo, RecentProject } from "../../shared/rpc";
+import { Select } from "./Select";
 
 export type NewSessionOptions = {
   cwd: string;
@@ -14,6 +15,7 @@ type Props = {
   defaultCwd: string;
   recentProjects: RecentProject[];
   onPickFolder: (startingFolder?: string) => Promise<string | null>;
+  onRemoveRecent: (cwd: string) => void | Promise<void>;
   onCancel: () => void;
   onCreate: (opts: NewSessionOptions) => void | Promise<void>;
 };
@@ -30,6 +32,7 @@ export function NewSessionDialog({
   defaultCwd,
   recentProjects,
   onPickFolder,
+  onRemoveRecent,
   onCancel,
   onCreate,
 }: Props) {
@@ -161,30 +164,66 @@ export function NewSessionDialog({
               <div className="mb-1.5 text-xs font-medium text-gray-400">
                 Recent projects
               </div>
-              <div className="max-h-36 space-y-0.5 overflow-y-auto rounded-md border border-[#2a2a2a] bg-[#121212] p-1">
+              <div className="max-h-36 space-y-0.5 overflow-x-hidden overflow-y-auto rounded-md border border-[#2a2a2a] bg-[#121212] p-1">
                 {recentProjects.map((p) => {
                   const active = p.cwd === cwd.trim();
                   return (
-                    <button
+                    <div
                       key={p.cwd}
-                      type="button"
-                      onClick={() => {
-                        setCwd(p.cwd);
-                        setError(null);
-                      }}
-                      className={`flex w-full flex-col rounded px-2 py-1.5 text-left ${
+                      className={`group flex min-w-0 items-start gap-1 rounded ${
                         active
                           ? "bg-[#2e2e2e] text-gray-100"
                           : "text-gray-300 hover:bg-[#1e1e1e]"
                       }`}
                     >
-                      <span className="truncate text-xs font-medium">
-                        {p.project}
-                      </span>
-                      <span className="truncate font-mono text-[10px] text-gray-500">
-                        {p.cwd}
-                      </span>
-                    </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setCwd(p.cwd);
+                          setError(null);
+                        }}
+                        className="min-w-0 flex-1 flex flex-col px-2 py-1.5 text-left"
+                      >
+                        <span className="break-words text-xs font-medium">
+                          {p.project}
+                        </span>
+                        <span className="break-all font-mono text-[10px] text-gray-500">
+                          {p.cwd}
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        aria-label={`Remove ${p.project} from recent projects`}
+                        title="Remove from recents"
+                        disabled={busy}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void onRemoveRecent(p.cwd);
+                          if (cwd.trim() === p.cwd) {
+                            setCwd("");
+                          }
+                        }}
+                        className="mt-1.5 mr-1 shrink-0 rounded p-1 text-gray-600 opacity-0 transition-opacity hover:bg-[#2a2a2a] hover:text-gray-200 group-hover:opacity-100 focus:opacity-100 disabled:opacity-40"
+                      >
+                        <svg
+                          width="12"
+                          height="12"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          aria-hidden="true"
+                        >
+                          <path d="M3 6h18" />
+                          <path d="M8 6V4h8v2" />
+                          <path d="M19 6l-1 14H6L5 6" />
+                          <path d="M10 11v6" />
+                          <path d="M14 11v6" />
+                        </svg>
+                      </button>
+                    </div>
                   );
                 })}
               </div>
@@ -208,17 +247,12 @@ export function NewSessionDialog({
               <label className="mb-1 block text-xs font-medium text-gray-400">
                 Agent
               </label>
-              <select
+              <Select
                 value={agentId}
-                onChange={(e) => setAgentId(e.target.value)}
-                className="w-full rounded-md border border-[#333] bg-[#121212] px-2 py-1.5 text-gray-200"
-              >
-                {agents.map((a) => (
-                  <option key={a.id} value={a.id}>
-                    {a.name}
-                  </option>
-                ))}
-              </select>
+                options={agents.map((a) => ({ value: a.id, label: a.name }))}
+                onChange={setAgentId}
+                aria-label="Agent"
+              />
             </div>
           )}
 

@@ -19,9 +19,11 @@ import type {
 import type { AgentInfo } from "../shared/rpc";
 import {
   translateAvailableCommands,
+  translateConfigOptions,
   translateSessionUpdate,
 } from "./translate";
 import type { SessionUpdate } from "../session/types";
+import type { SessionConfigOption } from "../shared/rpc";
 
 export type PermissionHandler = (
   req: RequestPermissionRequest & { requestId: string },
@@ -35,6 +37,7 @@ export type AcpClientHandlers = {
     commands: Array<{ name: string; description?: string; input?: { hint?: string } }>,
   ) => void;
   onMode?: (sessionId: string, mode: string) => void;
+  onConfigOptions?: (sessionId: string, configOptions: SessionConfigOption[]) => void;
   onTurnEnd?: (sessionId: string, stopReason: string) => void;
   onError?: (error: unknown) => void;
   onPermission: PermissionHandler;
@@ -43,8 +46,14 @@ export type AcpClientHandlers = {
 
 export type AcpSessionHandle = {
   sessionId: string;
+  /** Initial config options from session/new (model, thought_level, …). */
+  configOptions: SessionConfigOption[];
   prompt: (text: string) => Promise<{ stopReason: string }>;
   cancel: () => Promise<void>;
+  setConfigOption: (
+    configId: string,
+    value: string | boolean,
+  ) => Promise<SessionConfigOption[]>;
   dispose: () => void;
 };
 
@@ -61,6 +70,31 @@ export class AcpClient {
   constructor(agent: AgentInfo, handlers: AcpClientHandlers) {
     this.agent = agent;
     this.handlers = handlers;
+  }
+
+  /** OS pid of the spawned agent process, if still running. */
+  getPid(): number | null {
+    const proc = this.proc;
+    if (!proc || this.disposed) return null;
+    // Bun sets exitCode once the process has exited.
+    if (proc.exitCode != null) return null;
+    return proc.pid ?? null;
+  }
+
+  /**
+   * Current resident memory of the agent process tree (bytes).
+   * Uses `ps` because Bun's resourceUsage() is only available after exit.
+   * Includes direct descendants — Claude Code / other ACPs often spawn workers.
+   */
+  async sampleMemoryRssBytes(): Promise<number | null> {
+    const pid = this.getPid();
+    if (pid == null) return null;
+    try {
+      return await sampleProcessTreeRssBytes(pid);
+    } catch (err) {
+      console.warn("[acp] memory sample failed:", err);
+      return null;
+    }
   }
 
   async connect(): Promise<void> {
@@ -159,6 +193,13 @@ export class AcpClient {
           readTextFile: !!this.handlers.enableFs,
           writeTextFile: !!this.handlers.enableFs,
         },
+        // Advertise support so agents may include boolean config options and
+        // so we can drive model/thought_level selectors from configOptions.
+        session: {
+          configOptions: {
+            boolean: {},
+          },
+        },
       },
       clientInfo: {
         name: "terminal-react",
@@ -182,15 +223,55 @@ export class AcpClient {
       .start();
     this.active = session;
 
+    // Note: do not fire onConfigOptions/onMode here — the agent session id is
+    // not mapped to a local id until SessionManager.ensureHandle registers it.
+    // Callers apply configOptions from the returned handle.
+    const configOptions = translateConfigOptions(
+      session.newSessionResponse.configOptions,
+    );
+
     return {
       sessionId: session.sessionId,
+      configOptions,
       prompt: (text) => this.promptLive(session, text),
       cancel: () => this.cancelLive(session.sessionId),
+      setConfigOption: (configId, value) =>
+        this.setConfigOptionLive(session.sessionId, configId, value),
       dispose: () => {
         session.dispose();
         if (this.active === session) this.active = null;
       },
     };
+  }
+
+  private async setConfigOptionLive(
+    sessionId: string,
+    configId: string,
+    value: string | boolean,
+  ): Promise<SessionConfigOption[]> {
+    if (!this.ctx) throw new Error("not connected");
+    const params =
+      typeof value === "boolean"
+        ? {
+            sessionId,
+            configId,
+            type: "boolean" as const,
+            value,
+          }
+        : {
+            sessionId,
+            configId,
+            value,
+          };
+    const result = await this.ctx.request<
+      { configOptions: Array<Record<string, unknown>> },
+      typeof params
+    >(acp.methods.agent.session.setConfigOption, params);
+    const configOptions = translateConfigOptions(
+      result.configOptions as Parameters<typeof translateConfigOptions>[0],
+    );
+    this.handlers.onConfigOptions?.(sessionId, configOptions);
+    return configOptions;
   }
 
   private async promptLive(
@@ -224,6 +305,11 @@ export class AcpClient {
     if (update.sessionUpdate === "available_commands_update") {
       const commands = translateAvailableCommands(update);
       this.handlers.onCommands?.(sessionId, commands);
+      return;
+    }
+    if (update.sessionUpdate === "config_option_update") {
+      const configOptions = translateConfigOptions(update.configOptions);
+      this.handlers.onConfigOptions?.(sessionId, configOptions);
       return;
     }
     if (update.sessionUpdate === "current_mode_update") {
@@ -297,6 +383,69 @@ export class AcpClient {
       /* ignore */
     }
   }
+}
+
+/**
+ * Sum RSS for `rootPid` and its descendant processes (KB from `ps` → bytes).
+ * Caps the walk so a pathological process tree can't hang the poll loop.
+ */
+async function sampleProcessTreeRssBytes(rootPid: number): Promise<number | null> {
+  const pids = await collectDescendantPids(rootPid, 64);
+  if (pids.length === 0) return null;
+
+  // `ps -o rss=` prints one RSS (kilobytes) per pid, space/newline separated.
+  const proc = spawn({
+    cmd: ["ps", "-o", "rss=", "-p", pids.join(",")],
+    stdout: "pipe",
+    stderr: "ignore",
+    stdin: "ignore",
+  });
+  const out = await new Response(proc.stdout).text();
+  await proc.exited;
+
+  let totalKb = 0;
+  let sawAny = false;
+  for (const token of out.trim().split(/\s+/)) {
+    if (!token) continue;
+    const kb = Number.parseInt(token, 10);
+    if (!Number.isFinite(kb) || kb < 0) continue;
+    totalKb += kb;
+    sawAny = true;
+  }
+  return sawAny ? totalKb * 1024 : null;
+}
+
+async function collectDescendantPids(
+  rootPid: number,
+  maxPids: number,
+): Promise<number[]> {
+  const result: number[] = [rootPid];
+  const queue = [rootPid];
+  const seen = new Set<number>([rootPid]);
+
+  while (queue.length > 0 && result.length < maxPids) {
+    const parent = queue.shift()!;
+    // Prefer pgrep -P (children of parent). Available on macOS + most Linux.
+    const proc = spawn({
+      cmd: ["pgrep", "-P", String(parent)],
+      stdout: "pipe",
+      stderr: "ignore",
+      stdin: "ignore",
+    });
+    const out = await new Response(proc.stdout).text();
+    await proc.exited;
+    for (const token of out.trim().split(/\s+/)) {
+      if (!token) continue;
+      const child = Number.parseInt(token, 10);
+      if (!Number.isFinite(child) || seen.has(child)) continue;
+      seen.add(child);
+      result.push(child);
+      queue.push(child);
+      if (result.length >= maxPids) break;
+    }
+  }
+
+  return result;
 }
 
 // Silence unused import warnings when node stream adapters aren't needed.

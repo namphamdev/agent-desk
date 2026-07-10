@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,22 +8,58 @@ import type {
   AvailableCommand,
   ConnectionStatePayload,
   PermissionRequest,
+  SessionConfigOption,
   SessionSummary,
 } from "../shared/rpc";
 import { demoUpdates } from "../fixtures/demo";
 
+const mockConfigOptions: SessionConfigOption[] = [
+  {
+    id: "model",
+    name: "Model",
+    category: "model",
+    type: "select",
+    currentValue: "model-a",
+    options: [
+      { value: "model-a", name: "Model A" },
+      { value: "model-b", name: "Model B" },
+    ],
+  },
+  {
+    id: "thought_level",
+    name: "Effort",
+    category: "thought_level",
+    type: "select",
+    currentValue: "high",
+    options: [
+      { value: "high", name: "High" },
+      { value: "medium", name: "Medium" },
+      { value: "low", name: "Low" },
+    ],
+  },
+];
+
 vi.mock("./acp-client", () => {
+  let mockSessionSeq = 0;
   class AcpClient {
     agent: { id: string; name: string };
     handlers: {
       onUpdate: (sessionId: string, update: SessionUpdate) => void;
       onTurnEnd?: (sessionId: string, stopReason: string) => void;
+      onConfigOptions?: (
+        sessionId: string,
+        configOptions: SessionConfigOption[],
+      ) => void;
     };
     constructor(
       agent: { id: string; name: string },
       handlers: {
         onUpdate: (sessionId: string, update: SessionUpdate) => void;
         onTurnEnd?: (sessionId: string, stopReason: string) => void;
+        onConfigOptions?: (
+          sessionId: string,
+          configOptions: SessionConfigOption[],
+        ) => void;
       },
     ) {
       this.agent = agent;
@@ -31,12 +67,25 @@ vi.mock("./acp-client", () => {
     }
     async connect() {}
     async dispose() {}
+    getPid() {
+      return null;
+    }
+    async sampleMemoryRssBytes() {
+      return null;
+    }
     async openSession(_cwd: string) {
-      const sessionId = `mock-${Date.now()}`;
+      // Unique per open — Date.now() collides when sessions open in the same ms.
+      const sessionId = `mock-${++mockSessionSeq}-${Date.now()}`;
       const h = this.handlers;
       let cancelled = false;
+      const configOptions = mockConfigOptions.map((o) =>
+        o.type === "select"
+          ? { ...o, options: o.options.map((opt) => ({ ...opt })) }
+          : { ...o },
+      );
       return {
         sessionId,
+        configOptions,
         async prompt(text: string) {
           cancelled = false;
           h.onUpdate(sessionId, {
@@ -55,8 +104,24 @@ vi.mock("./acp-client", () => {
           h.onTurnEnd?.(sessionId, "end_turn");
           return { stopReason: "end_turn" };
         },
-        async cancel() { cancelled = true; },
-        dispose() { cancelled = true; },
+        async cancel() {
+          cancelled = true;
+        },
+        async setConfigOption(configId: string, value: string | boolean) {
+          for (const opt of configOptions) {
+            if (opt.id !== configId) continue;
+            if (opt.type === "select" && typeof value === "string") {
+              opt.currentValue = value;
+            } else if (opt.type === "boolean" && typeof value === "boolean") {
+              opt.currentValue = value;
+            }
+          }
+          h.onConfigOptions?.(sessionId, configOptions);
+          return configOptions;
+        },
+        dispose() {
+          cancelled = true;
+        },
       };
     }
   }
@@ -78,9 +143,14 @@ type Captured = {
     updates: SessionUpdate[];
     mode: string;
     commands: AvailableCommand[];
+    configOptions?: SessionConfigOption[];
   }>;
   commands: Array<{ sessionId: string; commands: AvailableCommand[] }>;
   modes: Array<{ sessionId: string; mode: string }>;
+  configOptions: Array<{
+    sessionId: string;
+    configOptions: SessionConfigOption[];
+  }>;
   events: SessionManagerEvents;
 };
 
@@ -94,6 +164,7 @@ function capture(): Captured {
     loaded: [],
     commands: [],
     modes: [],
+    configOptions: [],
     events: {
       onUpdate: (sessionId, update) => c.updates.push({ sessionId, update }),
       onTurnEnd: (sessionId, stopReason) =>
@@ -105,8 +176,10 @@ function capture(): Captured {
       onCommands: (sessionId, commands) =>
         c.commands.push({ sessionId, commands }),
       onMode: (sessionId, mode) => c.modes.push({ sessionId, mode }),
-      onSessionLoaded: (session, updates, mode, commands) =>
-        c.loaded.push({ session, updates, mode, commands }),
+      onConfigOptions: (sessionId, configOptions) =>
+        c.configOptions.push({ sessionId, configOptions }),
+      onSessionLoaded: (session, updates, mode, commands, configOptions) =>
+        c.loaded.push({ session, updates, mode, commands, configOptions }),
     },
   };
   return c;
@@ -196,6 +269,48 @@ describe("SessionManager", () => {
     expect(c.loaded.some((l) => l.session.id === res.session.id)).toBe(true);
     const ready = c.connections.find((x) => x.status === "ready");
     expect(ready?.sessionId).toBe(res.session.id);
+
+    // ACP config options (model list) should surface from session/new.
+    const loaded = c.loaded.find((l) => l.session.id === res.session.id);
+    expect(loaded?.configOptions?.some((o) => o.category === "model")).toBe(
+      true,
+    );
+    expect(c.configOptions.some((e) => e.sessionId === res.session.id)).toBe(
+      true,
+    );
+  });
+
+  it("setConfigOption updates model selection from ACP", async () => {
+    const { mgr, c, agentId } = await boot();
+    const created = await mgr.createSession({ agentId });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    const res = await mgr.setConfigOption(
+      "model",
+      "model-b",
+      created.session.id,
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+
+    const model = res.configOptions.find((o) => o.id === "model");
+    expect(model?.type).toBe("select");
+    if (model?.type === "select") {
+      expect(model.currentValue).toBe("model-b");
+    }
+    expect(
+      c.configOptions.some(
+        (e) =>
+          e.sessionId === created.session.id &&
+          e.configOptions.some(
+            (o) =>
+              o.id === "model" &&
+              o.type === "select" &&
+              o.currentValue === "model-b",
+          ),
+      ),
+    ).toBe(true);
   });
 
   it("createSession rejects missing folders", async () => {
@@ -225,6 +340,23 @@ describe("SessionManager", () => {
     expect(new Set(projects.map((p) => p.cwd)).size).toBe(projects.length);
   });
 
+  it("removeRecentProject hides a cwd until it is used again", async () => {
+    const { mgr, agentId } = await boot();
+    const cwd = process.cwd();
+    const other = tempDir();
+    dirs.push(other);
+    await mgr.createSession({ title: "A", cwd, agentId });
+    await mgr.createSession({ title: "B", cwd: other, agentId });
+
+    const afterRemove = mgr.removeRecentProject(cwd);
+    expect(afterRemove.map((p) => p.cwd)).not.toContain(cwd);
+    expect(afterRemove.map((p) => p.cwd)).toContain(other);
+
+    // Creating another session in that folder restores it to recents.
+    await mgr.createSession({ title: "C", cwd, agentId });
+    expect(mgr.listRecentProjects().map((p) => p.cwd)).toContain(cwd);
+  });
+
   it("sendPrompt streams updates and ends the turn", async () => {
     const { mgr, c, agentId } = await boot();
     const created = await mgr.createSession({ agentId });
@@ -244,12 +376,25 @@ describe("SessionManager", () => {
     );
 
     expect(c.updates.length).toBeGreaterThan(5);
+    // The user message is persisted by sendPrompt, NOT emitted on the stream
+    // (the UI shows it optimistically; emitting would duplicate it). The mock
+    // agent also echoes a user_message_chunk, which onUpdate must skip.
     const types = c.updates.map((u) => u.update.sessionUpdate);
-    expect(types).toContain("user_message_chunk");
+    expect(types).not.toContain("user_message_chunk");
     expect(types).toContain("plan");
     expect(types).toContain("tool_call");
     expect(types).toContain("agent_message_chunk");
     expect(types).toContain("tool_call_update");
+    // ...but it must survive a reload from the store.
+    const reloaded = mgr["store"].loadEvents(created.session.id);
+    expect(
+      reloaded.some(
+        (u) =>
+          u.sessionUpdate === "user_message_chunk" &&
+          u.content.type === "text" &&
+          u.content.text === "How does progress work?",
+      ),
+    ).toBe(true);
 
     // Title auto-updates from the first user prompt when default title.
     const list = mgr.listSessions();
@@ -290,6 +435,28 @@ describe("SessionManager", () => {
     expect(
       load!.updates.some((u) => u.sessionUpdate === "user_message_chunk"),
     ).toBe(true);
+  });
+
+  it("switchSession emits history before agent prepare finishes", async () => {
+    const { mgr, c, agentId } = await boot();
+    const a = await mgr.createSession({ title: "A", agentId });
+    const b = await mgr.createSession({ title: "B", agentId });
+    expect(a.ok && b.ok).toBe(true);
+    if (!a.ok || !b.ok) return;
+
+    await mgr.sendPrompt("history for A", a.session.id);
+    await waitFor(() =>
+      c.turnEnds.some((t) => t.sessionId === a.session.id),
+    );
+
+    c.loaded.length = 0;
+    const switched = await mgr.switchSession(a.session.id);
+    expect(switched.ok).toBe(true);
+
+    // History must already be delivered when switchSession resolves (not after
+    // a multi-second agent reconnect/openSession).
+    expect(c.loaded.some((l) => l.session.id === a.session.id)).toBe(true);
+    expect(mgr.listSessions().activeSessionId).toBe(a.session.id);
   });
 
   it("deleteSession removes it and activates another when needed", async () => {
