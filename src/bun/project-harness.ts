@@ -1,16 +1,20 @@
 /**
- * Project AI Harness — per-project agent optimizations (CLAUDE.md, skills, …).
+ * Project AI Harness — per-project agent optimizations (AGENTS.md, CLAUDE.md, skills, …).
  *
  * First optimization: Karpathy guidelines
  * https://github.com/multica-ai/andrej-karpathy-skills
  */
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
   readFileSync,
+  readlinkSync,
+  rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 
 export type HarnessOptimizationId = "karpathy-guidelines";
 
@@ -59,11 +63,14 @@ const KARPATHY_MARKERS = [
   "## 4. Goal-Driven Execution",
 ] as const;
 
+/** Claude Code import pointer — full guidelines live in AGENTS.md. */
+export const CLAUDE_MD_AGENTS_REF = "@AGENTS.md";
+
 /**
- * Canonical CLAUDE.md body from andrej-karpathy-skills (embedded for offline apply).
+ * Canonical AGENTS.md body from andrej-karpathy-skills (embedded for offline apply).
  * Keep in sync with https://raw.githubusercontent.com/multica-ai/andrej-karpathy-skills/main/CLAUDE.md
  */
-export const KARPATHY_CLAUDE_MD = `# CLAUDE.md
+export const KARPATHY_AGENTS_MD = `# AGENTS.md
 
 Behavioral guidelines to reduce common LLM coding mistakes. Merge with project-specific instructions as needed.
 
@@ -207,6 +214,11 @@ export function containsKarpathyGuidelines(text: string): boolean {
   return KARPATHY_MARKERS.every((m) => text.includes(m));
 }
 
+/** True when CLAUDE.md already points at AGENTS.md. */
+export function containsAgentsMdRef(text: string): boolean {
+  return /@AGENTS\.md\b/i.test(text);
+}
+
 function fileExists(path: string): boolean {
   try {
     return existsSync(path);
@@ -224,23 +236,67 @@ function readText(path: string): string | null {
   }
 }
 
-function claudeMdPaths(cwd: string): string[] {
-  return [join(cwd, "CLAUDE.md"), join(cwd, ".claude", "CLAUDE.md")];
+function agentsMdPath(cwd: string): string {
+  return join(cwd, "AGENTS.md");
 }
 
-function findClaudeMd(cwd: string): { path: string; content: string } | null {
-  for (const p of claudeMdPaths(cwd)) {
-    const content = readText(p);
-    if (content != null) return { path: p, content };
+function claudeMdPath(cwd: string): string {
+  return join(cwd, "CLAUDE.md");
+}
+
+const SKILL_ID = "karpathy-guidelines";
+
+function agentsSkillDir(cwd: string): string {
+  return join(cwd, ".agents", "skills", SKILL_ID);
+}
+
+function claudeSkillDir(cwd: string): string {
+  return join(cwd, ".claude", "skills", SKILL_ID);
+}
+
+function isSkillPresent(skillDir: string): boolean {
+  const skillMd = join(skillDir, "SKILL.md");
+  const content = readText(skillMd);
+  return !!(
+    content &&
+    (containsKarpathyGuidelines(content) ||
+      content.includes(`name: ${SKILL_ID}`))
+  );
+}
+
+/**
+ * Point `.claude/skills/<id>` at the canonical `.agents/skills/<id>` tree.
+ * Replaces a prior real copy (duplicate) with a symlink.
+ */
+export function ensureClaudeSkillSymlink(
+  agentsDir: string,
+  claudeDir: string,
+): { ok: true; changed: boolean } | { ok: false; error: string } {
+  try {
+    mkdirSync(dirname(claudeDir), { recursive: true });
+    const target = resolve(agentsDir);
+    try {
+      const st = lstatSync(claudeDir);
+      if (st.isSymbolicLink()) {
+        const current = resolve(dirname(claudeDir), readlinkSync(claudeDir));
+        if (current === target) return { ok: true, changed: false };
+        rmSync(claudeDir, { force: true, recursive: true });
+      } else {
+        // Real dir/file from an older install — remove so we don't keep a duplicate.
+        rmSync(claudeDir, { force: true, recursive: true });
+      }
+    } catch {
+      /* does not exist */
+    }
+    // Relative to the symlink's parent (`.claude/skills/`): up to project root.
+    //   .claude/skills/karpathy-guidelines → ../../.agents/skills/karpathy-guidelines
+    const rel = join("..", "..", ".agents", "skills", SKILL_ID);
+    symlinkSync(rel, claudeDir);
+    return { ok: true, changed: true };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { ok: false, error: message };
   }
-  return null;
-}
-
-function skillDirCandidates(cwd: string): string[] {
-  return [
-    join(cwd, ".agents", "skills", "karpathy-guidelines"),
-    join(cwd, ".claude", "skills", "karpathy-guidelines"),
-  ];
 }
 
 function detectKarpathy(cwd: string): {
@@ -248,29 +304,36 @@ function detectKarpathy(cwd: string): {
   details: string | null;
 } {
   const labels: string[] = [];
-  const rootClaude = readText(join(cwd, "CLAUDE.md"));
-  const nestedClaude = readText(join(cwd, ".claude", "CLAUDE.md"));
-  if (rootClaude && containsKarpathyGuidelines(rootClaude)) {
-    labels.push("CLAUDE.md");
-  }
-  if (nestedClaude && containsKarpathyGuidelines(nestedClaude)) {
-    labels.push(".claude/CLAUDE.md");
+
+  const agentsMd = readText(agentsMdPath(cwd));
+  if (agentsMd && containsKarpathyGuidelines(agentsMd)) {
+    labels.push("AGENTS.md");
   }
 
-  for (const dir of skillDirCandidates(cwd)) {
-    const skillMd = join(dir, "SKILL.md");
-    const content = readText(skillMd);
-    if (
-      content &&
-      (containsKarpathyGuidelines(content) ||
-        content.includes("name: karpathy-guidelines"))
-    ) {
-      if (dir.includes(join(".agents", "skills"))) {
-        labels.push(".agents/skills/karpathy-guidelines");
-      } else {
-        labels.push(".claude/skills/karpathy-guidelines");
-      }
+  const claudeMd = readText(claudeMdPath(cwd));
+  if (claudeMd && containsAgentsMdRef(claudeMd)) {
+    labels.push("CLAUDE.md → @AGENTS.md");
+  } else if (claudeMd && containsKarpathyGuidelines(claudeMd)) {
+    // Legacy: full guidelines were inlined into CLAUDE.md.
+    labels.push("CLAUDE.md (legacy inline)");
+  }
+
+  const agentsDir = agentsSkillDir(cwd);
+  const claudeDir = claudeSkillDir(cwd);
+  if (isSkillPresent(agentsDir)) {
+    labels.push(`.agents/skills/${SKILL_ID}`);
+  }
+
+  try {
+    const st = lstatSync(claudeDir);
+    if (st.isSymbolicLink() && isSkillPresent(claudeDir)) {
+      labels.push(`.claude/skills/${SKILL_ID} → .agents`);
+    } else if (isSkillPresent(claudeDir)) {
+      // Standalone copy (legacy) — still counts as applied.
+      labels.push(`.claude/skills/${SKILL_ID}`);
     }
+  } catch {
+    /* missing */
   }
 
   if (labels.length === 0) {
@@ -314,12 +377,8 @@ export function getProjectHarness(
     };
   }
 
-  const hasClaudeMd =
-    fileExists(join(resolved, "CLAUDE.md")) ||
-    fileExists(join(resolved, ".claude", "CLAUDE.md"));
-  const hasAgentsMd =
-    fileExists(join(resolved, "AGENTS.md")) ||
-    fileExists(join(resolved, "Claude.md"));
+  const hasClaudeMd = fileExists(claudeMdPath(resolved));
+  const hasAgentsMd = fileExists(agentsMdPath(resolved));
 
   const karpathy = detectKarpathy(resolved);
   const optimizations: HarnessOptimization[] = [
@@ -348,7 +407,8 @@ export function getProjectHarness(
 
 /**
  * Apply a harness optimization to the project.
- * Karpathy: write/append CLAUDE.md + install project skill under .agents/skills.
+ * Karpathy: write/append AGENTS.md, ensure CLAUDE.md references @AGENTS.md,
+ * install project skill under .agents/skills (+ symlink into .claude/skills).
  */
 export function applyProjectHarness(
   cwd: string,
@@ -368,46 +428,55 @@ export function applyProjectHarness(
   const written: string[] = [];
 
   try {
-    // 1) CLAUDE.md at project root (Claude Code loads this via project settings).
-    const claudePath = join(root, "CLAUDE.md");
-    const existing = findClaudeMd(root);
-    if (!existing) {
-      writeFileSync(claudePath, KARPATHY_CLAUDE_MD, "utf8");
-      written.push("CLAUDE.md");
-    } else if (!containsKarpathyGuidelines(existing.content)) {
-      const sep = existing.content.endsWith("\n") ? "\n" : "\n\n";
-      const next = `${existing.content}${sep}${KARPATHY_CLAUDE_MD}`;
-      writeFileSync(existing.path, next, "utf8");
-      written.push(
-        existing.path.includes(join(".claude", "CLAUDE.md"))
-          ? ".claude/CLAUDE.md"
-          : "CLAUDE.md",
+    // 1) Full guidelines in AGENTS.md (shared agent instructions).
+    const agentsPath = agentsMdPath(root);
+    const existingAgents = readText(agentsPath);
+    if (!existingAgents) {
+      writeFileSync(agentsPath, KARPATHY_AGENTS_MD, "utf8");
+      written.push("AGENTS.md");
+    } else if (!containsKarpathyGuidelines(existingAgents)) {
+      const sep = existingAgents.endsWith("\n") ? "\n" : "\n\n";
+      writeFileSync(
+        agentsPath,
+        `${existingAgents}${sep}${KARPATHY_AGENTS_MD}`,
+        "utf8",
       );
+      written.push("AGENTS.md");
     }
 
-    // 2) Project skill so agents that discover skills under .agents/skills also load it.
-    const skillDir = join(root, ".agents", "skills", "karpathy-guidelines");
+    // 2) CLAUDE.md only points at AGENTS.md (Claude Code project memory).
+    const claudePath = claudeMdPath(root);
+    const existingClaude = readText(claudePath);
+    if (!existingClaude) {
+      writeFileSync(claudePath, `${CLAUDE_MD_AGENTS_REF}\n`, "utf8");
+      written.push("CLAUDE.md");
+    } else if (!containsAgentsMdRef(existingClaude)) {
+      const sep = existingClaude.endsWith("\n") ? "" : "\n";
+      // Prefer the import at the top so Claude loads AGENTS.md first.
+      writeFileSync(
+        claudePath,
+        `${CLAUDE_MD_AGENTS_REF}\n${sep}${existingClaude}`,
+        "utf8",
+      );
+      written.push("CLAUDE.md");
+    }
+
+    // 3) Canonical skill under .agents/skills; .claude/skills gets a symlink (no duplicate).
+    const skillDir = agentsSkillDir(root);
     const skillMd = join(skillDir, "SKILL.md");
     mkdirSync(skillDir, { recursive: true });
     const priorSkill = readText(skillMd);
     if (!priorSkill || !containsKarpathyGuidelines(priorSkill)) {
       writeFileSync(skillMd, KARPATHY_SKILL_MD, "utf8");
-      written.push(".agents/skills/karpathy-guidelines/SKILL.md");
+      written.push(`.agents/skills/${SKILL_ID}/SKILL.md`);
     }
 
-    // Mirror into .claude/skills for Claude Code skill discovery.
-    const claudeSkillDir = join(
-      root,
-      ".claude",
-      "skills",
-      "karpathy-guidelines",
-    );
-    const claudeSkillMd = join(claudeSkillDir, "SKILL.md");
-    mkdirSync(claudeSkillDir, { recursive: true });
-    const priorClaudeSkill = readText(claudeSkillMd);
-    if (!priorClaudeSkill || !containsKarpathyGuidelines(priorClaudeSkill)) {
-      writeFileSync(claudeSkillMd, KARPATHY_SKILL_MD, "utf8");
-      written.push(".claude/skills/karpathy-guidelines/SKILL.md");
+    const link = ensureClaudeSkillSymlink(skillDir, claudeSkillDir(root));
+    if (!link.ok) {
+      return { ok: false, error: link.error };
+    }
+    if (link.changed) {
+      written.push(`.claude/skills/${SKILL_ID} → .agents/skills/${SKILL_ID}`);
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

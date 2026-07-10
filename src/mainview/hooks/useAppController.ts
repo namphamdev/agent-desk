@@ -19,6 +19,7 @@ import type {
   SessionSummary,
   SessionUsage,
   SkillInfo,
+  ProjectHarness,
 } from "../../shared/rpc";
 import type { NewSessionOptions } from "../components/NewSessionDialog";
 import {
@@ -72,6 +73,12 @@ export function useAppController() {
   const [skillsLoading, setSkillsLoading] = useState(false);
   const [skillsError, setSkillsError] = useState<string | null>(null);
   const [skillsBusyId, setSkillsBusyId] = useState<string | null>(null);
+  const [showHarness, setShowHarness] = useState(false);
+  const [harnessProject, setHarnessProject] = useState<string | null>(null);
+  const [harness, setHarness] = useState<ProjectHarness | null>(null);
+  const [harnessLoading, setHarnessLoading] = useState(false);
+  const [harnessError, setHarnessError] = useState<string | null>(null);
+  const [harnessBusyId, setHarnessBusyId] = useState<string | null>(null);
   const [showRemoteAccess, setShowRemoteAccess] = useState(false);
   const [remoteAccess, setRemoteAccess] = useState<RemoteAccessStatus | null>(
     null,
@@ -916,6 +923,101 @@ export function useAppController() {
     }
   }, []);
 
+  /** Resolve a project display name to a cwd (session or recent projects). */
+  const resolveProjectCwd = useCallback(
+    (project: string): string | null => {
+      const fromSession = sessionsRef.current.find(
+        (s) => (s.project || "other") === project,
+      );
+      if (fromSession?.cwd) return fromSession.cwd;
+      const fromRecent = recentProjects.find((p) => p.project === project);
+      return fromRecent?.cwd ?? null;
+    },
+    [recentProjects],
+  );
+
+  const refreshHarness = useCallback(
+    async (project?: string | null) => {
+      const name = project ?? harnessProject;
+      if (!name) return;
+      const cwd = resolveProjectCwd(name);
+      if (!cwd) {
+        setHarnessError("Could not resolve project folder path");
+        setHarness(null);
+        return;
+      }
+      setHarnessLoading(true);
+      setHarnessError(null);
+      try {
+        const h = await getRpc().request.getProjectHarness({
+          cwd,
+          project: name === "other" ? undefined : name,
+        });
+        setHarness(h);
+        if (!h.ok && h.error) setHarnessError(h.error);
+      } catch (err) {
+        setHarnessError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setHarnessLoading(false);
+      }
+    },
+    [harnessProject, resolveProjectCwd],
+  );
+
+  const openHarness = useCallback(
+    async (project: string) => {
+      setHarnessProject(project);
+      setShowHarness(true);
+      setHarness(null);
+      setHarnessError(null);
+      const cwd = resolveProjectCwd(project);
+      if (!cwd) {
+        setHarnessError("Could not resolve project folder path");
+        return;
+      }
+      setHarnessLoading(true);
+      try {
+        const h = await getRpc().request.getProjectHarness({
+          cwd,
+          project: project === "other" ? undefined : project,
+        });
+        setHarness(h);
+        if (!h.ok && h.error) setHarnessError(h.error);
+      } catch (err) {
+        setHarnessError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setHarnessLoading(false);
+      }
+    },
+    [resolveProjectCwd],
+  );
+
+  const handleApplyHarness = useCallback(
+    async (optimizationId: string) => {
+      const name = harnessProject;
+      if (!name) throw new Error("No project selected");
+      const cwd = resolveProjectCwd(name);
+      if (!cwd) throw new Error("Could not resolve project folder path");
+      setHarnessBusyId(optimizationId);
+      setHarnessError(null);
+      try {
+        const res = await getRpc().request.applyProjectHarness({
+          cwd,
+          optimizationId,
+          project: name === "other" ? undefined : name,
+        });
+        if (!res.ok) {
+          setHarnessError(res.error);
+          throw new Error(res.error);
+        }
+        setHarness(res.harness);
+      } finally {
+        setHarnessBusyId(null);
+      }
+    },
+    [harnessProject, resolveProjectCwd],
+  );
+
   const elapsed =
     turnStartedAt && connection.status === "prompting"
       ? formatElapsed(now - turnStartedAt)
@@ -945,6 +1047,11 @@ export function useAppController() {
     skillsLoading,
     skillsError,
     skillsBusyId,
+    showHarness,
+    harness,
+    harnessLoading,
+    harnessError,
+    harnessBusyId,
     showRemoteAccess,
     remoteAccess,
     remoteAccessLoading,
@@ -965,6 +1072,7 @@ export function useAppController() {
     // setters for simple UI toggles
     setShowSettings,
     setShowSkills,
+    setShowHarness,
     setShowRemoteAccess,
     setShowNewSession,
     setShowSidebar,
@@ -999,5 +1107,8 @@ export function useAppController() {
     handleInstallSkill,
     handleToggleSkill,
     handleUninstallSkill,
+    openHarness,
+    refreshHarness,
+    handleApplyHarness,
   };
 }

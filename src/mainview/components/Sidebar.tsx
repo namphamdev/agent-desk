@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { SessionSummary } from "../../shared/rpc";
 
 type WindowControlAction = "close" | "minimize" | "maximize";
@@ -16,6 +16,8 @@ type Props = {
   onSelect: (id: string) => void;
   onNew: () => void;
   onNewInProject?: (project: string) => void;
+  /** Open the AI harness modal for a project. */
+  onOpenHarness?: (project: string) => void;
   onDeleteProject?: (project: string) => void;
   onDeleteSession?: (id: string) => void;
   /** Kill ACP agent for this session to free memory (keeps history). */
@@ -47,6 +49,7 @@ export function Sidebar({
   onSelect,
   onNew,
   onNewInProject,
+  onOpenHarness,
   onDeleteProject,
   onDeleteSession,
   onOffloadSession,
@@ -60,6 +63,28 @@ export function Sidebar({
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [projectOrder, setProjectOrder] = useState<string[]>([]);
+  /** Which project's ⋮ menu is open (null = closed). */
+  const [menuProject, setMenuProject] = useState<string | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!menuProject) return;
+    const onPointerDown = (e: PointerEvent) => {
+      const el = menuRef.current;
+      if (el && !el.contains(e.target as Node)) {
+        setMenuProject(null);
+      }
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setMenuProject(null);
+    };
+    document.addEventListener("pointerdown", onPointerDown, true);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown, true);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [menuProject]);
 
   const grouped = useMemo(() => {
     const filtered = query
@@ -95,7 +120,7 @@ export function Sidebar({
     const j = i + dir;
     if (i < 0 || j < 0 || j >= names.length) return;
     const next = [...names];
-    [next[i], next[j]] = [next[j], next[i]];
+    [next[i], next[j]] = [next[j]!, next[i]!];
     setProjectOrder(next);
   };
 
@@ -185,6 +210,9 @@ export function Sidebar({
         )}
         {grouped.map(([project, tasks], idx) => {
           const isCollapsed = collapsed.has(project);
+          const menuOpen = menuProject === project;
+          const canMoveUp = idx > 0;
+          const canMoveDown = idx < grouped.length - 1;
           const toggleCollapse = () =>
             setCollapsed((prev) => {
               const next = new Set(prev);
@@ -198,7 +226,7 @@ export function Sidebar({
               <button
                 type="button"
                 onClick={toggleCollapse}
-                className="flex flex-1 items-center overflow-hidden"
+                className="flex min-w-0 flex-1 items-center overflow-hidden"
                 aria-expanded={!isCollapsed}
                 title={isCollapsed ? "Expand" : "Collapse"}
               >
@@ -210,47 +238,102 @@ export function Sidebar({
                 <FolderIcon />
                 <span className="truncate">{project}</span>
               </button>
-              <span className="flex items-center space-x-1 opacity-0 transition-opacity group-hover:opacity-100">
+              <div
+                className={`relative shrink-0 ${
+                  menuOpen
+                    ? "opacity-100"
+                    : "opacity-0 group-hover:opacity-100 focus-within:opacity-100"
+                }`}
+                ref={menuOpen ? menuRef : undefined}
+              >
                 <button
                   type="button"
-                  aria-label="Move project up"
-                  title="Move up"
-                  disabled={idx === 0}
-                  onClick={() => moveProject(project, -1)}
-                  className="text-gray-500 hover:text-gray-200 disabled:cursor-not-allowed disabled:opacity-30"
+                  aria-label="Project menu"
+                  aria-haspopup="menu"
+                  aria-expanded={menuOpen}
+                  title="Project options"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setMenuProject((cur) => (cur === project ? null : project));
+                  }}
+                  className={`rounded p-0.5 text-gray-500 hover:bg-[#2a2a2a] hover:text-gray-200 ${
+                    menuOpen ? "bg-[#2a2a2a] text-gray-200" : ""
+                  }`}
                 >
-                  <ChevronUpMiniIcon />
+                  <MoreMiniIcon />
                 </button>
-                <button
-                  type="button"
-                  aria-label="Move project down"
-                  title="Move down"
-                  disabled={idx === grouped.length - 1}
-                  onClick={() => moveProject(project, 1)}
-                  className="text-gray-500 hover:text-gray-200 disabled:cursor-not-allowed disabled:opacity-30"
-                >
-                  <ChevronDownMiniIcon />
-                </button>
-                <span className="mx-1 h-3 w-px bg-[#3a3a3a]" />
-                <button
-                  type="button"
-                  aria-label="New task in project"
-                  title="New task"
-                  onClick={() => onNewInProject?.(project)}
-                  className="text-gray-500 hover:text-gray-200"
-                >
-                  <PlusMiniIcon />
-                </button>
-                <button
-                  type="button"
-                  aria-label="Delete project"
-                  title="Delete"
-                  onClick={() => onDeleteProject?.(project)}
-                  className="text-gray-500 hover:text-red-400"
-                >
-                  <TrashIcon />
-                </button>
-              </span>
+                {menuOpen && (
+                  <div
+                    role="menu"
+                    aria-label={`${project} options`}
+                    className="absolute right-0 top-full z-40 mt-1 min-w-[10.5rem] overflow-hidden rounded-lg border border-[#333] bg-[#1c1c1c] py-1 shadow-xl"
+                  >
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs font-medium normal-case tracking-normal text-gray-200 hover:bg-[#2a2a2a]"
+                      onClick={() => {
+                        setMenuProject(null);
+                        onOpenHarness?.(project);
+                      }}
+                    >
+                      <HarnessMiniIcon />
+                      AI harness
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs font-medium normal-case tracking-normal text-gray-200 hover:bg-[#2a2a2a]"
+                      onClick={() => {
+                        setMenuProject(null);
+                        onNewInProject?.(project);
+                      }}
+                    >
+                      <PlusMiniIcon />
+                      New task
+                    </button>
+                    <div className="my-1 border-t border-[#2e2e2e]" />
+                    <button
+                      type="button"
+                      role="menuitem"
+                      disabled={!canMoveUp}
+                      className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs font-medium normal-case tracking-normal text-gray-200 hover:bg-[#2a2a2a] disabled:cursor-not-allowed disabled:opacity-35 disabled:hover:bg-transparent"
+                      onClick={() => {
+                        moveProject(project, -1);
+                        // Keep menu open so you can move multiple steps.
+                      }}
+                    >
+                      <ChevronUpMiniIcon />
+                      Move up
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      disabled={!canMoveDown}
+                      className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs font-medium normal-case tracking-normal text-gray-200 hover:bg-[#2a2a2a] disabled:cursor-not-allowed disabled:opacity-35 disabled:hover:bg-transparent"
+                      onClick={() => {
+                        moveProject(project, 1);
+                      }}
+                    >
+                      <ChevronDownMiniIcon />
+                      Move down
+                    </button>
+                    <div className="my-1 border-t border-[#2e2e2e]" />
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs font-medium normal-case tracking-normal text-red-400 hover:bg-[#2a2a2a]"
+                      onClick={() => {
+                        setMenuProject(null);
+                        onDeleteProject?.(project);
+                      }}
+                    >
+                      <TrashIcon />
+                      Delete
+                    </button>
+                  </div>
+                )}
+              </div>
             </div>
             {!isCollapsed && (() => {
               const LIMIT = 5;
@@ -435,18 +518,26 @@ const PlusIcon = () => (
   </svg>
 );
 const PlusMiniIcon = () => (
-  <svg {...s} className="h-3.5 w-3.5">
+  <svg {...s} className="h-3.5 w-3.5 shrink-0">
     <path d="M12 5v14M5 12h14" />
   </svg>
 );
 const ChevronUpMiniIcon = () => (
-  <svg {...s} className="h-3.5 w-3.5">
+  <svg {...s} className="h-3.5 w-3.5 shrink-0">
     <path d="M18 15l-6-6-6 6" />
   </svg>
 );
 const ChevronDownMiniIcon = () => (
-  <svg {...s} className="h-3.5 w-3.5">
+  <svg {...s} className="h-3.5 w-3.5 shrink-0">
     <path d="M6 9l6 6 6-6" />
+  </svg>
+);
+/** Three-dot overflow menu for project actions. */
+const MoreMiniIcon = () => (
+  <svg {...s} className="h-3.5 w-3.5">
+    <circle cx="12" cy="5" r="1.25" fill="currentColor" stroke="none" />
+    <circle cx="12" cy="12" r="1.25" fill="currentColor" stroke="none" />
+    <circle cx="12" cy="19" r="1.25" fill="currentColor" stroke="none" />
   </svg>
 );
 const TrashMiniIcon = () => (
@@ -458,6 +549,13 @@ const TrashMiniIcon = () => (
 const OffloadMiniIcon = () => (
   <svg {...s} className="h-3.5 w-3.5">
     <path d="M12 3v12m0 0l-4-4m4 4l4-4M4 19h16" />
+  </svg>
+);
+/** Circuit / spark — project AI harness. */
+const HarnessMiniIcon = () => (
+  <svg {...s} className="h-3.5 w-3.5 shrink-0">
+    <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83" />
+    <circle cx="12" cy="12" r="3" />
   </svg>
 );
 const ChevronIcon = ({ className }: { className?: string }) => (
@@ -472,7 +570,7 @@ const ChevronIcon = ({ className }: { className?: string }) => (
   </svg>
 );
 const TrashIcon = () => (
-  <svg {...s} className="h-3.5 w-3.5">
+  <svg {...s} className="h-3.5 w-3.5 shrink-0">
     <path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2" />
   </svg>
 );

@@ -124,7 +124,36 @@ src/
 - Filesystem ACP capabilities are **off by default** (Settings toggle).
 - The official `@agentclientprotocol/sdk` runs under Bun for the stdio client.
 
-## Distribution (M5 remaining)
+## Build (macOS & Windows)
 
-Code signing, notarization, and the Electrobun updater channel need release
-credentials. `bun run build` produces an unsigned macOS app for local use.
+Electrobun packages for the **host platform only**. Build on a Mac for macOS
+artifacts and on Windows (or CI) for Windows artifacts.
+
+```bash
+# Local / debug bundle (unsigned, no installer)
+bun run build
+
+# Distribution channel builds → build/ + artifacts/
+bun run build:canary   # pre-release channel
+bun run build:stable   # production channel
+```
+
+| Platform | Outputs |
+| --- | --- |
+| **macOS** | `build/canary-macos-*/Terminal React-canary.app`, DMG + update tarball under `artifacts/` |
+| **Windows** | App folder under `build/canary-win-*/`, self-extracting Setup `.exe` under `artifacts/` |
+
+CI: `.github/workflows/build.yml` runs canary on `main`/PRs and stable on `v*`
+tags for both `macos-latest` and `windows-latest`, then attaches artifacts (and
+creates a GitHub Release on tags).
+
+### Signing & auto-update (optional)
+
+Unsigned builds work for local testing. For shipping:
+
+1. **macOS** — set `build.mac.codesign` / `notarize` to `true` in
+   `electrobun.config.ts` and provide Apple credentials via env:
+   `ELECTROBUN_APPLEID`, `ELECTROBUN_APPLEIDPASS`, `ELECTROBUN_TEAMID`
+   (or App Store Connect API key vars).
+2. **Updates** — set `release.baseUrl` to a static host (S3/R2/GitHub Releases)
+   and `release.generatePatch: true` for delta patches.

@@ -19,6 +19,7 @@ import type {
   SessionSummary,
   SessionUsage,
   SkillInfo,
+  ProjectHarness,
   TurnEndPayload,
 } from "../shared/rpc";
 import type { SessionUpdate } from "../session/types";
@@ -116,6 +117,18 @@ export type RemoteAccessHandlers = {
   uninstallSkill: (
     skillId: string,
   ) => { ok: true; skills: SkillInfo[] } | { ok: false; error: string };
+  getProjectHarness: (cwd: string, project?: string) => ProjectHarness;
+  applyProjectHarness: (
+    cwd: string,
+    optimizationId: string,
+    project?: string,
+  ) =>
+    | {
+        ok: true;
+        harness: ProjectHarness;
+        written: string[];
+      }
+    | { ok: false; error: string };
 };
 
 type WsClient = {
@@ -681,6 +694,17 @@ export class RemoteAccessServer {
         );
       case "uninstallSkill":
         return h.uninstallSkill(String(params.skillId ?? ""));
+      case "getProjectHarness":
+        return h.getProjectHarness(
+          String(params.cwd ?? ""),
+          params.project != null ? String(params.project) : undefined,
+        );
+      case "applyProjectHarness":
+        return h.applyProjectHarness(
+          String(params.cwd ?? ""),
+          String(params.optimizationId ?? ""),
+          params.project != null ? String(params.project) : undefined,
+        );
       default:
         throw new Error(`Unknown method: ${method}`);
     }

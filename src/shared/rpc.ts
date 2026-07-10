@@ -227,6 +227,29 @@ export type SkillInfo = {
   scope: "global" | "project";
 };
 
+/** One AI-agent optimization available for a project harness. */
+export type HarnessOptimization = {
+  id: string;
+  name: string;
+  description: string;
+  sourceLabel: string;
+  sourceUrl: string;
+  applied: boolean;
+  details: string | null;
+};
+
+/** Project AI harness status (optimizations applied to a folder). */
+export type ProjectHarness = {
+  project: string;
+  cwd: string;
+  ok: boolean;
+  error?: string;
+  hasClaudeMd: boolean;
+  hasAgentsMd: boolean;
+  optimizations: HarnessOptimization[];
+  appliedCount: number;
+};
+
 /**
  * Electrobun typed RPC contract.
  *
@@ -419,6 +442,26 @@ export type TerminalRPC = {
         params: { skillId: string };
         response:
           | { ok: true; skills: SkillInfo[] }
+          | { ok: false; error: string };
+      };
+      /** Inspect AI harness optimizations for a project folder. */
+      getProjectHarness: {
+        params: { cwd: string; project?: string };
+        response: ProjectHarness;
+      };
+      /** Apply a harness optimization (e.g. Karpathy guidelines → AGENTS.md + skills). */
+      applyProjectHarness: {
+        params: {
+          cwd: string;
+          optimizationId: string;
+          project?: string;
+        };
+        response:
+          | {
+              ok: true;
+              harness: ProjectHarness;
+              written: string[];
+            }
           | { ok: false; error: string };
       };
     };

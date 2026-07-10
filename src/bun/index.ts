@@ -16,6 +16,10 @@ import {
 import { RemoteAccessServer } from "./remote-access";
 import { SessionManager } from "./session-manager";
 import {
+  applyProjectHarness,
+  getProjectHarness,
+} from "./project-harness";
+import {
   appSkillsPaths,
   installSkill,
   listSkills,
@@ -316,6 +320,12 @@ const terminalRPC = BrowserView.defineRPC<TerminalRPC>({
       uninstallSkill: async ({ skillId }) => {
         return uninstallSkill(appSkillsPaths(dataDir), skillId);
       },
+      getProjectHarness: async ({ cwd, project }) => {
+        return getProjectHarness(cwd, project);
+      },
+      applyProjectHarness: async ({ cwd, optimizationId, project }) => {
+        return applyProjectHarness(cwd, optimizationId, project);
+      },
     },
     messages: {},
   },
@@ -487,6 +497,9 @@ remoteAccess = new RemoteAccessServer({
     };
   },
   uninstallSkill: (skillId) => uninstallSkill(appSkillsPaths(dataDir), skillId),
+  getProjectHarness: (cwd, project) => getProjectHarness(cwd, project),
+  applyProjectHarness: (cwd, optimizationId, project) =>
+    applyProjectHarness(cwd, optimizationId, project),
 });
 
 await manager.init();

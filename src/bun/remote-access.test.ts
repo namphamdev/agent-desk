@@ -99,6 +99,17 @@ function mockHandlers() {
     installSkill: async () => ({ ok: false as const, error: "n/a" }),
     setSkillEnabled: () => ({ ok: false as const, error: "n/a" }),
     uninstallSkill: () => ({ ok: false as const, error: "n/a" }),
+    getProjectHarness: () => ({
+      project: "mock",
+      cwd: "",
+      ok: false,
+      error: "n/a",
+      hasClaudeMd: false,
+      hasAgentsMd: false,
+      optimizations: [],
+      appliedCount: 0,
+    }),
+    applyProjectHarness: () => ({ ok: false as const, error: "n/a" }),
   };
 }
 

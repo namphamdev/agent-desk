@@ -16,6 +16,7 @@ import type {
   SessionLoadedPayload,
   SessionUsage,
   SkillInfo,
+  ProjectHarness,
   TerminalRPC,
   TurnEndPayload,
 } from "../shared/rpc";
@@ -146,6 +147,22 @@ type RpcClient = {
       skillId: string;
     }) => Promise<
       { ok: true; skills: SkillInfo[] } | { ok: false; error: string }
+    >;
+    getProjectHarness: (p: {
+      cwd: string;
+      project?: string;
+    }) => Promise<ProjectHarness>;
+    applyProjectHarness: (p: {
+      cwd: string;
+      optimizationId: string;
+      project?: string;
+    }) => Promise<
+      | {
+          ok: true;
+          harness: ProjectHarness;
+          written: string[];
+        }
+      | { ok: false; error: string }
     >;
   };
 };
@@ -462,6 +479,10 @@ function createRemoteWsClient(code: string): RpcClient {
         request("setSkillEnabled", p as Record<string, unknown>),
       uninstallSkill: (p) =>
         request("uninstallSkill", p as Record<string, unknown>),
+      getProjectHarness: (p) =>
+        request("getProjectHarness", p as Record<string, unknown>),
+      applyProjectHarness: (p) =>
+        request("applyProjectHarness", p as Record<string, unknown>),
     },
   };
 }
@@ -835,7 +856,57 @@ async getGitBranch() {
         mockSkills.splice(idx, 1);
         return { ok: true as const, skills: [...mockSkills] };
       },
+      async getProjectHarness({ cwd, project }) {
+        return mockHarness(cwd, project, mockHarnessApplied);
+      },
+      async applyProjectHarness({ cwd, optimizationId, project }) {
+        if (optimizationId !== "karpathy-guidelines") {
+          return { ok: false as const, error: `Unknown optimization: ${optimizationId}` };
+        }
+        mockHarnessApplied = true;
+        const harness = mockHarness(cwd, project, true);
+        return {
+          ok: true as const,
+          harness,
+          written: [
+            "AGENTS.md",
+            "CLAUDE.md",
+            ".agents/skills/karpathy-guidelines/SKILL.md",
+          ],
+        };
+      },
     },
+  };
+}
+
+let mockHarnessApplied = false;
+
+function mockHarness(
+  cwd: string,
+  project: string | undefined,
+  applied: boolean,
+): ProjectHarness {
+  return {
+    project: project || "demo",
+    cwd: cwd || "/mock/project",
+    ok: true,
+    hasClaudeMd: applied,
+    hasAgentsMd: applied,
+    appliedCount: applied ? 1 : 0,
+    optimizations: [
+      {
+        id: "karpathy-guidelines",
+        name: "Karpathy guidelines",
+        description:
+          "Think before coding, simplicity first, surgical changes, goal-driven execution.",
+        sourceLabel: "andrej-karpathy-skills",
+        sourceUrl: "https://github.com/multica-ai/andrej-karpathy-skills",
+        applied,
+        details: applied
+          ? "AGENTS.md · CLAUDE.md → @AGENTS.md · skill (mock)"
+          : null,
+      },
+    ],
   };
 }
 

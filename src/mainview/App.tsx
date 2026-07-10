@@ -5,6 +5,7 @@ import { PromptInput } from "./components/PromptInput";
 import { PermissionPrompt } from "./components/PermissionPrompt";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { SkillsPanel } from "./components/SkillsPanel";
+import { ProjectHarnessModal } from "./components/ProjectHarnessModal";
 import { RemoteAccessPanel } from "./components/RemoteAccessPanel";
 import { ConnectionBanner } from "./components/ConnectionBanner";
 import { ConfirmDialog } from "./components/ConfirmDialog";
@@ -62,6 +63,7 @@ export default function App() {
                 void app.handleNewSession();
               }}
               onNewInProject={(project) => void app.handleNewInProject(project)}
+              onOpenHarness={(project) => void app.openHarness(project)}
               onDeleteSession={app.handleDeleteSession}
               onOffloadSession={(id) => void app.handleOffloadSession(id)}
               onOpenSettings={() => app.setShowSettings(true)}
@@ -191,6 +193,17 @@ export default function App() {
               onInstall={app.handleInstallSkill}
               onToggle={app.handleToggleSkill}
               onUninstall={app.handleUninstallSkill}
+            />
+          )}
+          {app.showHarness && (
+            <ProjectHarnessModal
+              harness={app.harness}
+              loading={app.harnessLoading}
+              error={app.harnessError}
+              busyId={app.harnessBusyId}
+              onClose={() => app.setShowHarness(false)}
+              onRefresh={() => void app.refreshHarness()}
+              onApply={app.handleApplyHarness}
             />
           )}
           {app.showRemoteAccess && (

@@ -50,8 +50,7 @@ function hasBody(toolCall: ToolCall): boolean {
  * Collapsible card for a tool call: kind icon, title, status indicator, file
  * locations, and rendered body (content blocks + diffs + terminals + raw I/O).
  *
- * Completed/failed cards start collapsed; pending/running start expanded so
- * live work is visible. Header is always clickable when there is a body.
+ * Starts collapsed by default. Header is clickable when there is a body.
  */
 export function ToolCallCard({
   toolCall,
@@ -63,11 +62,7 @@ export function ToolCallCard({
   const kind = toolCall.kind ?? "other";
   const loc = toolCall.locations?.[0];
   const body = hasBody(toolCall);
-  const [expanded, setExpanded] = useState(
-    () =>
-      toolCall.status === "pending" ||
-      toolCall.status === "in_progress",
-  );
+  const [expanded, setExpanded] = useState(false);
 
   return (
     <div
