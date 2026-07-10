@@ -12,9 +12,14 @@ interface HeaderProps {
   connection?: ConnectionStatePayload;
   onToggleSidebar?: () => void;
   onOpenSettings?: () => void;
-  /** When the sidebar is hidden, show traffic lights here. */
+  /**
+   * When the sidebar is hidden, show traffic lights here.
+   * Never used on remote/phone clients (pass false).
+   */
   showWindowControls?: boolean;
   onWindowControl?: (action: WindowControlAction) => void;
+  /** Compact mobile / remote layout (no window chrome, tighter chips). */
+  compact?: boolean;
 }
 
 const statusColor: Record<string, string> = {
@@ -47,6 +52,7 @@ export function Header({
   onOpenSettings,
   showWindowControls,
   onWindowControl,
+  compact = false,
 }: HeaderProps) {
   const status = connection?.status ?? "idle";
   const folderName = cwd ? cwd.split("/").filter(Boolean).pop() : undefined;
@@ -58,11 +64,18 @@ export function Header({
       : memoryLabel
         ? `Agent RAM: ${memoryLabel}`
         : undefined;
+  const projectLabel = folderName ?? project;
+  const showLights = Boolean(showWindowControls && onWindowControl && !compact);
+
   return (
-    <header className="electrobun-webkit-app-region-drag flex h-14 shrink-0 items-center justify-between border-b border-[#2e2e2e] px-6">
-      <div className="flex items-center space-x-4">
-        {showWindowControls && (
-          <div className="electrobun-webkit-app-region-no-drag flex space-x-1.5">
+    <header
+      className={`electrobun-webkit-app-region-drag flex shrink-0 items-center justify-between gap-2 border-b border-[#2e2e2e] ${
+        compact ? "h-12 px-3" : "h-14 px-4 sm:px-6"
+      }`}
+    >
+      <div className="flex min-w-0 flex-1 items-center gap-2 sm:gap-3">
+        {showLights && (
+          <div className="electrobun-webkit-app-region-no-drag hidden shrink-0 space-x-1.5 sm:flex">
             <button
               type="button"
               aria-label="Close"
@@ -87,52 +100,99 @@ export function Header({
           </div>
         )}
         <button
+          type="button"
           onClick={onToggleSidebar}
-          className="electrobun-webkit-app-region-no-drag rounded p-1 text-gray-500 hover:bg-[#2a2a2a] hover:text-gray-300 md:hidden"
+          className={`electrobun-webkit-app-region-no-drag shrink-0 rounded p-1.5 text-gray-400 hover:bg-[#2a2a2a] hover:text-gray-200 ${
+            compact ? "" : "md:hidden"
+          }`}
           aria-label="Toggle sidebar"
         >
-          <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h16" />
+          <svg
+            className="h-5 w-5"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+            strokeWidth={2}
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              d="M4 6h16M4 12h16M4 18h16"
+            />
           </svg>
         </button>
-        <h1 className="max-w-md truncate text-sm font-semibold">{title}</h1>
-        <div className="flex items-center space-x-2 text-xs text-gray-400">
-          <span
-            className="flex max-w-[220px] items-center truncate rounded bg-[#2a2a2a] px-2 py-1"
-            title={cwd || project}
+
+        {/* Title + meta: single line, truncate aggressively on narrow screens */}
+        <div className="flex min-w-0 flex-1 flex-col justify-center gap-0.5 sm:flex-row sm:items-center sm:gap-3">
+          <h1
+            className={`min-w-0 truncate font-semibold text-gray-100 ${
+              compact ? "text-[13px]" : "text-sm"
+            }`}
+            title={title}
           >
-            <svg className="mr-1 h-3 w-3 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
-              <path d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
-            </svg>
-            <span className="truncate">{folderName ?? project}</span>
-          </span>
-          {branch && (
-            <span
-              className="flex items-center rounded bg-[#2a2a2a] px-2 py-1"
-              title={`Git branch: ${branch}`}
-            >
-              <svg className="mr-1 h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
-                <path d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
-              </svg>
-              {branch}
-            </span>
-          )}
+            {title}
+          </h1>
+          <div className="flex min-w-0 items-center gap-1.5 text-[11px] text-gray-400">
+            {projectLabel && projectLabel !== "—" && (
+              <span
+                className="flex min-w-0 max-w-[40vw] items-center truncate rounded bg-[#2a2a2a] px-1.5 py-0.5 sm:max-w-[180px] sm:px-2 sm:py-1"
+                title={cwd || project}
+              >
+                <svg
+                  className="mr-1 hidden h-3 w-3 shrink-0 sm:block"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                  strokeWidth={2}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <path d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+                </svg>
+                <span className="truncate">{projectLabel}</span>
+              </span>
+            )}
+            {branch && (
+              <span
+                className="hidden max-w-[100px] items-center truncate rounded bg-[#2a2a2a] px-2 py-1 sm:flex"
+                title={`Git branch: ${branch}`}
+              >
+                <svg
+                  className="mr-1 h-3 w-3 shrink-0"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                  strokeWidth={2}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <path d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
+                </svg>
+                <span className="truncate">{branch}</span>
+              </span>
+            )}
+          </div>
         </div>
       </div>
-      <div className="electrobun-webkit-app-region-no-drag flex items-center space-x-3 text-gray-400">
+
+      <div className="electrobun-webkit-app-region-no-drag flex shrink-0 items-center gap-1.5 text-gray-400 sm:gap-3">
         {connection && (
           <div
-            className="flex items-center gap-1.5 rounded bg-[#2a2a2a] px-2 py-1 text-[11px]"
+            className="flex items-center gap-1.5 rounded bg-[#2a2a2a] px-1.5 py-1 text-[11px] sm:px-2"
             title={
               connection.error ??
               ([agentLabel, memoryTitle].filter(Boolean).join(" · ") || status)
             }
           >
-            <span className={`h-1.5 w-1.5 rounded-full ${statusColor[status] ?? "bg-gray-500"}`} />
-            <span className="max-w-[140px] truncate">{agentLabel}</span>
+            <span
+              className={`h-1.5 w-1.5 shrink-0 rounded-full ${statusColor[status] ?? "bg-gray-500"}`}
+            />
+            <span className="hidden max-w-[120px] truncate sm:inline">
+              {agentLabel}
+            </span>
             {memoryLabel && (
               <span
-                className="shrink-0 tabular-nums text-gray-500"
+                className="hidden shrink-0 tabular-nums text-gray-500 md:inline"
                 title={memoryTitle}
               >
                 · {memoryLabel}
@@ -141,11 +201,20 @@ export function Header({
           </div>
         )}
         <button
-          className="hover:text-gray-200"
+          type="button"
+          className="rounded p-1.5 hover:bg-[#2a2a2a] hover:text-gray-200"
           onClick={onOpenSettings}
           aria-label="Settings"
         >
-          <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+          <svg
+            className="h-5 w-5"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+            strokeWidth={2}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
             <path d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
             <path d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
           </svg>

@@ -96,6 +96,9 @@ export type RemoteAccessHandlers = {
   writeClipboard: (
     text: string,
   ) => Promise<{ ok: true } | { ok: false; error: string }>;
+  readClipboard: () => Promise<
+    { ok: true; text: string } | { ok: false; error: string }
+  >;
 };
 
 type WsClient = {
@@ -634,6 +637,8 @@ export class RemoteAccessServer {
         return h.removeRecentProject(String(params.cwd ?? ""));
       case "writeClipboard":
         return h.writeClipboard(String(params.text ?? ""));
+      case "readClipboard":
+        return h.readClipboard();
       case "getGitBranch":
         return h.getGitBranch(String(params.cwd ?? ""));
       case "windowControl":

@@ -101,37 +101,39 @@ export function Sidebar({
       className={`flex flex-shrink-0 flex-col ${width == null ? "w-64" : ""}`}
       style={width != null ? { width } : undefined}
     >
-      <div className="electrobun-webkit-app-region-drag flex h-14 items-center px-4">
-        <div className="electrobun-webkit-app-region-no-drag flex space-x-1.5">
-          <button
-            type="button"
-            aria-label="Close"
-            title="Close"
-            onClick={() => void onWindowControl?.("close")}
-            className="group h-3 w-3 rounded-full bg-[#ff5f56] hover:brightness-110"
-          >
-            <span className="sr-only">Close</span>
-          </button>
-          <button
-            type="button"
-            aria-label="Minimize"
-            title="Minimize"
-            onClick={() => void onWindowControl?.("minimize")}
-            className="group h-3 w-3 rounded-full bg-[#ffbd2e] hover:brightness-110"
-          >
-            <span className="sr-only">Minimize</span>
-          </button>
-          <button
-            type="button"
-            aria-label="Maximize"
-            title="Maximize"
-            onClick={() => void onWindowControl?.("maximize")}
-            className="group h-3 w-3 rounded-full bg-[#27c93f] hover:brightness-110"
-          >
-            <span className="sr-only">Maximize</span>
-          </button>
-        </div>
-        <div className="flex flex-1 justify-end space-x-1 text-gray-500">
+      <div className="electrobun-webkit-app-region-drag flex h-12 items-center gap-2 px-3 sm:h-14 sm:px-4">
+        {onWindowControl && (
+          <div className="electrobun-webkit-app-region-no-drag flex shrink-0 space-x-1.5">
+            <button
+              type="button"
+              aria-label="Close"
+              title="Close"
+              onClick={() => void onWindowControl("close")}
+              className="group h-3 w-3 rounded-full bg-[#ff5f56] hover:brightness-110"
+            >
+              <span className="sr-only">Close</span>
+            </button>
+            <button
+              type="button"
+              aria-label="Minimize"
+              title="Minimize"
+              onClick={() => void onWindowControl("minimize")}
+              className="group h-3 w-3 rounded-full bg-[#ffbd2e] hover:brightness-110"
+            >
+              <span className="sr-only">Minimize</span>
+            </button>
+            <button
+              type="button"
+              aria-label="Maximize"
+              title="Maximize"
+              onClick={() => void onWindowControl("maximize")}
+              className="group h-3 w-3 rounded-full bg-[#27c93f] hover:brightness-110"
+            >
+              <span className="sr-only">Maximize</span>
+            </button>
+          </div>
+        )}
+        <div className="flex flex-1 items-center justify-between gap-2 text-gray-500">
           <span className="text-[11px] uppercase tracking-wider">sessions</span>
         </div>
       </div>

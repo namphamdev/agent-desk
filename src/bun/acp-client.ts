@@ -45,13 +45,19 @@ export type AcpClientHandlers = {
   enableFs?: boolean;
 };
 
-/** Optional spawn overrides (e.g. provider credentials for Claude Code). */
+/** Optional spawn / session overrides (e.g. provider credentials for Claude Code). */
 export type AcpClientOptions = {
   /**
    * Extra env vars merged over `process.env` when spawning the agent.
    * Used for ANTHROPIC_BASE_URL / API_KEY / model mappings from Providers.
    */
   env?: Record<string, string | undefined>;
+  /**
+   * Passed as `session/new` `_meta` (e.g. `_meta.claudeCode.options.env`).
+   * claude-agent-acp applies `options.env` when starting the SDK query so
+   * credentials survive past ~/.claude/settings.json loading.
+   */
+  sessionMeta?: Record<string, unknown>;
 };
 
 export type AcpSessionHandle = {
@@ -267,7 +273,13 @@ export class AcpClient {
     this.active = null;
 
     const session = await this.ctx
-      .buildSession({ cwd, mcpServers: [] })
+      .buildSession({
+        cwd,
+        mcpServers: [],
+        ...(this.options.sessionMeta
+          ? { _meta: this.options.sessionMeta }
+          : {}),
+      })
       .start();
     this.active = session;
 

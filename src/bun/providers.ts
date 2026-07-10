@@ -109,8 +109,25 @@ export function resolveProviderModel(
 }
 
 /**
- * Build env overrides for the Claude Code ACP subprocess.
- * Returns null when no provider is active (caller keeps process.env only).
+ * Env keys Claude Code / ACP read for routing + auth. When a provider is
+ * active we force these so ~/.claude/settings.json cannot leave stale values.
+ */
+export const PROVIDER_ENV_KEYS = [
+  "ANTHROPIC_BASE_URL",
+  "ANTHROPIC_API_KEY",
+  "ANTHROPIC_AUTH_TOKEN",
+  "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+  "ANTHROPIC_DEFAULT_SONNET_MODEL",
+  "ANTHROPIC_DEFAULT_OPUS_MODEL",
+  "ANTHROPIC_MODEL",
+] as const;
+
+/**
+ * Build env overrides for Claude Code ACP.
+ *
+ * Returns null when no provider is active. When a provider is set, every
+ * routing/auth key is present (empty string clears a parent value) so the
+ * selected provider fully replaces host env and user settings.env.
  */
 export function buildProviderEnv(
   provider: ProviderConfig | null,
@@ -118,33 +135,56 @@ export function buildProviderEnv(
 ): Record<string, string> | null {
   if (!provider) return null;
 
-  const env: Record<string, string> = {};
-
-  if (provider.baseUrl.trim()) {
-    env.ANTHROPIC_BASE_URL = provider.baseUrl.trim();
-  }
-
+  const baseUrl = provider.baseUrl.trim();
   const key = provider.apiKey.trim();
-  if (key) {
-    // Direct Anthropic + most gateways accept API_KEY; some gateways prefer
-    // AUTH_TOKEN (Bearer). Set both so either style works.
-    env.ANTHROPIC_API_KEY = key;
-    env.ANTHROPIC_AUTH_TOKEN = key;
-  }
+  const haiku = provider.models.haiku.trim();
+  const sonnet = provider.models.sonnet.trim();
+  const opus = provider.models.opus.trim();
+  const model = resolveProviderModel(provider, modelAlias);
 
-  if (provider.models.haiku.trim()) {
-    env.ANTHROPIC_DEFAULT_HAIKU_MODEL = provider.models.haiku.trim();
-  }
-  if (provider.models.sonnet.trim()) {
-    env.ANTHROPIC_DEFAULT_SONNET_MODEL = provider.models.sonnet.trim();
-  }
-  if (provider.models.opus.trim()) {
-    env.ANTHROPIC_DEFAULT_OPUS_MODEL = provider.models.opus.trim();
-  }
-
-  env.ANTHROPIC_MODEL = resolveProviderModel(provider, modelAlias);
+  // Always set the full set — empty string unsets inheritance from the
+  // Electrobun process / prior provider when a field is blank.
+  const env: Record<string, string> = {
+    ANTHROPIC_BASE_URL: baseUrl,
+    // Gateways often want AUTH_TOKEN (Bearer); direct Anthropic uses API_KEY.
+    // Set both to the same value so either path works.
+    ANTHROPIC_API_KEY: key,
+    ANTHROPIC_AUTH_TOKEN: key,
+    ANTHROPIC_DEFAULT_HAIKU_MODEL: haiku,
+    ANTHROPIC_DEFAULT_SONNET_MODEL: sonnet,
+    ANTHROPIC_DEFAULT_OPUS_MODEL: opus,
+    ANTHROPIC_MODEL: model,
+  };
 
   return env;
+}
+
+/**
+ * ACP session/new `_meta.claudeCode.options` so credentials win over
+ * ~/.claude/settings.json (claude-agent-acp merges options.env over process.env
+ * and loads user settings via settingSources).
+ */
+export function buildClaudeCodeSessionMeta(
+  provider: ProviderConfig | null,
+  modelAlias: ClaudeModelAlias,
+): Record<string, unknown> | undefined {
+  const env = buildProviderEnv(provider, modelAlias);
+  if (!env) return undefined;
+
+  return {
+    claudeCode: {
+      options: {
+        env,
+        // Prefer alias so ACP model picker + ANTHROPIC_DEFAULT_* maps work.
+        // Mapped id is still applied via env.ANTHROPIC_MODEL.
+        model: modelAlias,
+        // Skip user settings.env (~/.claude/settings.json) which would
+        // otherwise overwrite the selected provider's base_url / api_key.
+        // Project + local settings still apply (repo permissions, etc.).
+        settingSources: ["project", "local"],
+      },
+    },
+  };
 }
 
 /**

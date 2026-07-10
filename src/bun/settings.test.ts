@@ -37,6 +37,9 @@ describe("settings", () => {
     expect(DEFAULT_SETTINGS.defaultEffort).toBe("high");
     expect(DEFAULT_SETTINGS.editorCommand).toBeTruthy();
     expect(DEFAULT_SETTINGS.dataDir).toContain(".terminal-react");
+    expect(DEFAULT_SETTINGS.providers).toEqual([]);
+    expect(DEFAULT_SETTINGS.activeProviderId).toBeNull();
+    expect(DEFAULT_SETTINGS.activeModelAlias).toBe("sonnet");
   });
 
   it("returns defaults when nothing is stored", () => {
@@ -84,6 +87,56 @@ describe("settings", () => {
     store.setSetting("app_settings", "{not-json");
     const s = loadSettings(store);
     expect(s.theme).toBe(DEFAULT_SETTINGS.theme);
+    store.close();
+  });
+
+  it("persists providers and active model selection", () => {
+    const store = openStore();
+    const next = saveSettings(store, {
+      providers: [
+        {
+          id: "gw",
+          name: "Gateway",
+          baseUrl: "https://example.com",
+          apiKey: "sk-abc",
+          models: {
+            haiku: "h1",
+            sonnet: "s1",
+            opus: "o1",
+          },
+        },
+      ],
+      activeProviderId: "gw",
+      activeModelAlias: "opus",
+    });
+    expect(next.providers).toHaveLength(1);
+    expect(next.activeProviderId).toBe("gw");
+    expect(next.activeModelAlias).toBe("opus");
+    // defaultModel tracks the Claude alias for ACP matching
+    expect(next.defaultModel).toBe("opus");
+
+    const reloaded = loadSettings(store);
+    expect(reloaded.providers?.[0]?.apiKey).toBe("sk-abc");
+    expect(reloaded.activeModelAlias).toBe("opus");
+    store.close();
+  });
+
+  it("clears activeProviderId when providers are emptied", () => {
+    const store = openStore();
+    saveSettings(store, {
+      providers: [
+        {
+          id: "gw",
+          name: "Gateway",
+          baseUrl: "",
+          apiKey: "",
+          models: { haiku: "", sonnet: "", opus: "" },
+        },
+      ],
+      activeProviderId: "gw",
+    });
+    const next = saveSettings(store, { providers: [] });
+    expect(next.activeProviderId).toBeNull();
     store.close();
   });
 });

@@ -321,8 +321,15 @@ export type TerminalRPC = {
         params: { text: string };
         response: { ok: boolean; error?: string };
       };
+      /** Read system clipboard text (native bridge — WKWebView paste can be flaky). */
+      readClipboard: {
+        params: void;
+        response:
+          | { ok: true; text: string }
+          | { ok: false; error?: string };
+      };
       /** Current git branch for a project folder (null if not a repo). */
-getGitBranch: {
+      getGitBranch: {
         params: { cwd: string };
         response: { branch: string | null };
       };

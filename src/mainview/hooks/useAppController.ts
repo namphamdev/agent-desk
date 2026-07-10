@@ -74,8 +74,8 @@ export function useAppController() {
     null,
   );
   const [recentProjects, setRecentProjects] = useState<RecentProject[]>([]);
-  // Phone remote clients still show the session list; hide only if needed later.
-  const [showSidebar, setShowSidebar] = useState(true);
+  // Remote/phone: start with chat full-width; open sessions via header menu.
+  const [showSidebar, setShowSidebar] = useState(() => !isRemoteAccessClient());
   const [turnStartedAt, setTurnStartedAt] = useState<number | null>(null);
   const [now, setNow] = useState(Date.now());
   /** True while waiting for history after clicking a session in the sidebar. */
@@ -627,6 +627,41 @@ export function useAppController() {
     [],
   );
 
+  /**
+   * Switch provider and/or Claude model alias in one settings write + reconnect
+   * so ANTHROPIC_* env matches the selection without a double respawn.
+   */
+  const handleProviderModelChange = useCallback(
+    async (
+      providerId: string,
+      alias: import("../../shared/rpc").ClaudeModelAlias,
+    ) => {
+      const prev = settings;
+      if (
+        prev?.activeProviderId === providerId &&
+        prev?.activeModelAlias === alias
+      ) {
+        return;
+      }
+      const next = await getRpc().request.saveSettings({
+        activeProviderId: providerId,
+        activeModelAlias: alias,
+      });
+      setSettings(next);
+
+      try {
+        await getRpc().request.connectAgent({
+          agentId:
+            activeSession?.agentId || next.defaultAgentId || undefined,
+          cwd: activeSession?.cwd,
+        });
+      } catch {
+        /* connection error surface via onConnectionState */
+      }
+    },
+    [activeSession?.agentId, activeSession?.cwd, settings],
+  );
+
   const handleWindowControl = useCallback(
     (action: "close" | "minimize" | "maximize") => {
       void getRpc().request.windowControl({ action });
@@ -760,6 +795,7 @@ export function useAppController() {
     handleOpenFile,
     handleSetConfigOption,
     handleSaveSettings,
+    handleProviderModelChange,
     handleRemoveRecentProject,
     handleWindowControl,
     openRemoteAccess,

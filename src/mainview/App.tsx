@@ -32,34 +32,66 @@ export default function App() {
     >
       {app.showSidebar && (
         <>
-          <Sidebar
-            sessions={app.sessions}
-            activeSessionId={app.activeSessionId}
-            sessionActivity={app.sessionActivity}
-            width={sidebarWidth}
-            onSelect={app.handleSwitchSession}
-            onNew={app.handleNewSession}
-            onNewInProject={(project) => void app.handleNewInProject(project)}
-            onDeleteSession={app.handleDeleteSession}
-            onOffloadSession={(id) => void app.handleOffloadSession(id)}
-            onOpenSettings={() => app.setShowSettings(true)}
-            onOpenRemoteAccess={
-              remoteClient ? undefined : () => void app.openRemoteAccess()
+          {/* On remote/phone: drawer overlay so chat keeps full width */}
+          {remoteClient && (
+            <button
+              type="button"
+              aria-label="Close sidebar"
+              className="fixed inset-0 z-30 bg-black/50"
+              onClick={() => app.setShowSidebar(false)}
+            />
+          )}
+          <div
+            className={
+              remoteClient
+                ? "sidebar-bg fixed inset-y-0 left-0 z-40 flex max-w-[85vw] shadow-2xl"
+                : "contents"
             }
-            onWindowControl={
-              remoteClient ? undefined : app.handleWindowControl
-            }
-          />
-          <SidebarResizeHandle
-            width={sidebarWidth}
-            isResizing={isResizingSidebar}
-            onResizeStart={handleSidebarResizeStart}
-            onNudge={nudgeSidebarWidth}
-          />
+          >
+            <Sidebar
+              sessions={app.sessions}
+              activeSessionId={app.activeSessionId}
+              sessionActivity={app.sessionActivity}
+              width={remoteClient ? Math.min(sidebarWidth, 300) : sidebarWidth}
+              onSelect={(id) => {
+                app.handleSwitchSession(id);
+                if (remoteClient) app.setShowSidebar(false);
+              }}
+              onNew={() => {
+                void app.handleNewSession();
+              }}
+              onNewInProject={(project) => void app.handleNewInProject(project)}
+              onDeleteSession={app.handleDeleteSession}
+              onOffloadSession={(id) => void app.handleOffloadSession(id)}
+              onOpenSettings={() => app.setShowSettings(true)}
+              onOpenRemoteAccess={
+                remoteClient ? undefined : () => void app.openRemoteAccess()
+              }
+              onWindowControl={
+                remoteClient ? undefined : app.handleWindowControl
+              }
+            />
+          </div>
+          {!remoteClient && (
+            <SidebarResizeHandle
+              width={sidebarWidth}
+              isResizing={isResizingSidebar}
+              onResizeStart={handleSidebarResizeStart}
+              onNudge={nudgeSidebarWidth}
+            />
+          )}
         </>
       )}
-      <main className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden py-[8px]">
-        <div className="h-full w-full relative flex flex-col main-bg rounded-[8px]">
+      <main
+        className={`relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden ${
+          remoteClient ? "py-0" : "py-[8px]"
+        }`}
+      >
+        <div
+          className={`relative flex h-full w-full flex-col main-bg ${
+            remoteClient ? "rounded-none" : "rounded-[8px]"
+          }`}
+        >
           <div className="shrink-0">
             <Header
               title={app.activeSession?.title ?? "New session"}
@@ -69,8 +101,11 @@ export default function App() {
               connection={app.connection}
               onToggleSidebar={() => app.setShowSidebar((s) => !s)}
               onOpenSettings={() => app.setShowSettings(true)}
-              showWindowControls={!app.showSidebar}
-              onWindowControl={app.handleWindowControl}
+              showWindowControls={!remoteClient && !app.showSidebar}
+              onWindowControl={
+                remoteClient ? undefined : app.handleWindowControl
+              }
+              compact={remoteClient}
             />
             <ConnectionBanner connection={app.connection} />
           </div>
@@ -122,11 +157,15 @@ export default function App() {
             configOptions={app.configOptions}
             usage={app.usage}
             queue={app.activePromptQueue}
+            providers={app.settings?.providers ?? []}
+            activeProviderId={app.settings?.activeProviderId ?? null}
+            activeModelAlias={app.settings?.activeModelAlias ?? "sonnet"}
             onSubmit={app.handlePrompt}
             onCancel={app.handleCancel}
             onRemoveQueued={app.handleRemoveQueued}
             onClearQueue={app.handleClearQueue}
             onSetConfigOption={app.handleSetConfigOption}
+            onProviderModelChange={app.handleProviderModelChange}
           />
           {app.showSettings && app.settings && (
             <SettingsPanel

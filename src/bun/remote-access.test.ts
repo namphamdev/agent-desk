@@ -94,6 +94,7 @@ function mockHandlers() {
       error: "n/a",
     }),
     writeClipboard: async () => ({ ok: true as const }),
+    readClipboard: async () => ({ ok: true as const, text: "" }),
   };
 }
 

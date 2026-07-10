@@ -199,6 +199,94 @@ if (enableReactGrab) {
     });
 }
 
+/**
+ * Fallback paste for Electrobun WKWebView when the system Edit menu is missing
+ * or first-responder paste fails. Inserts clipboard text into the focused
+ * input / textarea / contenteditable via the native readClipboard bridge.
+ */
+function installPasteFallback() {
+  if (!isElectrobunWebview()) return;
+
+  let pasting = false;
+
+  window.addEventListener(
+    "keydown",
+    (e) => {
+      if (e.defaultPrevented || e.repeat || pasting) return;
+      if (!(e.metaKey || e.ctrlKey) || e.shiftKey || e.altKey) return;
+      if (e.key !== "v" && e.key !== "V" && e.code !== "KeyV") return;
+
+      const target = e.target;
+      if (!(target instanceof HTMLElement)) return;
+      const tag = target.tagName;
+      const isField =
+        tag === "INPUT" ||
+        tag === "TEXTAREA" ||
+        target.isContentEditable;
+      if (!isField) return;
+      if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) {
+        if (target.disabled || target.readOnly) return;
+      }
+
+      // Own paste so we don't rely on the flaky WKWebView clipboard path.
+      e.preventDefault();
+      e.stopPropagation();
+      pasting = true;
+
+      void (async () => {
+        try {
+          let text = "";
+          try {
+            const res = await getRpc().request.readClipboard();
+            if (res.ok) text = res.text ?? "";
+          } catch (err) {
+            console.warn("[clipboard] readClipboard RPC failed:", err);
+          }
+          if (!text) {
+            try {
+              text = (await navigator.clipboard?.readText?.()) ?? "";
+            } catch {
+              /* no permission / unavailable */
+            }
+          }
+          if (!text) return;
+
+          if (
+            target instanceof HTMLInputElement ||
+            target instanceof HTMLTextAreaElement
+          ) {
+            const start = target.selectionStart ?? target.value.length;
+            const end = target.selectionEnd ?? start;
+            const next =
+              target.value.slice(0, start) + text + target.value.slice(end);
+            // Prefer native setter so React controlled inputs pick up the change.
+            const proto =
+              target instanceof HTMLTextAreaElement
+                ? HTMLTextAreaElement.prototype
+                : HTMLInputElement.prototype;
+            const desc = Object.getOwnPropertyDescriptor(proto, "value");
+            desc?.set?.call(target, next);
+            target.dispatchEvent(new Event("input", { bubbles: true }));
+            const caret = start + text.length;
+            try {
+              target.setSelectionRange(caret, caret);
+            } catch {
+              /* type=number etc. */
+            }
+          } else if (target.isContentEditable) {
+            document.execCommand("insertText", false, text);
+          }
+        } finally {
+          pasting = false;
+        }
+      })();
+    },
+    true,
+  );
+}
+
+installPasteFallback();
+
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <App />

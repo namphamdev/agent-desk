@@ -98,6 +98,9 @@ type RpcClient = {
     writeClipboard: (p: {
       text: string;
     }) => Promise<{ ok: boolean; error?: string }>;
+    readClipboard: () => Promise<
+      { ok: true; text: string } | { ok: false; error?: string }
+    >;
     getGitBranch: (p: {
       cwd: string;
     }) => Promise<{ branch: string | null }>;
@@ -412,6 +415,10 @@ function createRemoteWsClient(code: string): RpcClient {
         request("removeRecentProject", p as Record<string, unknown>),
       writeClipboard: (p) =>
         request("writeClipboard", p as Record<string, unknown>),
+      readClipboard: () =>
+        request("readClipboard", {}) as Promise<
+          { ok: true; text: string } | { ok: false; error?: string }
+        >,
       getGitBranch: (p) =>
         request("getGitBranch", p as Record<string, unknown>),
       windowControl: async () => ({
@@ -674,6 +681,18 @@ function createBrowserMock(): RpcClient {
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           return { ok: false, error: message };
+        }
+      },
+      async readClipboard() {
+        try {
+          if (navigator.clipboard?.readText) {
+            const text = await navigator.clipboard.readText();
+            return { ok: true as const, text };
+          }
+          return { ok: false as const, error: "Clipboard API unavailable" };
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          return { ok: false as const, error: message };
         }
       },
 async getGitBranch() {

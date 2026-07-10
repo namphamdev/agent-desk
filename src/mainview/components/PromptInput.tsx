@@ -1,10 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   AvailableCommand,
+  ClaudeModelAlias,
+  ProviderConfig,
   SessionConfigOption,
   SessionUsage,
 } from "../../shared/rpc";
 import type { QueuedPrompt } from "../promptQueue";
+
+const MODEL_ALIAS_LABELS: Record<ClaudeModelAlias, string> = {
+  haiku: "Haiku",
+  sonnet: "Sonnet",
+  opus: "Opus",
+};
 
 type Props = {
   disabled?: boolean;
@@ -17,6 +25,10 @@ type Props = {
   usage?: SessionUsage | null;
   /** Follow-ups waiting for the current agent turn to finish. */
   queue?: QueuedPrompt[];
+  /** Configured LLM providers (from Settings → Providers). */
+  providers?: ProviderConfig[];
+  activeProviderId?: string | null;
+  activeModelAlias?: ClaudeModelAlias;
   onSubmit: (text: string) => void | Promise<void>;
   onCancel?: () => void | Promise<void>;
   onRemoveQueued?: (id: string) => void;
@@ -25,7 +37,44 @@ type Props = {
     configId: string,
     value: string | boolean,
   ) => void | Promise<void>;
+  /**
+   * Switch provider and/or Claude model alias together (single reconnect).
+   * Called from the grouped provider·model dropdown.
+   */
+  onProviderModelChange?: (
+    providerId: string,
+    alias: ClaudeModelAlias,
+  ) => void | Promise<void>;
 };
+
+const MODEL_ALIASES: ClaudeModelAlias[] = ["haiku", "sonnet", "opus"];
+
+/** Encoded option value: `providerId::alias` */
+function encodeProviderModel(providerId: string, alias: ClaudeModelAlias): string {
+  return `${providerId}::${alias}`;
+}
+
+function decodeProviderModel(
+  value: string,
+): { providerId: string; alias: ClaudeModelAlias } | null {
+  const sep = value.lastIndexOf("::");
+  if (sep <= 0) return null;
+  const providerId = value.slice(0, sep);
+  const alias = value.slice(sep + 2) as ClaudeModelAlias;
+  if (!MODEL_ALIASES.includes(alias)) return null;
+  if (!providerId) return null;
+  return { providerId, alias };
+}
+
+function modelOptionLabel(
+  provider: ProviderConfig,
+  alias: ClaudeModelAlias,
+): string {
+  const mapped = provider.models[alias]?.trim();
+  return mapped
+    ? `${MODEL_ALIAS_LABELS[alias]} · ${mapped}`
+    : MODEL_ALIAS_LABELS[alias];
+}
 
 /** Find the first select option matching a category (or id fallback). */
 function findSelectOption(
@@ -51,7 +100,7 @@ function findSelectOption(
  * Supports Stop while streaming, a follow-up queue while the agent is busy,
  * and a `/commands` picker from available_commands_update. Model / effort
  * selectors come from ACP `configOptions` (categories `model` and
- * `thought_level`).
+ * `thought_level`), or from configured Providers when present.
  */
 export function PromptInput({
   disabled,
@@ -61,19 +110,37 @@ export function PromptInput({
   configOptions = [],
   usage = null,
   queue = [],
+  providers = [],
+  activeProviderId = null,
+  activeModelAlias = "sonnet",
   onSubmit,
   onCancel,
   onRemoveQueued,
   onClearQueue,
   onSetConfigOption,
+  onProviderModelChange,
 }: Props) {
   const [value, setValue] = useState("");
   const [showCommands, setShowCommands] = useState(false);
   const [selectedCommandIndex, setSelectedCommandIndex] = useState(0);
   const [settingConfig, setSettingConfig] = useState(false);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   /** Prevents Enter+click or repeated keydown from double-submitting. */
   const submittingRef = useRef(false);
+
+  /** Grow/shrink the textarea with content (capped so the chat stays visible). */
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    const maxPx = 200;
+    el.style.height = `${Math.min(el.scrollHeight, maxPx)}px`;
+    el.style.overflowY = el.scrollHeight > maxPx ? "auto" : "hidden";
+  }, [value]);
+
+  const hasProviders = providers.length > 0;
+  const activeProvider =
+    providers.find((p) => p.id === activeProviderId) ?? providers[0] ?? null;
 
   const modelOption = useMemo(
     () => findSelectOption(configOptions, "model", "model"),
@@ -83,6 +150,18 @@ export function PromptInput({
     () => findSelectOption(configOptions, "thought_level", "thought_level"),
     [configOptions],
   );
+
+  /** One menu: groups = providers, items = Haiku/Sonnet/Opus under each. */
+  const providerModelGroups = useMemo(() => {
+    return providers.map((p) => ({
+      id: p.id,
+      label: p.name,
+      options: MODEL_ALIASES.map((alias) => ({
+        value: encodeProviderModel(p.id, alias),
+        label: modelOptionLabel(p, alias),
+      })),
+    }));
+  }, [providers]);
 
   const filteredCommands = useMemo(() => {
     if (!value.startsWith("/")) return [];
@@ -145,6 +224,25 @@ export function PromptInput({
   const effortLabel =
     effortOption?.options.find((o) => o.value === effortOption.currentValue)
       ?.name ?? effortOption?.currentValue;
+
+  const providerModelValue = activeProvider
+    ? encodeProviderModel(activeProvider.id, activeModelAlias)
+    : "";
+  const providerModelDisplay = activeProvider
+    ? `${activeProvider.name} · ${modelOptionLabel(activeProvider, activeModelAlias)}`
+    : "";
+
+  const changeProviderModel = async (encoded: string) => {
+    if (!onProviderModelChange || settingConfig) return;
+    const parsed = decodeProviderModel(encoded);
+    if (!parsed) return;
+    setSettingConfig(true);
+    try {
+      await onProviderModelChange(parsed.providerId, parsed.alias);
+    } finally {
+      setSettingConfig(false);
+    }
+  };
 
   const canSend = !disabled && !!value.trim();
 
@@ -214,10 +312,11 @@ export function PromptInput({
           </div>
         )}
         <div className="relative px-4 py-3">
-          <input
+          <textarea
             ref={inputRef}
             value={value}
             disabled={disabled}
+            rows={1}
             onChange={(e) => setValue(e.target.value)}
             onKeyDown={(e) => {
               if (showCommands && filteredCommands.length > 0) {
@@ -252,6 +351,7 @@ export function PromptInput({
                   return;
                 }
               }
+              // Enter sends; Shift+Enter inserts a newline.
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
                 void submit();
@@ -260,13 +360,13 @@ export function PromptInput({
                 void onCancel?.();
               }
             }}
-            className="w-full border-none bg-transparent text-[15px] text-gray-200 placeholder-gray-500 focus:outline-none focus:ring-0 disabled:opacity-50"
+            className="max-h-[200px] min-h-[24px] w-full resize-none border-none bg-transparent text-[15px] leading-6 text-gray-200 placeholder-gray-500 focus:outline-none focus:ring-0 disabled:opacity-50"
             placeholder={
               disabled
                 ? "Connecting to agent…"
                 : prompting
-                  ? "Queue a follow-up… (Enter to queue, Esc to stop)"
-                  : "Ask anything — or / for commands"
+                  ? "Queue a follow-up… (Enter to queue, Shift+Enter for newline, Esc to stop)"
+                  : "Ask anything — or / for commands (Shift+Enter for newline)"
             }
             aria-label="Prompt input"
             aria-autocomplete="list"
@@ -307,15 +407,30 @@ export function PromptInput({
           )}
         </div>
         <div className="flex items-center justify-between border-t border-[#2e2e2e] px-3 py-2">
-          <div className="flex items-center space-x-3">
+          <div className="flex min-w-0 items-center space-x-3">
             {mode && mode !== "default" && (
               <span className="rounded-full bg-[#2a2a2a] px-2 py-0.5 text-[11px] font-medium text-amber-400">
                 {mode}
               </span>
             )}
-            {modelOption && modelLabel && (
+            {hasProviders && activeProvider && onProviderModelChange && (
               <>
-                {(mode && mode !== "default") && (
+                {mode && mode !== "default" && (
+                  <div className="h-4 w-px bg-[#333]" />
+                )}
+                <GroupedSelector
+                  value={providerModelValue}
+                  displayValue={providerModelDisplay}
+                  groups={providerModelGroups}
+                  onChange={(v) => void changeProviderModel(v)}
+                  accent="text-[#d97706]"
+                  disabled={disabled || settingConfig}
+                />
+              </>
+            )}
+            {!hasProviders && modelOption && modelLabel && (
+              <>
+                {mode && mode !== "default" && (
                   <div className="h-4 w-px bg-[#333]" />
                 )}
                 <Selector
@@ -558,9 +673,9 @@ function Selector({
         className={`flex items-center space-x-1.5 rounded px-2 py-1 text-sm font-medium hover:bg-[#3a270a] disabled:opacity-50 ${accent ?? "text-gray-400 hover:text-gray-200"}`}
       >
         {prefix && <span>{prefix}</span>}
-        <span>{displayValue ?? value}</span>
+        <span className="max-w-[14rem] truncate">{displayValue ?? value}</span>
         <svg
-          className="h-3 w-3 text-gray-500"
+          className="h-3 w-3 shrink-0 text-gray-500"
           fill="none"
           stroke="currentColor"
           viewBox="0 0 24 24"
@@ -587,6 +702,116 @@ function Selector({
             >
               {o.label}
             </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Provider · model picker: options grouped by provider name.
+ * Trigger shows "Provider · Haiku · mapped-id".
+ */
+function GroupedSelector({
+  value,
+  displayValue,
+  groups,
+  onChange,
+  accent,
+  disabled,
+}: {
+  value: string;
+  displayValue?: string;
+  groups: Array<{
+    id: string;
+    label: string;
+    options: Array<{ value: string; label: string }>;
+  }>;
+  onChange: (v: string) => void;
+  accent?: string;
+  disabled?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const optionCount = groups.reduce((n, g) => n + g.options.length, 0);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => {
+      if (!rootRef.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", onDoc);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDoc);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  return (
+    <div className="relative" ref={rootRef}>
+      <button
+        type="button"
+        disabled={disabled || optionCount === 0}
+        onClick={() => setOpen((o) => !o)}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        className={`flex max-w-[18rem] items-center space-x-1.5 rounded px-2 py-1 text-sm font-medium hover:bg-[#3a270a] disabled:opacity-50 ${accent ?? "text-gray-400 hover:text-gray-200"}`}
+      >
+        <span className="min-w-0 truncate" title={displayValue ?? value}>
+          {displayValue ?? value}
+        </span>
+        <svg
+          className="h-3 w-3 shrink-0 text-gray-500"
+          fill="none"
+          stroke="currentColor"
+          viewBox="0 0 24 24"
+          strokeWidth={2}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
+          <path d="M19 9l-7 7-7-7" />
+        </svg>
+      </button>
+      {open && (
+        <div
+          role="listbox"
+          className="absolute bottom-full left-0 z-50 mb-1 max-h-72 min-w-[14rem] max-w-[20rem] overflow-y-auto rounded-lg border border-[#3a3a3a] bg-[#1e1e1e] py-1 shadow-xl"
+        >
+          {groups.map((group, gi) => (
+            <div key={group.id} role="group" aria-label={group.label}>
+              {gi > 0 && <div className="my-1 border-t border-[#2e2e2e]" />}
+              <div className="px-3 pb-0.5 pt-1.5 text-[10px] font-semibold uppercase tracking-wider text-gray-500">
+                {group.label}
+              </div>
+              {group.options.map((o) => {
+                const selected = o.value === value;
+                return (
+                  <button
+                    type="button"
+                    role="option"
+                    aria-selected={selected}
+                    key={o.value}
+                    onClick={() => {
+                      onChange(o.value);
+                      setOpen(false);
+                    }}
+                    className={`block w-full truncate px-3 py-1.5 text-left text-sm hover:bg-[#2a2a2a] ${
+                      selected
+                        ? "bg-[#252525] font-medium text-gray-100"
+                        : "text-gray-400"
+                    }`}
+                    title={o.label}
+                  >
+                    {o.label}
+                  </button>
+                );
+              })}
+            </div>
           ))}
         </div>
       )}

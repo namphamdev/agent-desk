@@ -1,4 +1,10 @@
-import { BrowserView, BrowserWindow, Updater, Utils } from "electrobun/bun";
+import {
+  ApplicationMenu,
+  BrowserView,
+  BrowserWindow,
+  Updater,
+  Utils,
+} from "electrobun/bun";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import type { TerminalRPC } from "../shared/rpc";
@@ -9,6 +15,59 @@ import {
 } from "./notify";
 import { RemoteAccessServer } from "./remote-access";
 import { SessionManager } from "./session-manager";
+
+/**
+ * Install a standard macOS application menu with Edit roles.
+ *
+ * WKWebView does not handle ⌘C / ⌘V / ⌘X / ⌘A on its own when the host app
+ * has no Edit menu. Native NSMenu items with roles (paste, copy, …) wire those
+ * shortcuts into the first-responder chain so text fields work.
+ */
+function installApplicationMenu() {
+  ApplicationMenu.setApplicationMenu([
+    {
+      label: "Terminal React",
+      submenu: [
+        { role: "about", label: "About Terminal React" },
+        { type: "separator" },
+        { role: "hide", label: "Hide Terminal React", accelerator: "CmdOrCtrl+H" },
+        { role: "hideOthers", label: "Hide Others" },
+        { role: "showAll", label: "Show All" },
+        { type: "separator" },
+        { role: "quit", label: "Quit Terminal React", accelerator: "CmdOrCtrl+Q" },
+      ],
+    },
+    {
+      label: "Edit",
+      submenu: [
+        { role: "undo", accelerator: "CmdOrCtrl+Z" },
+        { role: "redo", accelerator: "Shift+CmdOrCtrl+Z" },
+        { type: "separator" },
+        { role: "cut", accelerator: "CmdOrCtrl+X" },
+        { role: "copy", accelerator: "CmdOrCtrl+C" },
+        { role: "paste", accelerator: "CmdOrCtrl+V" },
+        { role: "pasteAndMatchStyle", accelerator: "Shift+CmdOrCtrl+V" },
+        { role: "delete" },
+        { role: "selectAll", accelerator: "CmdOrCtrl+A" },
+      ],
+    },
+    {
+      label: "View",
+      submenu: [
+        { role: "toggleFullScreen", accelerator: "Ctrl+CmdOrCtrl+F" },
+      ],
+    },
+    {
+      label: "Window",
+      submenu: [
+        { role: "minimize", accelerator: "CmdOrCtrl+M" },
+        { role: "zoom" },
+        { type: "separator" },
+        { role: "bringAllToFront" },
+      ],
+    },
+  ]);
+}
 
 async function pickFolderDialog(startingFolder?: string): Promise<
   | { ok: true; path: string }
@@ -167,6 +226,16 @@ const terminalRPC = BrowserView.defineRPC<TerminalRPC>({
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           console.warn("[clipboard] bun write error:", message);
+          return { ok: false as const, error: message };
+        }
+      },
+      readClipboard: async () => {
+        try {
+          const text = Utils.clipboardReadText() ?? "";
+          return { ok: true as const, text };
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          console.warn("[clipboard] bun read error:", message);
           return { ok: false as const, error: message };
         }
       },
@@ -361,9 +430,21 @@ remoteAccess = new RemoteAccessServer({
       return { ok: false as const, error: message };
     }
   },
+  readClipboard: async () => {
+    try {
+      const text = Utils.clipboardReadText() ?? "";
+      return { ok: true as const, text };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { ok: false as const, error: message };
+    }
+  },
 });
 
 await manager.init();
+
+// Must run before (or as soon as) the window opens so ⌘V / ⌘C hit Edit roles.
+installApplicationMenu();
 
 const url = await resolveMainViewUrl();
 

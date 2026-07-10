@@ -14,6 +14,7 @@ import {
   type AcpSessionHandle,
 } from "../acp-client";
 import {
+  buildClaudeCodeSessionMeta,
   buildProviderEnv,
   normalizeModelAlias,
   providerConnectionKey,
@@ -187,89 +188,103 @@ export class AgentConnection {
         "sonnet",
       );
       const providerEnv = buildProviderEnv(provider, modelAlias);
+      const sessionMeta = buildClaudeCodeSessionMeta(provider, modelAlias);
       if (provider) {
         console.log(
-          `[acp] spawning with provider "${provider.name}" model=${modelAlias}` +
+          `[acp] spawning with provider "${provider.name}" (${provider.id})` +
+            ` model=${modelAlias}` +
             (providerEnv?.ANTHROPIC_MODEL
               ? ` → ${providerEnv.ANTHROPIC_MODEL}`
+              : "") +
+            (providerEnv?.ANTHROPIC_BASE_URL
+              ? ` base=${providerEnv.ANTHROPIC_BASE_URL}`
               : ""),
+        );
+      } else {
+        console.log(
+          "[acp] spawning without app provider (Claude Code user settings apply)",
         );
       }
 
       const client = new AcpClient(
         agent,
         {
-        enableFs: this.host.settings.enableFsCapabilities,
-        onUpdate: (sessionId, update) => {
-          const localId = this.agentToLocal.get(sessionId) ?? sessionId;
-          // We persist user messages ourselves in sendPrompt. Skip any the
-          // agent echoes back to avoid duplicates on reload.
-          if (update.sessionUpdate === "user_message_chunk") return;
-          this.host.store.appendEvent(localId, update);
-          const live = this.host.live.get(localId);
-          if (live) {
-            live.summary = {
-              ...live.summary,
-              updatedAt: Date.now(),
-            };
-          }
-          this.host.events.onUpdate(localId, update);
+          enableFs: this.host.settings.enableFsCapabilities,
+          onUpdate: (sessionId, update) => {
+            const localId = this.agentToLocal.get(sessionId) ?? sessionId;
+            // We persist user messages ourselves in sendPrompt. Skip any the
+            // agent echoes back to avoid duplicates on reload.
+            if (update.sessionUpdate === "user_message_chunk") return;
+            this.host.store.appendEvent(localId, update);
+            const live = this.host.live.get(localId);
+            if (live) {
+              live.summary = {
+                ...live.summary,
+                updatedAt: Date.now(),
+              };
+            }
+            this.host.events.onUpdate(localId, update);
+          },
+          onCommands: (sessionId, commands: AvailableCommand[]) => {
+            const localId = this.agentToLocal.get(sessionId) ?? sessionId;
+            const live = this.host.live.get(localId);
+            if (live) live.commands = commands;
+            this.host.events.onCommands(localId, commands);
+          },
+          onMode: (sessionId, mode) => {
+            const localId = this.agentToLocal.get(sessionId) ?? sessionId;
+            const live = this.host.live.get(localId);
+            if (live) {
+              live.mode = mode;
+              this.host.store.updateSession(localId, { mode });
+            }
+            this.host.events.onMode(localId, mode);
+          },
+          onConfigOptions: (sessionId, configOptions: SessionConfigOption[]) => {
+            const localId = this.agentToLocal.get(sessionId) ?? sessionId;
+            const live = this.host.live.get(localId);
+            if (live) live.configOptions = configOptions;
+            // Sync mode from configOptions when agent uses category "mode".
+            const modeOpt = configOptions.find(
+              (o) =>
+                o.category === "mode" &&
+                o.type === "select" &&
+                typeof o.currentValue === "string",
+            );
+            if (modeOpt && modeOpt.type === "select" && live) {
+              live.mode = modeOpt.currentValue;
+              this.host.store.updateSession(localId, {
+                mode: modeOpt.currentValue,
+              });
+              this.host.events.onMode(localId, modeOpt.currentValue);
+            }
+            this.host.events.onConfigOptions(localId, configOptions);
+          },
+          onUsage: (sessionId, usage: SessionUsage) => {
+            const localId = this.agentToLocal.get(sessionId) ?? sessionId;
+            const live = this.host.live.get(localId);
+            if (live) live.usage = usage;
+            this.host.events.onUsage(localId, usage);
+          },
+          onTurnEnd: (sessionId, stopReason) => {
+            const localId = this.agentToLocal.get(sessionId) ?? sessionId;
+            const live = this.host.live.get(localId);
+            if (live) live.prompting = false;
+            this.setConnection({
+              status: "ready",
+              agentName: agent.name,
+              sessionId: this.host.activeSessionId,
+            });
+            this.host.events.onTurnEnd(localId, stopReason);
+          },
+          onPermission: async (params) => {
+            return this.host.queuePermission(params);
+          },
         },
-        onCommands: (sessionId, commands: AvailableCommand[]) => {
-          const localId = this.agentToLocal.get(sessionId) ?? sessionId;
-          const live = this.host.live.get(localId);
-          if (live) live.commands = commands;
-          this.host.events.onCommands(localId, commands);
+        {
+          ...(providerEnv ? { env: providerEnv } : {}),
+          ...(sessionMeta ? { sessionMeta } : {}),
         },
-        onMode: (sessionId, mode) => {
-          const localId = this.agentToLocal.get(sessionId) ?? sessionId;
-          const live = this.host.live.get(localId);
-          if (live) {
-            live.mode = mode;
-            this.host.store.updateSession(localId, { mode });
-          }
-          this.host.events.onMode(localId, mode);
-        },
-        onConfigOptions: (sessionId, configOptions: SessionConfigOption[]) => {
-          const localId = this.agentToLocal.get(sessionId) ?? sessionId;
-          const live = this.host.live.get(localId);
-          if (live) live.configOptions = configOptions;
-          // Sync mode from configOptions when agent uses category "mode".
-          const modeOpt = configOptions.find(
-            (o) =>
-              o.category === "mode" &&
-              o.type === "select" &&
-              typeof o.currentValue === "string",
-          );
-          if (modeOpt && modeOpt.type === "select" && live) {
-            live.mode = modeOpt.currentValue;
-            this.host.store.updateSession(localId, { mode: modeOpt.currentValue });
-            this.host.events.onMode(localId, modeOpt.currentValue);
-          }
-          this.host.events.onConfigOptions(localId, configOptions);
-        },
-        onUsage: (sessionId, usage: SessionUsage) => {
-          const localId = this.agentToLocal.get(sessionId) ?? sessionId;
-          const live = this.host.live.get(localId);
-          if (live) live.usage = usage;
-          this.host.events.onUsage(localId, usage);
-        },
-        onTurnEnd: (sessionId, stopReason) => {
-          const localId = this.agentToLocal.get(sessionId) ?? sessionId;
-          const live = this.host.live.get(localId);
-          if (live) live.prompting = false;
-          this.setConnection({
-            status: "ready",
-            agentName: agent.name,
-            sessionId: this.host.activeSessionId,
-          });
-          this.host.events.onTurnEnd(localId, stopReason);
-        },
-        onPermission: async (params) => {
-          return this.host.queuePermission(params);
-        },
-        },
-        providerEnv ? { env: providerEnv } : {},
       );
 
       await client.connect();
