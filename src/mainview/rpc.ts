@@ -13,6 +13,7 @@ import type {
   SessionConfigOption,
   SessionListPayload,
   SessionLoadedPayload,
+  SessionUsage,
   TerminalRPC,
   TurnEndPayload,
 } from "../shared/rpc";
@@ -31,6 +32,7 @@ export type RpcListeners = {
     sessionId: string,
     configOptions: SessionConfigOption[],
   ) => void;
+  onUsage?: (sessionId: string, usage: SessionUsage) => void;
 };
 
 type RpcClient = {
@@ -62,6 +64,11 @@ type RpcClient = {
       | { ok: false; error: string }
     >;
     deleteSession: (p: { sessionId: string }) => Promise<{ ok: boolean }>;
+    offloadSession: (
+      p: { sessionId: string },
+    ) => Promise<
+      { ok: true; killed: boolean } | { ok: false; error: string }
+    >;
     respondPermission: (p: {
       requestId: string;
       optionId: string;
@@ -162,6 +169,9 @@ export function initRpc(): RpcClient {
           },
           onConfigOptions: ({ sessionId, configOptions }) => {
             listeners.onConfigOptions?.(sessionId, configOptions);
+          },
+          onUsage: ({ sessionId, usage }) => {
+            listeners.onUsage?.(sessionId, usage);
           },
         },
       },
@@ -323,6 +333,14 @@ function createBrowserMock(): RpcClient {
         if (activeSessionId === sessionId) activeSessionId = sessions[0]?.id ?? null;
         emit.list();
         return { ok: true };
+      },
+      async offloadSession({ sessionId }) {
+        if (!sessions.some((s) => s.id === sessionId)) {
+          return { ok: false as const, error: "Session not found" };
+        }
+        // Browser mock has no real agent process; mark connection idle.
+        emit.conn({ status: "idle" });
+        return { ok: true as const, killed: true };
       },
       async respondPermission() {
         return { ok: true };

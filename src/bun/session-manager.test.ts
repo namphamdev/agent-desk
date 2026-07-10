@@ -2,7 +2,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { SessionManager, type SessionManagerEvents } from "./session-manager";
+import {
+  SessionManager,
+  resolveSelectOptionValue,
+  type SessionManagerEvents,
+} from "./session-manager";
 import type { SessionUpdate } from "../session/types";
 import type {
   AvailableCommand,
@@ -10,8 +14,67 @@ import type {
   PermissionRequest,
   SessionConfigOption,
   SessionSummary,
+  SessionUsage,
 } from "../shared/rpc";
 import { demoUpdates } from "../fixtures/demo";
+
+describe("resolveSelectOptionValue", () => {
+  const options: SessionConfigOption[] = [
+    {
+      id: "thought_level",
+      name: "Effort",
+      category: "thought_level",
+      type: "select",
+      currentValue: "high",
+      options: [
+        { value: "high", name: "High" },
+        { value: "medium", name: "Medium" },
+        { value: "low", name: "Low" },
+      ],
+    },
+  ];
+
+  it("resolves by value and by display name (case-insensitive)", () => {
+    expect(
+      resolveSelectOptionValue(options, "thought_level", "thought_level", "low"),
+    ).toEqual({ configId: "thought_level", value: "low" });
+    expect(
+      resolveSelectOptionValue(
+        options,
+        "thought_level",
+        "thought_level",
+        "Medium",
+      ),
+    ).toEqual({ configId: "thought_level", value: "medium" });
+  });
+
+  it("returns null when already current or unknown", () => {
+    expect(
+      resolveSelectOptionValue(
+        options,
+        "thought_level",
+        "thought_level",
+        "high",
+      ),
+    ).toBeNull();
+    expect(
+      resolveSelectOptionValue(
+        options,
+        "thought_level",
+        "thought_level",
+        "High",
+      ),
+    ).toBeNull();
+    expect(
+      resolveSelectOptionValue(
+        options,
+        "thought_level",
+        "thought_level",
+        "max",
+      ),
+    ).toBeNull();
+  });
+});
 
 const mockConfigOptions: SessionConfigOption[] = [
   {
@@ -39,10 +102,21 @@ const mockConfigOptions: SessionConfigOption[] = [
   },
 ];
 
+/** Tracks mock AcpClient instances for offload / dispose assertions. */
+const mockAcpClients: Array<{ disposed: boolean }> = (
+  (globalThis as { __mockAcpClients?: Array<{ disposed: boolean }> })
+    .__mockAcpClients ??= []
+);
+
 vi.mock("./acp-client", () => {
   let mockSessionSeq = 0;
+  const clients = (
+    (globalThis as { __mockAcpClients?: Array<{ disposed: boolean }> })
+      .__mockAcpClients ??= []
+  );
   class AcpClient {
     agent: { id: string; name: string };
+    disposed = false;
     handlers: {
       onUpdate: (sessionId: string, update: SessionUpdate) => void;
       onTurnEnd?: (sessionId: string, stopReason: string) => void;
@@ -64,9 +138,12 @@ vi.mock("./acp-client", () => {
     ) {
       this.agent = agent;
       this.handlers = handlers;
+      clients.push(this);
     }
     async connect() {}
-    async dispose() {}
+    async dispose() {
+      this.disposed = true;
+    }
     getPid() {
       return null;
     }
@@ -86,6 +163,9 @@ vi.mock("./acp-client", () => {
       return {
         sessionId,
         configOptions,
+        beginUpdates() {
+          // No-op in mock — updates are emitted from prompt().
+        },
         async prompt(text: string) {
           cancelled = false;
           h.onUpdate(sessionId, {
@@ -144,6 +224,7 @@ type Captured = {
     mode: string;
     commands: AvailableCommand[];
     configOptions?: SessionConfigOption[];
+    usage?: SessionUsage | null;
   }>;
   commands: Array<{ sessionId: string; commands: AvailableCommand[] }>;
   modes: Array<{ sessionId: string; mode: string }>;
@@ -178,8 +259,9 @@ function capture(): Captured {
       onMode: (sessionId, mode) => c.modes.push({ sessionId, mode }),
       onConfigOptions: (sessionId, configOptions) =>
         c.configOptions.push({ sessionId, configOptions }),
-      onSessionLoaded: (session, updates, mode, commands, configOptions) =>
-        c.loaded.push({ session, updates, mode, commands, configOptions }),
+      onUsage: () => {},
+      onSessionLoaded: (session, updates, mode, commands, configOptions, usage) =>
+        c.loaded.push({ session, updates, mode, commands, configOptions, usage }),
     },
   };
   return c;
@@ -311,6 +393,43 @@ describe("SessionManager", () => {
           ),
       ),
     ).toBe(true);
+  });
+
+  it("applies defaultEffort when a session opens", async () => {
+    const { mgr, c, agentId } = await boot();
+    // Mock agent starts at "high"; set settings default to "low".
+    mgr.saveSettings({ defaultEffort: "low" });
+
+    const created = await mgr.createSession({ agentId });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    const latest = [...c.configOptions]
+      .reverse()
+      .find((e) => e.sessionId === created.session.id);
+    const thought = latest?.configOptions.find((o) => o.id === "thought_level");
+    expect(thought?.type).toBe("select");
+    if (thought?.type === "select") {
+      expect(thought.currentValue).toBe("low");
+    }
+  });
+
+  it("matches defaultEffort case-insensitively by name", async () => {
+    const { mgr, c, agentId } = await boot();
+    mgr.saveSettings({ defaultEffort: "Medium" });
+
+    const created = await mgr.createSession({ agentId });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    const latest = [...c.configOptions]
+      .reverse()
+      .find((e) => e.sessionId === created.session.id);
+    const thought = latest?.configOptions.find((o) => o.id === "thought_level");
+    expect(thought?.type).toBe("select");
+    if (thought?.type === "select") {
+      expect(thought.currentValue).toBe("medium");
+    }
   });
 
   it("createSession rejects missing folders", async () => {
@@ -472,6 +591,37 @@ describe("SessionManager", () => {
     const list = mgr.listSessions();
     expect(list.sessions.map((s) => s.id)).toEqual([a.session.id]);
     expect(list.activeSessionId).toBe(a.session.id);
+  });
+
+  it("offloadSession kills the ACP client but keeps chat history", async () => {
+    mockAcpClients.length = 0;
+    const { mgr, agentId } = await boot();
+    const created = await mgr.createSession({ title: "Keep me", agentId });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    expect(mockAcpClients.length).toBeGreaterThan(0);
+    const client = mockAcpClients[mockAcpClients.length - 1]!;
+    expect(client.disposed).toBe(false);
+    expect(mgr.getConnectionState().status).toBe("ready");
+
+    const before = mgr.listSessions().sessions.find((s) => s.id === created.session.id);
+    expect(before?.agentRunning).toBe(true);
+
+    const res = await mgr.offloadSession(created.session.id);
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.killed).toBe(true);
+    expect(client.disposed).toBe(true);
+    expect(mgr.getConnectionState().status).toBe("idle");
+
+    // Session list / history still present; agent no longer running.
+    const list = mgr.listSessions();
+    expect(list.sessions.map((s) => s.id)).toContain(created.session.id);
+    const after = list.sessions.find((s) => s.id === created.session.id);
+    expect(after?.agentRunning).toBe(false);
+    const switched = await mgr.switchSession(created.session.id);
+    expect(switched.ok).toBe(true);
   });
 
   it("cancel during a prompt stops streaming", async () => {

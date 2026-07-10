@@ -20,7 +20,7 @@ import type {
   ToolCallStatus,
   ToolKind,
 } from "../session/types";
-import type { SessionConfigOption } from "../shared/rpc";
+import type { SessionConfigOption, SessionUsage } from "../shared/rpc";
 
 function translateContent(block: WireContent): ContentBlock | null {
   switch (block.type) {
@@ -201,9 +201,34 @@ export function translateSessionUpdate(
     case "config_option_update":
       // Handled separately by the session manager (prompt-bar selectors).
       return null;
+    case "usage_update":
+      // Handled separately by the session manager (context meter).
+      return null;
     default:
       return null;
   }
+}
+
+/** Map ACP `usage_update` into shared session usage (context window meter). */
+export function translateUsageUpdate(
+  update: Extract<WireUpdate, { sessionUpdate: "usage_update" }>,
+): SessionUsage | null {
+  const used = Number(update.used);
+  const size = Number(update.size);
+  if (!Number.isFinite(used) || !Number.isFinite(size) || size <= 0) {
+    return null;
+  }
+  const cost =
+    update.cost &&
+    typeof update.cost.amount === "number" &&
+    typeof update.cost.currency === "string"
+      ? { amount: update.cost.amount, currency: update.cost.currency }
+      : null;
+  return {
+    used: Math.max(0, Math.floor(used)),
+    size: Math.floor(size),
+    cost,
+  };
 }
 
 export function translateAvailableCommands(

@@ -33,7 +33,7 @@ export function ConfirmDialog({
 
   return (
     <div
-      className="absolute inset-0 z-40 flex items-center justify-center bg-black/60 p-6"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-6"
       role="dialog"
       aria-modal="true"
       aria-labelledby="confirm-title"

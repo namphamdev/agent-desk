@@ -59,7 +59,7 @@ export function Header({
         ? `Agent RAM: ${memoryLabel}`
         : undefined;
   return (
-    <header className="electrobun-webkit-app-region-drag header-bg flex h-14 shrink-0 items-center justify-between border-b border-[#2e2e2e] px-6">
+    <header className="electrobun-webkit-app-region-drag flex h-14 shrink-0 items-center justify-between border-b border-[#2e2e2e] px-6">
       <div className="flex items-center space-x-4">
         {showWindowControls && (
           <div className="electrobun-webkit-app-region-no-drag flex space-x-1.5">

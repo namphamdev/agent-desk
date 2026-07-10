@@ -16,14 +16,14 @@ import type {
   SessionNotification,
   SessionUpdate as WireUpdate,
 } from "@agentclientprotocol/sdk";
-import type { AgentInfo } from "../shared/rpc";
+import type { AgentInfo, SessionConfigOption, SessionUsage } from "../shared/rpc";
 import {
   translateAvailableCommands,
   translateConfigOptions,
   translateSessionUpdate,
+  translateUsageUpdate,
 } from "./translate";
 import type { SessionUpdate } from "../session/types";
-import type { SessionConfigOption } from "../shared/rpc";
 
 export type PermissionHandler = (
   req: RequestPermissionRequest & { requestId: string },
@@ -38,6 +38,7 @@ export type AcpClientHandlers = {
   ) => void;
   onMode?: (sessionId: string, mode: string) => void;
   onConfigOptions?: (sessionId: string, configOptions: SessionConfigOption[]) => void;
+  onUsage?: (sessionId: string, usage: SessionUsage) => void;
   onTurnEnd?: (sessionId: string, stopReason: string) => void;
   onError?: (error: unknown) => void;
   onPermission: PermissionHandler;
@@ -48,6 +49,12 @@ export type AcpSessionHandle = {
   sessionId: string;
   /** Initial config options from session/new (model, thought_level, …). */
   configOptions: SessionConfigOption[];
+  /**
+   * Start draining `session/update` notifications for this session.
+   * Call only after the agent session id is mapped to a local session id
+   * so early updates (e.g. `available_commands_update`) route correctly.
+   */
+  beginUpdates: () => void;
   prompt: (text: string) => Promise<{ stopReason: string }>;
   cancel: () => Promise<void>;
   setConfigOption: (
@@ -66,6 +73,13 @@ export class AcpClient {
   private active: ActiveSession | null = null;
   private disposed = false;
   private alwaysAllow = new Set<string>();
+  /** Bumped to cancel the background `nextUpdate` pump. */
+  private pumpToken = 0;
+  /** In-flight prompt resolved when the pump sees a `stop` message. */
+  private pendingPrompt: {
+    resolve: (value: { stopReason: string }) => void;
+    reject: (error: unknown) => void;
+  } | null = null;
 
   constructor(agent: AgentInfo, handlers: AcpClientHandlers) {
     this.agent = agent;
@@ -215,8 +229,14 @@ export class AcpClient {
   async openSession(cwd: string): Promise<AcpSessionHandle> {
     if (!this.ctx) throw new Error("not connected");
 
-    // Dispose previous active session routing if any.
-    this.active?.dispose();
+    // Stop prior pump + session routing before opening a new one.
+    this.stopUpdatePump();
+    try {
+      this.active?.dispose();
+    } catch {
+      /* ignore */
+    }
+    this.active = null;
 
     const session = await this.ctx
       .buildSession({ cwd, mcpServers: [] })
@@ -225,23 +245,91 @@ export class AcpClient {
 
     // Note: do not fire onConfigOptions/onMode here — the agent session id is
     // not mapped to a local id until SessionManager.ensureHandle registers it.
-    // Callers apply configOptions from the returned handle.
+    // Callers apply configOptions from the returned handle, then beginUpdates().
     const configOptions = translateConfigOptions(
       session.newSessionResponse.configOptions,
     );
 
+    let updatesStarted = false;
+
     return {
       sessionId: session.sessionId,
       configOptions,
+      beginUpdates: () => {
+        if (updatesStarted || this.active !== session || this.disposed) return;
+        updatesStarted = true;
+        this.startUpdatePump(session);
+      },
       prompt: (text) => this.promptLive(session, text),
       cancel: () => this.cancelLive(session.sessionId),
       setConfigOption: (configId, value) =>
         this.setConfigOptionLive(session.sessionId, configId, value),
       dispose: () => {
-        session.dispose();
+        this.stopUpdatePump();
+        try {
+          session.dispose();
+        } catch {
+          /* ignore */
+        }
         if (this.active === session) this.active = null;
       },
     };
+  }
+
+  /**
+   * Continuously drain `ActiveSession.nextUpdate()` so pre-prompt notifications
+   * (especially `available_commands_update`) reach the UI as soon as the agent
+   * sends them — not only after the first prompt turn.
+   */
+  private startUpdatePump(session: ActiveSession) {
+    const token = ++this.pumpToken;
+    void this.pumpUpdates(session, token);
+  }
+
+  private stopUpdatePump() {
+    this.pumpToken++;
+    const pending = this.pendingPrompt;
+    this.pendingPrompt = null;
+    if (pending) {
+      pending.reject(new Error("session disposed"));
+    }
+  }
+
+  private async pumpUpdates(session: ActiveSession, token: number) {
+    while (
+      this.pumpToken === token &&
+      this.active === session &&
+      !this.disposed
+    ) {
+      try {
+        const message = await session.nextUpdate();
+        if (this.pumpToken !== token || this.active !== session) return;
+
+        if (message.kind === "stop") {
+          const stopReason = message.stopReason;
+          this.handlers.onTurnEnd?.(session.sessionId, stopReason);
+          const pending = this.pendingPrompt;
+          this.pendingPrompt = null;
+          pending?.resolve({ stopReason });
+          continue;
+        }
+
+        this.dispatchWire(
+          session.sessionId,
+          message.update,
+          message.notification,
+        );
+      } catch (err) {
+        if (this.pumpToken !== token || this.active !== session || this.disposed) {
+          return;
+        }
+        const pending = this.pendingPrompt;
+        this.pendingPrompt = null;
+        pending?.reject(err);
+        this.handlers.onError?.(err);
+        return;
+      }
+    }
   }
 
   private async setConfigOptionLive(
@@ -278,21 +366,23 @@ export class AcpClient {
     session: ActiveSession,
     text: string,
   ): Promise<{ stopReason: string }> {
-    // Fire prompt without awaiting fully — drain nextUpdate in parallel.
-    const promptPromise = session.prompt(text);
-
-    // Drain updates until stop.
-    for (;;) {
-      const message = await session.nextUpdate();
-      if (message.kind === "stop") {
-        const stopReason = message.stopReason;
-        this.handlers.onTurnEnd?.(session.sessionId, stopReason);
-        // Ensure the prompt promise settles.
-        await promptPromise.catch(() => undefined);
-        return { stopReason };
-      }
-      this.dispatchWire(session.sessionId, message.update, message.notification);
+    if (this.active !== session) {
+      throw new Error("session is not active");
     }
+    if (this.pendingPrompt) {
+      throw new Error("a prompt is already in progress");
+    }
+
+    // The background pump owns nextUpdate(); resolve when it sees `stop`.
+    return new Promise<{ stopReason: string }>((resolve, reject) => {
+      this.pendingPrompt = { resolve, reject };
+      void session.prompt(text).catch((err) => {
+        if (this.pendingPrompt?.reject === reject) {
+          this.pendingPrompt = null;
+          reject(err);
+        }
+      });
+    });
   }
 
   private dispatchWire(
@@ -310,6 +400,11 @@ export class AcpClient {
     if (update.sessionUpdate === "config_option_update") {
       const configOptions = translateConfigOptions(update.configOptions);
       this.handlers.onConfigOptions?.(sessionId, configOptions);
+      return;
+    }
+    if (update.sessionUpdate === "usage_update") {
+      const usage = translateUsageUpdate(update);
+      if (usage) this.handlers.onUsage?.(sessionId, usage);
       return;
     }
     if (update.sessionUpdate === "current_mode_update") {
@@ -367,11 +462,13 @@ export class AcpClient {
   async dispose() {
     if (this.disposed) return;
     this.disposed = true;
+    this.stopUpdatePump();
     try {
       this.active?.dispose();
     } catch {
       /* ignore */
     }
+    this.active = null;
     try {
       this.connection?.close();
     } catch {

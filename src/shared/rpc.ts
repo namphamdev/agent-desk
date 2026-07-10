@@ -30,6 +30,11 @@ export type SessionSummary = {
   agentId: string;
   updatedAt: number;
   createdAt: number;
+  /**
+   * Runtime-only: true when this session has a live ACP agent process/handle.
+   * Not persisted to SQLite.
+   */
+  agentRunning?: boolean;
 };
 
 export type PermissionRequest = {
@@ -102,6 +107,11 @@ export type AppSettings = {
   enableSound: boolean;
   dataDir?: string;
   defaultModel?: string;
+  /**
+   * Default thinking / effort level applied when an ACP session opens.
+   * Matched case-insensitively against the agent's `thought_level` options
+   * (typical values: low, medium, high, xhigh, max).
+   */
   defaultEffort?: string;
   /** Last folder chosen for a new session (used as dialog default). */
   lastProjectCwd?: string | null;
@@ -136,12 +146,24 @@ export type SessionListPayload = {
   activeSessionId: string | null;
 };
 
+/** Context window usage for a session (from ACP `usage_update`). */
+export type SessionUsage = {
+  /** Tokens currently in context. */
+  used: number;
+  /** Total context window size in tokens. */
+  size: number;
+  /** Cumulative session cost, if the agent reports it. */
+  cost?: { amount: number; currency: string } | null;
+};
+
 export type SessionLoadedPayload = {
   session: SessionSummary;
   updates: SessionUpdate[];
   mode: string;
   commands: AvailableCommand[];
   configOptions?: SessionConfigOption[];
+  /** Latest context usage for this session, if known. */
+  usage?: SessionUsage | null;
 };
 
 /**
@@ -197,6 +219,13 @@ export type TerminalRPC = {
       deleteSession: {
         params: { sessionId: string };
         response: { ok: boolean };
+      };
+      /** Kill ACP agent for a session to free memory; keeps chat history. */
+      offloadSession: {
+        params: { sessionId: string };
+        response:
+          | { ok: true; killed: boolean }
+          | { ok: false; error: string };
       };
       respondPermission: {
         params: PermissionDecision;
@@ -296,6 +325,10 @@ getGitBranch: {
       onConfigOptions: {
         sessionId: string;
         configOptions: SessionConfigOption[];
+      };
+      onUsage: {
+        sessionId: string;
+        usage: SessionUsage;
       };
       onPlan: { sessionId: string; plan: Plan };
     };

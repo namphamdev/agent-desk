@@ -16,6 +16,22 @@ const THEME_OPTIONS = [
   { value: "system", label: "System" },
 ] as const;
 
+/** Common ACP thought_level / effort values (Claude Code and similar agents). */
+const EFFORT_OPTIONS = [
+  { value: "low", label: "Low" },
+  { value: "medium", label: "Medium" },
+  { value: "high", label: "High" },
+  { value: "xhigh", label: "Extra high" },
+  { value: "max", label: "Max" },
+] as const;
+
+function normalizeEffortValue(raw: string | undefined): string {
+  if (!raw) return "high";
+  const lower = raw.toLowerCase();
+  const known = EFFORT_OPTIONS.find((o) => o.value === lower);
+  return known?.value ?? lower;
+}
+
 export function SettingsPanel({ settings, agents, onClose, onSave }: Props) {
   const [draft, setDraft] = useState(settings);
   const [saving, setSaving] = useState(false);
@@ -37,7 +53,7 @@ export function SettingsPanel({ settings, agents, onClose, onSave }: Props) {
 
   return (
     <div
-      className="absolute inset-0 z-30 flex items-center justify-center bg-black/60 p-6"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-6"
       role="dialog"
       aria-modal="true"
       aria-labelledby="settings-title"
@@ -101,6 +117,22 @@ export function SettingsPanel({ settings, agents, onClose, onSave }: Props) {
             />
             <p className="mt-1 text-[11px] text-gray-500">
               Configure agents in ~/.terminal-react/agents.json
+            </p>
+          </Field>
+
+          <Field label="Default thinking level">
+            <Select
+              value={normalizeEffortValue(draft.defaultEffort)}
+              options={[...EFFORT_OPTIONS]}
+              onChange={(defaultEffort) =>
+                setDraft((d) => ({ ...d, defaultEffort }))
+              }
+              aria-label="Default thinking level"
+            />
+            <p className="mt-1 text-[11px] text-gray-500">
+              Applied when a session starts (if the agent exposes a thinking /
+              effort selector). You can still change it per turn in the prompt
+              bar.
             </p>
           </Field>
 

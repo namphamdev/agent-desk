@@ -87,7 +87,7 @@ src/
   bun/
     index.ts              # Electrobun main — RPC + SessionManager
     acp-client.ts         # spawn agent, ACP initialize/prompt/cancel
-    session-manager.ts    # multi-session orchestration
+    session-manager/      # multi-session orchestration (manager, agent connection, helpers)
     store.ts              # bun:sqlite persistence
     agents.ts             # ~/.terminal-react/agents.json
     translate.ts          # wire ACP → local render types

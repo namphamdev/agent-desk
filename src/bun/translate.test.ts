@@ -3,6 +3,7 @@ import {
   translateAvailableCommands,
   translateConfigOptions,
   translateSessionUpdate,
+  translateUsageUpdate,
 } from "./translate";
 import type { SessionUpdate as WireUpdate } from "@agentclientprotocol/sdk";
 
@@ -87,6 +88,15 @@ describe("translateSessionUpdate", () => {
     const wire = {
       sessionUpdate: "config_option_update",
       configOptions: [],
+    } as WireUpdate;
+    expect(translateSessionUpdate(wire)).toBeNull();
+  });
+
+  it("drops usage_update (handled separately)", () => {
+    const wire = {
+      sessionUpdate: "usage_update",
+      used: 12_000,
+      size: 200_000,
     } as WireUpdate;
     expect(translateSessionUpdate(wire)).toBeNull();
   });
@@ -345,5 +355,31 @@ describe("translateConfigOptions", () => {
     expect(translateConfigOptions(null)).toEqual([]);
     expect(translateConfigOptions(undefined)).toEqual([]);
     expect(translateConfigOptions([])).toEqual([]);
+  });
+});
+
+describe("translateUsageUpdate", () => {
+  it("maps used/size and optional cost", () => {
+    const usage = translateUsageUpdate({
+      sessionUpdate: "usage_update",
+      used: 45_000,
+      size: 200_000,
+      cost: { amount: 0.42, currency: "USD" },
+    } as Extract<WireUpdate, { sessionUpdate: "usage_update" }>);
+    expect(usage).toEqual({
+      used: 45_000,
+      size: 200_000,
+      cost: { amount: 0.42, currency: "USD" },
+    });
+  });
+
+  it("returns null when size is invalid", () => {
+    expect(
+      translateUsageUpdate({
+        sessionUpdate: "usage_update",
+        used: 10,
+        size: 0,
+      } as Extract<WireUpdate, { sessionUpdate: "usage_update" }>),
+    ).toBeNull();
   });
 });

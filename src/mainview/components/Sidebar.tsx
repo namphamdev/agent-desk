@@ -11,11 +11,15 @@ type Props = {
   activeSessionId: string | null;
   /** Per-session activity for loading spinner / blue completion indicator. */
   sessionActivity?: Record<string, SessionActivity>;
+  /** Pixel width; controlled by App when the sidebar is resizable. */
+  width?: number;
   onSelect: (id: string) => void;
   onNew: () => void;
   onNewInProject?: (project: string) => void;
   onDeleteProject?: (project: string) => void;
   onDeleteSession?: (id: string) => void;
+  /** Kill ACP agent for this session to free memory (keeps history). */
+  onOffloadSession?: (id: string) => void;
   onOpenSettings: () => void;
   onWindowControl?: (action: WindowControlAction) => void;
 };
@@ -35,11 +39,13 @@ export function Sidebar({
   sessions,
   activeSessionId,
   sessionActivity = {},
+  width,
   onSelect,
   onNew,
   onNewInProject,
   onDeleteProject,
   onDeleteSession,
+  onOffloadSession,
   onOpenSettings,
   onWindowControl,
 }: Props) {
@@ -88,8 +94,11 @@ export function Sidebar({
   };
 
   return (
-    <aside className="sidebar-bg flex w-64 flex-shrink-0 flex-col border-r border-[#2e2e2e]">
-      <div className="electrobun-webkit-app-region-drag flex h-14 items-center border-b border-[#2e2e2e] px-4">
+    <aside
+      className={`flex flex-shrink-0 flex-col ${width == null ? "w-64" : ""}`}
+      style={width != null ? { width } : undefined}
+    >
+      <div className="electrobun-webkit-app-region-drag flex h-14 items-center px-4">
         <div className="electrobun-webkit-app-region-no-drag flex space-x-1.5">
           <button
             type="button"
@@ -242,7 +251,7 @@ export function Sidebar({
                   <div
                     key={t.id}
                     onClick={() => onSelect(t.id)}
-                    className={`group flex w-full cursor-pointer items-center justify-between rounded-r-full px-6 py-1.5 text-left text-sm ${
+                    className={`group flex w-full cursor-pointer items-center justify-between rounded-r-full px-6 py-1.5 pr-[8px] text-left text-sm ${
                       isActive
                         ? "mr-2 bg-[#3a3a3a] text-gray-200"
                         : "text-gray-400 hover:bg-[#2a2a2a] hover:text-gray-200"
@@ -250,39 +259,58 @@ export function Sidebar({
                   >
                     <span className="truncate">{t.title}</span>
                     <span className="relative ml-2 flex shrink-0 items-center gap-1.5">
-                      {activity === "processing" ? (
+                      {/* Idle: show relative time (hidden on hover when actions appear). */}
+                      {!activity && (
+                        <span className="text-xs text-gray-500 group-hover:opacity-0">
+                          {timeAgo(t.updatedAt)}
+                        </span>
+                      )}
+                      {/* Activity badge — also hide on hover so offload/delete stay visible. */}
+                      {activity === "processing" && (
                         <span
                           role="status"
                           aria-label="Agent processing"
                           title="Agent processing"
-                          className="inline-block h-3 w-3 animate-spin rounded-full border border-gray-400 border-t-transparent"
+                          className="inline-block h-3 w-3 animate-spin rounded-full border border-gray-400 border-t-transparent group-hover:opacity-0"
                         />
-                      ) : activity === "done" ? (
+                      )}
+                      {activity === "done" && (
                         <span
                           role="status"
                           aria-label="Turn complete"
                           title="Turn complete"
-                          className="inline-block h-2 w-2 rounded-full bg-blue-500"
+                          className="inline-block h-2 w-2 rounded-full bg-blue-500 group-hover:opacity-0"
                         />
-                      ) : (
-                        <>
-                          <span className="text-xs text-gray-500 group-hover:opacity-0">
-                            {timeAgo(t.updatedAt)}
-                          </span>
+                      )}
+                      {/* Hover actions always available (offload only when agent is live). */}
+                      <span className="absolute right-0 flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+                        {t.agentRunning && (
                           <button
                             type="button"
-                            aria-label="Delete session"
-                            title="Delete"
+                            aria-label="Offload agent"
+                            title="Offload agent (free memory)"
                             onClick={(e) => {
                               e.stopPropagation();
-                              onDeleteSession?.(t.id);
+                              onOffloadSession?.(t.id);
                             }}
-                            className="absolute right-0 text-gray-500 opacity-0 transition-opacity hover:text-red-400 group-hover:opacity-100"
+                            className="text-gray-500 hover:text-amber-400"
                           >
-                            <TrashMiniIcon />
+                            <OffloadMiniIcon />
                           </button>
-                        </>
-                      )}
+                        )}
+                        <button
+                          type="button"
+                          aria-label="Delete session"
+                          title="Delete"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onDeleteSession?.(t.id);
+                          }}
+                          className="text-gray-500 hover:text-red-400"
+                        >
+                          <TrashMiniIcon />
+                        </button>
+                      </span>
                     </span>
                   </div>
                 );
@@ -393,6 +421,12 @@ const ChevronDownMiniIcon = () => (
 const TrashMiniIcon = () => (
   <svg {...s} className="h-3.5 w-3.5">
     <path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2" />
+  </svg>
+);
+/** Arrow-into-tray: unload agent process without deleting the chat. */
+const OffloadMiniIcon = () => (
+  <svg {...s} className="h-3.5 w-3.5">
+    <path d="M12 3v12m0 0l-4-4m4 4l4-4M4 19h16" />
   </svg>
 );
 const ChevronIcon = ({ className }: { className?: string }) => (

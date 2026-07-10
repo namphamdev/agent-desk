@@ -12,7 +12,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   enableSound: true,
   dataDir: join(homedir(), ".terminal-react"),
   defaultModel: undefined,
-  defaultEffort: "High",
+  /** ACP thought_level value applied when a session opens (e.g. low|medium|high|xhigh|max). */
+  defaultEffort: "high",
   lastProjectCwd: null,
   dismissedRecentCwds: [],
 };

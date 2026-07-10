@@ -34,7 +34,7 @@ describe("settings", () => {
     expect(DEFAULT_SETTINGS.enableNotifications).toBe(true);
     expect(DEFAULT_SETTINGS.enableSound).toBe(true);
     expect(DEFAULT_SETTINGS.defaultAgentId).toBeNull();
-    expect(DEFAULT_SETTINGS.defaultEffort).toBe("High");
+    expect(DEFAULT_SETTINGS.defaultEffort).toBe("high");
     expect(DEFAULT_SETTINGS.editorCommand).toBeTruthy();
     expect(DEFAULT_SETTINGS.dataDir).toContain(".terminal-react");
   });

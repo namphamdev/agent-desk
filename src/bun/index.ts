@@ -99,6 +99,9 @@ const terminalRPC = BrowserView.defineRPC<TerminalRPC>({
       deleteSession: async ({ sessionId }) => {
         return manager.deleteSession(sessionId);
       },
+      offloadSession: async ({ sessionId }) => {
+        return manager.offloadSession(sessionId);
+      },
       respondPermission: async ({ requestId, optionId }) => {
         return manager.respondPermission(requestId, optionId);
       },
@@ -277,7 +280,14 @@ manager = new SessionManager(dataDir, {
       console.warn("[rpc] onConfigOptions failed:", err);
     }
   },
-  onSessionLoaded: (session, updates, mode, commands, configOptions) => {
+  onUsage: (sessionId, usage) => {
+    try {
+      rpc()?.send.onUsage({ sessionId, usage });
+    } catch (err) {
+      console.warn("[rpc] onUsage failed:", err);
+    }
+  },
+  onSessionLoaded: (session, updates, mode, commands, configOptions, usage) => {
     try {
       rpc()?.send.onSessionLoaded({
         session,
@@ -285,6 +295,7 @@ manager = new SessionManager(dataDir, {
         mode,
         commands,
         configOptions,
+        usage: usage ?? null,
       });
     } catch (err) {
       console.warn("[rpc] onSessionLoaded failed:", err);
