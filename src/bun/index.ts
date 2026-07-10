@@ -13,6 +13,7 @@ import {
   showDesktopNotification,
   showNotificationsEnabledToast,
 } from "./notify";
+import { ensureAugmentedPath } from "./path-env";
 import { RemoteAccessServer } from "./remote-access";
 import { SessionManager } from "./session-manager";
 import {
@@ -26,6 +27,10 @@ import {
   setSkillEnabled,
   uninstallSkill,
 } from "./skills";
+
+// GUI launches (canary/stable .app) get a minimal PATH without Homebrew/npm.
+// Fix before any agent/editor/git spawn.
+ensureAugmentedPath();
 
 /**
  * Install a standard macOS application menu with Edit roles.

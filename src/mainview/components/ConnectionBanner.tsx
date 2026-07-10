@@ -25,7 +25,8 @@ export function ConnectionBanner({
       <strong className="font-semibold">Connection error:</strong>{" "}
       {connection.error ?? "unknown error"}
       <span className="ml-2 text-red-400/80">
-        Check ~/.terminal-react/agents.json and ensure your agent command is installed.
+        Check ~/.terminal-react/agents.json — use an absolute path if the binary
+        is installed but not found from the packaged app.
       </span>
     </div>
   );

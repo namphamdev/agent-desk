@@ -5,6 +5,7 @@
  * Uses `@agentclientprotocol/sdk` under Bun.
  */
 import { spawn, type Subprocess } from "bun";
+import { buildAugmentedPath, resolveExecutable } from "./path-env";
 import { Readable, Writable } from "node:stream";
 import * as acp from "@agentclientprotocol/sdk";
 import type {
@@ -154,9 +155,24 @@ export class AcpClient {
         if (v !== undefined) env[k] = v;
       }
     }
+    // Packaged GUI apps start with a minimal PATH; include Homebrew/npm/bun.
+    env.PATH = buildAugmentedPath(env.PATH);
+
+    const resolved = resolveExecutable(this.agent.command, env.PATH);
+    if (!resolved) {
+      throw new Error(
+        `Executable not found in $PATH: "${this.agent.command}". ` +
+          `Install it (e.g. npm i -g @agentclientprotocol/claude-agent-acp) ` +
+          `or set an absolute path in ~/.terminal-react/agents.json. ` +
+          `GUI apps may not see shell PATH — common bins (Homebrew, bun, npm) are auto-added.`,
+      );
+    }
+    if (resolved !== this.agent.command) {
+      console.log(`[acp] resolved "${this.agent.command}" → ${resolved}`);
+    }
 
     this.proc = spawn({
-      cmd: [this.agent.command, ...this.agent.args],
+      cmd: [resolved, ...this.agent.args],
       stdin: "pipe",
       stdout: "pipe",
       stderr: "pipe",
