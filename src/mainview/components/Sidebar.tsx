@@ -21,6 +21,8 @@ type Props = {
   /** Kill ACP agent for this session to free memory (keeps history). */
   onOffloadSession?: (id: string) => void;
   onOpenSettings: () => void;
+  /** Open skills management panel (install / enable / disable). */
+  onOpenSkills?: () => void;
   /** Open remote-access panel (QR + LAN URL for phone browsers). */
   onOpenRemoteAccess?: () => void;
   onWindowControl?: (action: WindowControlAction) => void;
@@ -49,6 +51,7 @@ export function Sidebar({
   onDeleteSession,
   onOffloadSession,
   onOpenSettings,
+  onOpenSkills,
   onOpenRemoteAccess,
   onWindowControl,
 }: Props) {
@@ -152,6 +155,14 @@ export function Sidebar({
           shortcut="⌘ K"
           onClick={() => setSearchOpen((o) => !o)}
         />
+        {onOpenSkills && (
+          <QuickAction
+            icon={<SkillsIcon />}
+            label="Skills"
+            onClick={onOpenSkills}
+            title="Install and manage agent skills"
+          />
+        )}
       </div>
 
       {searchOpen && (
@@ -486,5 +497,13 @@ const PhoneIcon = () => (
   <svg {...s} className="h-5 w-5">
     <rect x="7" y="2" width="10" height="20" rx="2" />
     <path d="M11 18h2" />
+  </svg>
+);
+/** Sparkles — agent skills. */
+const SkillsIcon = () => (
+  <svg {...s}>
+    <path d="M12 3l1.5 4.5L18 9l-4.5 1.5L12 15l-1.5-4.5L6 9l4.5-1.5L12 3z" />
+    <path d="M19 14l.75 2.25L22 17l-2.25.75L19 20l-.75-2.25L16 17l2.25-.75L19 14z" />
+    <path d="M5 14l.5 1.5L7 16l-1.5.5L5 18l-.5-1.5L3 16l1.5-.5L5 14z" />
   </svg>
 );

@@ -18,6 +18,7 @@ import type {
   SessionLoadedPayload,
   SessionSummary,
   SessionUsage,
+  SkillInfo,
   TurnEndPayload,
 } from "../shared/rpc";
 import type { SessionUpdate } from "../session/types";
@@ -49,6 +50,7 @@ export type RemoteAccessHandlers = {
     seedContext?: {
       text: string;
       role?: "user" | "agent" | "thought";
+      purpose?: "continue" | "review";
     };
   }) => Promise<
     | { ok: true; session: SessionSummary }
@@ -99,6 +101,21 @@ export type RemoteAccessHandlers = {
   readClipboard: () => Promise<
     { ok: true; text: string } | { ok: false; error: string }
   >;
+  listSkills: (projectCwd?: string | null) => { skills: SkillInfo[] };
+  installSkill: (
+    packageSpec: string,
+  ) => Promise<
+    { ok: true; skills: SkillInfo[] } | { ok: false; error: string }
+  >;
+  setSkillEnabled: (
+    skillId: string,
+    enabled: boolean,
+  ) =>
+    | { ok: true; skill: SkillInfo; skills: SkillInfo[] }
+    | { ok: false; error: string };
+  uninstallSkill: (
+    skillId: string,
+  ) => { ok: true; skills: SkillInfo[] } | { ok: false; error: string };
 };
 
 type WsClient = {
@@ -651,6 +668,19 @@ export class RemoteAccessServer {
         );
       case "showDesktopNotification":
         return { ok: true };
+      case "listSkills":
+        return h.listSkills(
+          params.projectCwd != null ? String(params.projectCwd) : null,
+        );
+      case "installSkill":
+        return h.installSkill(String(params.package ?? ""));
+      case "setSkillEnabled":
+        return h.setSkillEnabled(
+          String(params.skillId ?? ""),
+          Boolean(params.enabled),
+        );
+      case "uninstallSkill":
+        return h.uninstallSkill(String(params.skillId ?? ""));
       default:
         throw new Error(`Unknown method: ${method}`);
     }

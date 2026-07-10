@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
+  mergeSessionModesIntoConfigOptions,
   translateAvailableCommands,
   translateConfigOptions,
   translateSessionUpdate,
   translateUsageUpdate,
+  withModeCurrentValue,
 } from "./translate";
+import type { SessionConfigOption } from "../shared/rpc";
 import type { SessionUpdate as WireUpdate } from "@agentclientprotocol/sdk";
 
 describe("translateSessionUpdate", () => {
@@ -355,6 +358,81 @@ describe("translateConfigOptions", () => {
     expect(translateConfigOptions(null)).toEqual([]);
     expect(translateConfigOptions(undefined)).toEqual([]);
     expect(translateConfigOptions([])).toEqual([]);
+  });
+});
+
+describe("mergeSessionModesIntoConfigOptions", () => {
+  it("synthesizes Permission mode select from session modes", () => {
+    const merged = mergeSessionModesIntoConfigOptions(
+      [
+        {
+          id: "model",
+          name: "Model",
+          category: "model",
+          type: "select",
+          currentValue: "m1",
+          options: [{ value: "m1", name: "Model 1" }],
+        },
+      ],
+      {
+        currentModeId: "default",
+        availableModes: [
+          { id: "default", name: "Default" },
+          { id: "acceptEdits", name: "Accept Edits" },
+          { id: "plan", name: "Plan" },
+        ],
+      },
+    );
+    expect(merged).toHaveLength(2);
+    expect(merged[1]).toMatchObject({
+      id: "mode",
+      name: "Permission",
+      category: "mode",
+      type: "select",
+      currentValue: "default",
+    });
+    expect(
+      merged[1].type === "select" ? merged[1].options.map((o) => o.value) : [],
+    ).toEqual(["default", "acceptEdits", "plan"]);
+  });
+
+  it("does not duplicate when config already has mode", () => {
+    const existing: SessionConfigOption[] = [
+      {
+        id: "mode",
+        name: "Mode",
+        category: "mode",
+        type: "select",
+        currentValue: "plan",
+        options: [{ value: "plan", name: "Plan" }],
+      },
+    ];
+    const merged = mergeSessionModesIntoConfigOptions(existing, {
+      currentModeId: "default",
+      availableModes: [{ id: "default", name: "Default" }],
+    });
+    expect(merged).toBe(existing);
+  });
+});
+
+describe("withModeCurrentValue", () => {
+  it("updates mode select currentValue", () => {
+    const opts: SessionConfigOption[] = [
+      {
+        id: "mode",
+        name: "Permission",
+        category: "mode",
+        type: "select",
+        currentValue: "default",
+        options: [
+          { value: "default", name: "Default" },
+          { value: "acceptEdits", name: "Accept Edits" },
+        ],
+      },
+    ];
+    const next = withModeCurrentValue(opts, "acceptEdits");
+    expect(next[0].type === "select" && next[0].currentValue).toBe("acceptEdits");
+    expect(withModeCurrentValue(next, "acceptEdits")).toBe(next);
   });
 });
 

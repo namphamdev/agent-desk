@@ -98,9 +98,10 @@ function findSelectOption(
 /**
  * Bottom input bar. Sends prompts over Electrobun RPC to the ACP agent.
  * Supports Stop while streaming, a follow-up queue while the agent is busy,
- * and a `/commands` picker from available_commands_update. Model / effort
- * selectors come from ACP `configOptions` (categories `model` and
- * `thought_level`), or from configured Providers when present.
+ * and a `/commands` picker from available_commands_update. Model / mode /
+ * effort selectors come from ACP `configOptions` (categories `model`,
+ * `mode`, and `thought_level`), or from configured Providers when present.
+ * Claude Code ACP exposes permission mode under category `mode`.
  */
 export function PromptInput({
   disabled,
@@ -144,6 +145,11 @@ export function PromptInput({
 
   const modelOption = useMemo(
     () => findSelectOption(configOptions, "model", "model"),
+    [configOptions],
+  );
+  /** Session / permission mode (Claude Code ACP: default, acceptEdits, …). */
+  const modeOption = useMemo(
+    () => findSelectOption(configOptions, "mode", "mode"),
     [configOptions],
   );
   const effortOption = useMemo(
@@ -221,6 +227,9 @@ export function PromptInput({
   const modelLabel =
     modelOption?.options.find((o) => o.value === modelOption.currentValue)
       ?.name ?? modelOption?.currentValue;
+  const modeLabel =
+    modeOption?.options.find((o) => o.value === modeOption.currentValue)
+      ?.name ?? modeOption?.currentValue;
   const effortLabel =
     effortOption?.options.find((o) => o.value === effortOption.currentValue)
       ?.name ?? effortOption?.currentValue;
@@ -408,14 +417,15 @@ export function PromptInput({
         </div>
         <div className="flex items-center justify-between border-t border-[#2e2e2e] px-3 py-2">
           <div className="flex min-w-0 items-center space-x-3">
-            {mode && mode !== "default" && (
+            {/* Fallback badge when agent only sends current_mode, not configOptions.mode */}
+            {!modeOption && mode && mode !== "default" && (
               <span className="rounded-full bg-[#2a2a2a] px-2 py-0.5 text-[11px] font-medium text-amber-400">
                 {mode}
               </span>
             )}
             {hasProviders && activeProvider && onProviderModelChange && (
               <>
-                {mode && mode !== "default" && (
+                {!modeOption && mode && mode !== "default" && (
                   <div className="h-4 w-px bg-[#333]" />
                 )}
                 <GroupedSelector
@@ -430,7 +440,7 @@ export function PromptInput({
             )}
             {!hasProviders && modelOption && modelLabel && (
               <>
-                {mode && mode !== "default" && (
+                {!modeOption && mode && mode !== "default" && (
                   <div className="h-4 w-px bg-[#333]" />
                 )}
                 <Selector
@@ -442,6 +452,25 @@ export function PromptInput({
                   }))}
                   onChange={(v) => void changeConfig(modelOption.id, v)}
                   accent="text-[#d97706]"
+                  disabled={disabled || settingConfig}
+                />
+              </>
+            )}
+            {/* Permission / session mode — right of provider·model (Claude Code ACP). */}
+            {modeOption && modeLabel && (
+              <>
+                {(hasProviders || modelOption) && (
+                  <div className="h-4 w-px bg-[#333]" />
+                )}
+                <Selector
+                  value={modeOption.currentValue}
+                  displayValue={modeLabel}
+                  options={modeOption.options.map((o) => ({
+                    value: o.value,
+                    label: o.name,
+                  }))}
+                  onChange={(v) => void changeConfig(modeOption.id, v)}
+                  accent="text-amber-400"
                   disabled={disabled || settingConfig}
                 />
               </>

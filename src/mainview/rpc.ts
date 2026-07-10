@@ -15,6 +15,7 @@ import type {
   SessionListPayload,
   SessionLoadedPayload,
   SessionUsage,
+  SkillInfo,
   TerminalRPC,
   TurnEndPayload,
 } from "../shared/rpc";
@@ -53,6 +54,7 @@ type RpcClient = {
       seedContext?: {
         text: string;
         role?: "user" | "agent" | "thought";
+        purpose?: "continue" | "review";
       };
     }) => Promise<
       | { ok: true; session: SessionListPayload["sessions"][number] }
@@ -125,6 +127,26 @@ type RpcClient = {
     startRemoteAccess: () => Promise<RemoteAccessStatus>;
     stopRemoteAccess: () => Promise<RemoteAccessStatus>;
     regenerateRemoteAccess: () => Promise<RemoteAccessStatus>;
+    listSkills: (p?: {
+      projectCwd?: string | null;
+    }) => Promise<{ skills: SkillInfo[] }>;
+    installSkill: (p: {
+      package: string;
+    }) => Promise<
+      { ok: true; skills: SkillInfo[] } | { ok: false; error: string }
+    >;
+    setSkillEnabled: (p: {
+      skillId: string;
+      enabled: boolean;
+    }) => Promise<
+      | { ok: true; skill: SkillInfo; skills: SkillInfo[] }
+      | { ok: false; error: string }
+    >;
+    uninstallSkill: (p: {
+      skillId: string;
+    }) => Promise<
+      { ok: true; skills: SkillInfo[] } | { ok: false; error: string }
+    >;
   };
 };
 
@@ -432,6 +454,14 @@ function createRemoteWsClient(code: string): RpcClient {
       startRemoteAccess: async () => idleRemote,
       stopRemoteAccess: async () => idleRemote,
       regenerateRemoteAccess: async () => idleRemote,
+      listSkills: (p) =>
+        request("listSkills", (p ?? {}) as Record<string, unknown>),
+      installSkill: (p) =>
+        request("installSkill", p as Record<string, unknown>),
+      setSkillEnabled: (p) =>
+        request("setSkillEnabled", p as Record<string, unknown>),
+      uninstallSkill: (p) =>
+        request("uninstallSkill", p as Record<string, unknown>),
     },
   };
 }
@@ -769,6 +799,62 @@ async getGitBranch() {
           lanIps: [],
         };
       },
+      async listSkills() {
+        return { skills: [...mockSkills] };
+      },
+      async installSkill({ package: pkg }) {
+        const id =
+          pkg.split("@").pop()?.split("/").pop()?.replace(/[^a-z0-9_-]/gi, "-") ||
+          `skill-${Date.now()}`;
+        if (!mockSkills.some((s) => s.id === id)) {
+          mockSkills.push({
+            id,
+            name: id,
+            description: `Installed from ${pkg} (browser mock)`,
+            path: `/mock/skills/${id}`,
+            enabled: true,
+            scope: "global",
+          });
+          mockSkills.sort((a, b) => a.name.localeCompare(b.name));
+        }
+        return { ok: true as const, skills: [...mockSkills] };
+      },
+      async setSkillEnabled({ skillId, enabled }) {
+        const skill = mockSkills.find((s) => s.id === skillId);
+        if (!skill) return { ok: false as const, error: "Skill not found" };
+        skill.enabled = enabled;
+        return {
+          ok: true as const,
+          skill: { ...skill },
+          skills: [...mockSkills],
+        };
+      },
+      async uninstallSkill({ skillId }) {
+        const idx = mockSkills.findIndex((s) => s.id === skillId);
+        if (idx < 0) return { ok: false as const, error: "Skill not found" };
+        mockSkills.splice(idx, 1);
+        return { ok: true as const, skills: [...mockSkills] };
+      },
     },
   };
 }
+
+/** In-memory skills for browser mock / dev:web. */
+const mockSkills: SkillInfo[] = [
+  {
+    id: "frontend-design",
+    name: "frontend-design",
+    description: "Create distinctive, production-grade frontend interfaces",
+    path: "/mock/skills/frontend-design",
+    enabled: true,
+    scope: "global",
+  },
+  {
+    id: "find-skills",
+    name: "find-skills",
+    description: "Discover and install agent skills from the ecosystem",
+    path: "/mock/skills/find-skills",
+    enabled: true,
+    scope: "global",
+  },
+];

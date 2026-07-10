@@ -107,6 +107,7 @@ src/
 - **Stop** mid-turn via `session/cancel`
 - **Clickable file locations** → open in `$EDITOR` / Settings editor command
 - **Multi-session sidebar** with SQLite history across restarts
+- **Review in new session** — header **Review** summarizes file edits/diffs from the current chat, opens a fresh session with that summary, and auto-sends a structured review prompt as the first requirement
 - **Open project** — New task picks a folder (native dialog + recent projects); agent `cwd` is that folder
 - **Settings**: theme (dark/light/system), editor, default agent, FS capabilities
 - **Remote access** — phone icon in the sidebar footer; QR code + LAN URL with a

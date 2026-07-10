@@ -145,6 +145,16 @@ export function createAppRpcListeners(deps: Deps): RpcListeners {
       const active = activeSessionIdRef.current;
       if (!active || sessionId === active) {
         setSession((prev) => ({ ...prev, mode }));
+        // Keep Permission / mode selector currentValue in sync.
+        setConfigOptions((prev) =>
+          prev.map((o) =>
+            o.type === "select" &&
+            (o.category === "mode" || o.id === "mode") &&
+            o.currentValue !== mode
+              ? { ...o, currentValue: mode }
+              : o,
+          ),
+        );
       }
     },
     onConfigOptions: (sessionId, opts) => {

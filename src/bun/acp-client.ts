@@ -18,10 +18,12 @@ import type {
 } from "@agentclientprotocol/sdk";
 import type { AgentInfo, SessionConfigOption, SessionUsage } from "../shared/rpc";
 import {
+  mergeSessionModesIntoConfigOptions,
   translateAvailableCommands,
   translateConfigOptions,
   translateSessionUpdate,
   translateUsageUpdate,
+  withModeCurrentValue,
 } from "./translate";
 import type { SessionUpdate } from "../session/types";
 
@@ -89,6 +91,13 @@ export class AcpClient {
   private active: ActiveSession | null = null;
   private disposed = false;
   private alwaysAllow = new Set<string>();
+  /**
+   * True when the active session's mode select was synthesized from
+   * session/new `modes` (must use session/set_mode, not set_config_option).
+   */
+  private modeViaSetMode = false;
+  /** Latest config options for the active session (keeps mode UI in sync). */
+  private activeConfigOptions: SessionConfigOption[] = [];
   /** Bumped to cancel the background `nextUpdate` pump. */
   private pumpToken = 0;
   /** In-flight prompt resolved when the pump sees a `stop` message. */
@@ -286,9 +295,20 @@ export class AcpClient {
     // Note: do not fire onConfigOptions/onMode here — the agent session id is
     // not mapped to a local id until SessionManager.ensureHandle registers it.
     // Callers apply configOptions from the returned handle, then beginUpdates().
-    const configOptions = translateConfigOptions(
+    const fromConfig = translateConfigOptions(
       session.newSessionResponse.configOptions,
     );
+    const modes =
+      session.modes ?? session.newSessionResponse.modes ?? null;
+    const hadModeInConfig = fromConfig.some(
+      (o) =>
+        o.type === "select" &&
+        (o.category === "mode" || o.id === "mode"),
+    );
+    const configOptions = mergeSessionModesIntoConfigOptions(fromConfig, modes);
+    // Claude Code ACP often only exposes permission modes via SessionModeState.
+    this.modeViaSetMode = !hadModeInConfig && !!modes?.availableModes?.length;
+    this.activeConfigOptions = configOptions;
 
     let updatesStarted = false;
 
@@ -312,6 +332,8 @@ export class AcpClient {
           /* ignore */
         }
         if (this.active === session) this.active = null;
+        this.modeViaSetMode = false;
+        this.activeConfigOptions = [];
       },
     };
   }
@@ -378,6 +400,27 @@ export class AcpClient {
     value: string | boolean,
   ): Promise<SessionConfigOption[]> {
     if (!this.ctx) throw new Error("not connected");
+
+    // Synthesized Permission mode from session/new `modes` → session/set_mode.
+    if (
+      this.modeViaSetMode &&
+      (configId === "mode" || configId === "permission") &&
+      typeof value === "string"
+    ) {
+      await this.ctx.request(acp.methods.agent.session.setMode, {
+        sessionId,
+        modeId: value,
+      });
+      const configOptions = withModeCurrentValue(
+        this.activeConfigOptions,
+        value,
+      );
+      this.activeConfigOptions = configOptions;
+      this.handlers.onMode?.(sessionId, value);
+      this.handlers.onConfigOptions?.(sessionId, configOptions);
+      return configOptions;
+    }
+
     const params =
       typeof value === "boolean"
         ? {
@@ -395,9 +438,27 @@ export class AcpClient {
       { configOptions: Array<Record<string, unknown>> },
       typeof params
     >(acp.methods.agent.session.setConfigOption, params);
-    const configOptions = translateConfigOptions(
+    let configOptions = translateConfigOptions(
       result.configOptions as Parameters<typeof translateConfigOptions>[0],
     );
+    // Preserve synthesized mode option if agent response omits it.
+    if (this.modeViaSetMode) {
+      const modeOpt = this.activeConfigOptions.find(
+        (o) => o.type === "select" && (o.category === "mode" || o.id === "mode"),
+      );
+      if (
+        modeOpt &&
+        modeOpt.type === "select" &&
+        !configOptions.some(
+          (o) =>
+            o.type === "select" &&
+            (o.category === "mode" || o.id === "mode"),
+        )
+      ) {
+        configOptions = [...configOptions, modeOpt];
+      }
+    }
+    this.activeConfigOptions = configOptions;
     this.handlers.onConfigOptions?.(sessionId, configOptions);
     return configOptions;
   }
@@ -438,7 +499,27 @@ export class AcpClient {
       return;
     }
     if (update.sessionUpdate === "config_option_update") {
-      const configOptions = translateConfigOptions(update.configOptions);
+      let configOptions = translateConfigOptions(update.configOptions);
+      // Keep synthesized Permission mode if agent updates other options only.
+      if (this.modeViaSetMode) {
+        const modeOpt = this.activeConfigOptions.find(
+          (o) =>
+            o.type === "select" &&
+            (o.category === "mode" || o.id === "mode"),
+        );
+        if (
+          modeOpt &&
+          modeOpt.type === "select" &&
+          !configOptions.some(
+            (o) =>
+              o.type === "select" &&
+              (o.category === "mode" || o.id === "mode"),
+          )
+        ) {
+          configOptions = [...configOptions, modeOpt];
+        }
+      }
+      this.activeConfigOptions = configOptions;
       this.handlers.onConfigOptions?.(sessionId, configOptions);
       return;
     }
@@ -448,7 +529,17 @@ export class AcpClient {
       return;
     }
     if (update.sessionUpdate === "current_mode_update") {
-      this.handlers.onMode?.(sessionId, update.currentModeId);
+      const modeId = update.currentModeId;
+      this.handlers.onMode?.(sessionId, modeId);
+      // Keep Permission selector in sync when the agent switches modes.
+      const configOptions = withModeCurrentValue(
+        this.activeConfigOptions,
+        modeId,
+      );
+      if (configOptions !== this.activeConfigOptions) {
+        this.activeConfigOptions = configOptions;
+        this.handlers.onConfigOptions?.(sessionId, configOptions);
+      }
     }
 
     const local = translateSessionUpdate(update);

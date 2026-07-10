@@ -13,6 +13,18 @@ interface HeaderProps {
   onToggleSidebar?: () => void;
   onOpenSettings?: () => void;
   /**
+   * Summarize this session's work and open a new chat to review it.
+   * Only shown when `canReview` is true.
+   */
+  onReviewInNewSession?: () => void;
+  /**
+   * Enable the Review control when the loaded timeline has anything to review
+   * (user goals, tools, agent replies — not only structured file diffs).
+   */
+  canReview?: boolean;
+  /** True while creating the review session / sending the first prompt. */
+  reviewBusy?: boolean;
+  /**
    * When the sidebar is hidden, show traffic lights here.
    * Never used on remote/phone clients (pass false).
    */
@@ -50,6 +62,9 @@ export function Header({
   connection,
   onToggleSidebar,
   onOpenSettings,
+  onReviewInNewSession,
+  canReview = false,
+  reviewBusy = false,
   showWindowControls,
   onWindowControl,
   compact = false,
@@ -122,10 +137,12 @@ export function Header({
           </svg>
         </button>
 
-        {/* Title + meta: single line, truncate aggressively on narrow screens */}
-        <div className="flex min-w-0 flex-1 flex-col justify-center gap-0.5 sm:flex-row sm:items-center sm:gap-3">
+        {/* Title + meta: stacked on narrow screens, row on sm+.
+            justify-center is vertical only (flex-col); sm:justify-start keeps
+            the row left-aligned once it switches to flex-row. */}
+        <div className="flex min-w-0 flex-1 flex-col items-start justify-center gap-0.5 text-left sm:flex-row sm:items-center sm:justify-start sm:gap-3">
           <h1
-            className={`min-w-0 truncate font-semibold text-gray-100 ${
+            className={`w-full min-w-0 truncate text-left font-semibold text-gray-100 sm:w-auto ${
               compact ? "text-[13px]" : "text-sm"
             }`}
             title={title}
@@ -199,6 +216,34 @@ export function Header({
               </span>
             )}
           </div>
+        )}
+        {canReview && onReviewInNewSession && (
+          <button
+            type="button"
+            className="inline-flex items-center gap-1.5 rounded-md border border-[#333] bg-[#222] px-2 py-1 text-[11px] text-gray-300 hover:border-gray-500 hover:bg-[#2a2a2a] hover:text-gray-100 disabled:opacity-50"
+            onClick={() => onReviewInNewSession()}
+            disabled={reviewBusy}
+            title="Summarize this session's work and open a new chat to review it"
+            aria-label="Review changes in new session"
+          >
+            <svg
+              className="h-3.5 w-3.5 shrink-0"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+              strokeWidth={2}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden
+            >
+              <path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2" />
+              <path d="M9 5a2 2 0 012-2h2a2 2 0 012 2v0a2 2 0 01-2 2h-2a2 2 0 01-2-2v0z" />
+              <path d="M9 12h6M9 16h4" />
+            </svg>
+            <span className="hidden sm:inline">
+              {reviewBusy ? "Starting…" : "Review"}
+            </span>
+          </button>
         )}
         <button
           type="button"

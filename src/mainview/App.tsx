@@ -4,6 +4,7 @@ import { Timeline } from "./components/Timeline";
 import { PromptInput } from "./components/PromptInput";
 import { PermissionPrompt } from "./components/PermissionPrompt";
 import { SettingsPanel } from "./components/SettingsPanel";
+import { SkillsPanel } from "./components/SkillsPanel";
 import { RemoteAccessPanel } from "./components/RemoteAccessPanel";
 import { ConnectionBanner } from "./components/ConnectionBanner";
 import { ConfirmDialog } from "./components/ConfirmDialog";
@@ -64,6 +65,7 @@ export default function App() {
               onDeleteSession={app.handleDeleteSession}
               onOffloadSession={(id) => void app.handleOffloadSession(id)}
               onOpenSettings={() => app.setShowSettings(true)}
+              onOpenSkills={() => void app.openSkills()}
               onOpenRemoteAccess={
                 remoteClient ? undefined : () => void app.openRemoteAccess()
               }
@@ -101,6 +103,9 @@ export default function App() {
               connection={app.connection}
               onToggleSidebar={() => app.setShowSidebar((s) => !s)}
               onOpenSettings={() => app.setShowSettings(true)}
+              canReview={app.canReviewSession}
+              reviewBusy={app.reviewBusy}
+              onReviewInNewSession={() => void app.handleReviewInNewSession()}
               showWindowControls={!remoteClient && !app.showSidebar}
               onWindowControl={
                 remoteClient ? undefined : app.handleWindowControl
@@ -173,6 +178,19 @@ export default function App() {
               agents={app.agents}
               onClose={() => app.setShowSettings(false)}
               onSave={app.handleSaveSettings}
+            />
+          )}
+          {app.showSkills && (
+            <SkillsPanel
+              skills={app.skills}
+              loading={app.skillsLoading}
+              error={app.skillsError}
+              busyId={app.skillsBusyId}
+              onClose={() => app.setShowSkills(false)}
+              onRefresh={app.refreshSkills}
+              onInstall={app.handleInstallSkill}
+              onToggle={app.handleToggleSkill}
+              onUninstall={app.handleUninstallSkill}
             />
           )}
           {app.showRemoteAccess && (

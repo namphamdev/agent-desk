@@ -15,6 +15,13 @@ import {
 } from "./notify";
 import { RemoteAccessServer } from "./remote-access";
 import { SessionManager } from "./session-manager";
+import {
+  appSkillsPaths,
+  installSkill,
+  listSkills,
+  setSkillEnabled,
+  uninstallSkill,
+} from "./skills";
 
 /**
  * Install a standard macOS application menu with Edit roles.
@@ -283,6 +290,32 @@ const terminalRPC = BrowserView.defineRPC<TerminalRPC>({
       regenerateRemoteAccess: async () => {
         return remoteAccess.regenerate();
       },
+      listSkills: async (params) => {
+        const listed = manager.listSessions();
+        const projectCwd =
+          params?.projectCwd ??
+          listed.sessions.find((s) => s.id === listed.activeSessionId)?.cwd ??
+          null;
+        return {
+          skills: listSkills(appSkillsPaths(dataDir, projectCwd)),
+        };
+      },
+      installSkill: async ({ package: pkg }) => {
+        return installSkill(appSkillsPaths(dataDir), pkg);
+      },
+      setSkillEnabled: async ({ skillId, enabled }) => {
+        const paths = appSkillsPaths(dataDir);
+        const res = setSkillEnabled(paths, skillId, enabled);
+        if (!res.ok) return res;
+        return {
+          ok: true as const,
+          skill: res.skill,
+          skills: listSkills(paths),
+        };
+      },
+      uninstallSkill: async ({ skillId }) => {
+        return uninstallSkill(appSkillsPaths(dataDir), skillId);
+      },
     },
     messages: {},
   },
@@ -439,6 +472,21 @@ remoteAccess = new RemoteAccessServer({
       return { ok: false as const, error: message };
     }
   },
+  listSkills: (projectCwd) => ({
+    skills: listSkills(appSkillsPaths(dataDir, projectCwd)),
+  }),
+  installSkill: (packageSpec) => installSkill(appSkillsPaths(dataDir), packageSpec),
+  setSkillEnabled: (skillId, enabled) => {
+    const paths = appSkillsPaths(dataDir);
+    const res = setSkillEnabled(paths, skillId, enabled);
+    if (!res.ok) return res;
+    return {
+      ok: true as const,
+      skill: res.skill,
+      skills: listSkills(paths),
+    };
+  },
+  uninstallSkill: (skillId) => uninstallSkill(appSkillsPaths(dataDir), skillId),
 });
 
 await manager.init();

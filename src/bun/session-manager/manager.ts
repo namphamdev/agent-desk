@@ -202,6 +202,8 @@ export class SessionManager {
     seedContext?: {
       text: string;
       role?: "user" | "agent" | "thought";
+      /** How the seed is framed on the first prompt (default: continue). */
+      purpose?: "continue" | "review";
     };
   }) {
     const rawCwd = (opts.cwd || this.settings.lastProjectCwd || process.cwd()).trim();
@@ -245,6 +247,9 @@ export class SessionManager {
       prompting: false,
       usage: null,
       contextSeed: seedText || null,
+      contextSeedPurpose: seedText
+        ? (opts.seedContext?.purpose ?? "continue")
+        : undefined,
     });
     this.activeSessionId = id;
     this.emitSessionList();
@@ -520,8 +525,13 @@ export class SessionManager {
     // Seeded threads: give the agent the prior message as context once.
     let promptText = text;
     if (live.contextSeed) {
-      promptText = formatSeededPrompt(live.contextSeed, text);
+      promptText = formatSeededPrompt(
+        live.contextSeed,
+        text,
+        live.contextSeedPurpose ?? "continue",
+      );
       live.contextSeed = null;
+      live.contextSeedPurpose = undefined;
     }
 
     // Don't await the full turn — stream via events. But we should catch errors.

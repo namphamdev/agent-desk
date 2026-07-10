@@ -217,6 +217,16 @@ export type RemoteAccessStatus = {
   lanIps: string[];
 };
 
+/** An installed agent skill (SKILL.md package under ~/.agents/skills). */
+export type SkillInfo = {
+  id: string;
+  name: string;
+  description: string;
+  path: string;
+  enabled: boolean;
+  scope: "global" | "project";
+};
+
 /**
  * Electrobun typed RPC contract.
  *
@@ -249,12 +259,15 @@ export type TerminalRPC = {
           cwd?: string;
           agentId?: string;
           /**
-           * Optional starting context (e.g. forked from a message). Shown in the
-           * timeline and prepended to the first prompt so the agent sees it.
+           * Optional starting context (e.g. forked from a message or a session
+           * change summary for review). Shown in the timeline and prepended to
+           * the first prompt so the agent sees it.
            */
           seedContext?: {
             text: string;
             role?: "user" | "agent" | "thought";
+            /** Framing for the first prompt (default: continue). */
+            purpose?: "continue" | "review";
           };
         };
         response:
@@ -381,6 +394,32 @@ export type TerminalRPC = {
       regenerateRemoteAccess: {
         params: void;
         response: RemoteAccessStatus;
+      };
+      /** List installed agent skills (global + optional project). */
+      listSkills: {
+        params: { projectCwd?: string | null } | void;
+        response: { skills: SkillInfo[] };
+      };
+      /** Install a skill via Skills CLI (`owner/repo` or `owner/repo@skill`). */
+      installSkill: {
+        params: { package: string };
+        response:
+          | { ok: true; skills: SkillInfo[] }
+          | { ok: false; error: string };
+      };
+      /** Enable or disable a skill (moves under .disabled when off). */
+      setSkillEnabled: {
+        params: { skillId: string; enabled: boolean };
+        response:
+          | { ok: true; skill: SkillInfo; skills: SkillInfo[] }
+          | { ok: false; error: string };
+      };
+      /** Remove an installed skill from disk. */
+      uninstallSkill: {
+        params: { skillId: string };
+        response:
+          | { ok: true; skills: SkillInfo[] }
+          | { ok: false; error: string };
       };
     };
     messages: {

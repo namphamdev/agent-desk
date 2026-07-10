@@ -8,6 +8,7 @@ import type {
 } from "../../shared/rpc";
 import type { SessionUpdate } from "../../session/types";
 import type { AcpSessionHandle } from "../acp-client";
+import type { SeedPurpose } from "./seed";
 
 export type SessionManagerEvents = {
   onUpdate: (sessionId: string, update: SessionUpdate) => void;
@@ -43,4 +44,6 @@ export type LiveSession = {
    * Cleared after the first send so follow-ups stay normal.
    */
   contextSeed?: string | null;
+  /** Framing for contextSeed (continue a fork vs review prior changes). */
+  contextSeedPurpose?: SeedPurpose;
 };

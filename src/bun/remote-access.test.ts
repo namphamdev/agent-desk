@@ -95,6 +95,10 @@ function mockHandlers() {
     }),
     writeClipboard: async () => ({ ok: true as const }),
     readClipboard: async () => ({ ok: true as const, text: "" }),
+    listSkills: () => ({ skills: [] }),
+    installSkill: async () => ({ ok: false as const, error: "n/a" }),
+    setSkillEnabled: () => ({ ok: false as const, error: "n/a" }),
+    uninstallSkill: () => ({ ok: false as const, error: "n/a" }),
   };
 }
 

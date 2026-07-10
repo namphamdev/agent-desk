@@ -2,6 +2,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { initialSession, reduce } from "../../session/reducer";
 import type { SessionState } from "../../session/reducer";
 import type { SessionUpdate } from "../../session/types";
+import {
+  DEFAULT_REVIEW_PROMPT,
+  reviewSessionTitle,
+  summarizeSessionChanges,
+} from "../../session/session-summary";
 import type {
   AgentInfo,
   AppSettings,
@@ -13,6 +18,7 @@ import type {
   SessionConfigOption,
   SessionSummary,
   SessionUsage,
+  SkillInfo,
 } from "../../shared/rpc";
 import type { NewSessionOptions } from "../components/NewSessionDialog";
 import {
@@ -61,6 +67,11 @@ export function useAppController() {
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [showSettings, setShowSettings] = useState(false);
+  const [showSkills, setShowSkills] = useState(false);
+  const [skills, setSkills] = useState<SkillInfo[]>([]);
+  const [skillsLoading, setSkillsLoading] = useState(false);
+  const [skillsError, setSkillsError] = useState<string | null>(null);
+  const [skillsBusyId, setSkillsBusyId] = useState<string | null>(null);
   const [showRemoteAccess, setShowRemoteAccess] = useState(false);
   const [remoteAccess, setRemoteAccess] = useState<RemoteAccessStatus | null>(
     null,
@@ -548,7 +559,7 @@ export function useAppController() {
         project: activeSession?.project,
         agentId:
           activeSession?.agentId || settings?.defaultAgentId || undefined,
-        seedContext: { text, role },
+        seedContext: { text, role, purpose: "continue" },
       });
       if (res.ok) {
         setActiveSessionId(res.session.id);
@@ -570,6 +581,107 @@ export function useAppController() {
       settings?.lastProjectCwd,
     ],
   );
+
+  const [reviewBusy, setReviewBusy] = useState(false);
+
+  /**
+   * Summarize file changes from the current chat, open a new session with that
+   * summary as seed context, and auto-send the default review requirement as
+   * the first prompt.
+   */
+  const handleReviewInNewSession = useCallback(async () => {
+    if (reviewBusy) return;
+    const cwd =
+      activeSession?.cwd ||
+      settings?.lastProjectCwd ||
+      recentProjects[0]?.cwd;
+    if (!cwd) {
+      setConnection({
+        status: "error",
+        error: "Open a project before starting a review session.",
+      });
+      return;
+    }
+
+    const summary = summarizeSessionChanges(session.timeline, {
+      sessionTitle: activeSession?.title,
+      project: activeSession?.project,
+    });
+    // Historical chats often lack ACP edit/diff kinds (shell writes, Q&A).
+    // Allow review whenever there is goals / tools / agent output.
+    if (!summary.hasReviewableContent) {
+      setConnection({
+        status: "error",
+        error:
+          "This session has nothing to review yet (no messages or tool activity).",
+      });
+      return;
+    }
+
+    setReviewBusy(true);
+    try {
+      clearSessionUi(setSession, setCommands, setConfigOptions, setPermission);
+
+      const res = await getRpc().request.createSession({
+        cwd,
+        project: activeSession?.project,
+        title: reviewSessionTitle(activeSession?.title),
+        agentId:
+          activeSession?.agentId || settings?.defaultAgentId || undefined,
+        seedContext: {
+          text: summary.text,
+          role: "agent",
+          purpose: "review",
+        },
+      });
+
+      if (!res.ok) {
+        setConnection({ status: "error", error: res.error });
+        return;
+      }
+
+      setActiveSessionId(res.session.id);
+      setSettings((prev) =>
+        prev ? { ...prev, lastProjectCwd: res.session.cwd } : prev,
+      );
+      await refreshRecentProjects();
+
+      // First requirement: structured review of the seeded change summary.
+      await dispatchPrompt(DEFAULT_REVIEW_PROMPT, res.session.id);
+    } finally {
+      setReviewBusy(false);
+    }
+  }, [
+    activeSession?.agentId,
+    activeSession?.cwd,
+    activeSession?.project,
+    activeSession?.title,
+    dispatchPrompt,
+    recentProjects,
+    refreshRecentProjects,
+    reviewBusy,
+    session.timeline,
+    settings?.defaultAgentId,
+    settings?.lastProjectCwd,
+  ]);
+
+  const canReviewSession = useMemo(() => {
+    if (
+      !activeSession?.cwd &&
+      !settings?.lastProjectCwd &&
+      !recentProjects[0]?.cwd
+    ) {
+      return false;
+    }
+    // Show for any loaded session with work — not only structured file edits.
+    // (Claude ACP history often records mutations as execute/other without diffs.)
+    return summarizeSessionChanges(session.timeline).hasReviewableContent;
+  }, [
+    activeSession?.cwd,
+    recentProjects,
+    session.timeline,
+    settings?.lastProjectCwd,
+  ]);
 
   const handleSetConfigOption = useCallback(
     async (configId: string, value: string | boolean) => {
@@ -733,6 +845,77 @@ export function useAppController() {
     }
   }, []);
 
+  const refreshSkills = useCallback(async () => {
+    setSkillsLoading(true);
+    setSkillsError(null);
+    try {
+      const cwd =
+        sessionsRef.current.find((s) => s.id === activeSessionIdRef.current)
+          ?.cwd ?? null;
+      const r = await getRpc().request.listSkills({ projectCwd: cwd });
+      setSkills(r.skills);
+    } catch (err) {
+      setSkillsError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSkillsLoading(false);
+    }
+  }, []);
+
+  const openSkills = useCallback(async () => {
+    setShowSkills(true);
+    await refreshSkills();
+  }, [refreshSkills]);
+
+  const handleInstallSkill = useCallback(async (packageSpec: string) => {
+    setSkillsError(null);
+    const res = await getRpc().request.installSkill({ package: packageSpec });
+    if (!res.ok) {
+      setSkillsError(res.error);
+      throw new Error(res.error);
+    }
+    setSkills(res.skills);
+  }, []);
+
+  const handleToggleSkill = useCallback(
+    async (skillId: string, enabled: boolean) => {
+      setSkillsBusyId(skillId);
+      setSkillsError(null);
+      try {
+        const res = await getRpc().request.setSkillEnabled({
+          skillId,
+          enabled,
+        });
+        if (!res.ok) {
+          setSkillsError(res.error);
+          return;
+        }
+        setSkills(res.skills);
+      } catch (err) {
+        setSkillsError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setSkillsBusyId(null);
+      }
+    },
+    [],
+  );
+
+  const handleUninstallSkill = useCallback(async (skillId: string) => {
+    setSkillsBusyId(skillId);
+    setSkillsError(null);
+    try {
+      const res = await getRpc().request.uninstallSkill({ skillId });
+      if (!res.ok) {
+        setSkillsError(res.error);
+        return;
+      }
+      setSkills(res.skills);
+    } catch (err) {
+      setSkillsError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSkillsBusyId(null);
+    }
+  }, []);
+
   const elapsed =
     turnStartedAt && connection.status === "prompting"
       ? formatElapsed(now - turnStartedAt)
@@ -757,6 +940,11 @@ export function useAppController() {
     settings,
     agents,
     showSettings,
+    showSkills,
+    skills,
+    skillsLoading,
+    skillsError,
+    skillsBusyId,
     showRemoteAccess,
     remoteAccess,
     remoteAccessLoading,
@@ -772,8 +960,11 @@ export function useAppController() {
     isPrompting,
     activePromptQueue,
     messageActions,
+    canReviewSession,
+    reviewBusy,
     // setters for simple UI toggles
     setShowSettings,
+    setShowSkills,
     setShowRemoteAccess,
     setShowNewSession,
     setShowSidebar,
@@ -798,9 +989,15 @@ export function useAppController() {
     handleProviderModelChange,
     handleRemoveRecentProject,
     handleWindowControl,
+    handleReviewInNewSession,
     openRemoteAccess,
     startRemoteAccess,
     stopRemoteAccess,
     regenerateRemoteAccess,
+    openSkills,
+    refreshSkills,
+    handleInstallSkill,
+    handleToggleSkill,
+    handleUninstallSkill,
   };
 }

@@ -324,3 +324,77 @@ export function translateConfigOptions(
   }
   return out;
 }
+
+/** Wire shape for ACP SessionModeState (session/new `modes`). */
+export type WireSessionModeState = {
+  currentModeId?: string;
+  availableModes?: Array<{
+    id?: string;
+    name?: string;
+    description?: string | null;
+  }> | null;
+} | null;
+
+/**
+ * If the agent only advertises permission/session modes via `modes` (not
+ * configOptions category `mode`), synthesize a select option so the prompt
+ * bar can show Claude Code permission modes (default, acceptEdits, plan, …).
+ * No-op when a mode select already exists.
+ */
+export function mergeSessionModesIntoConfigOptions(
+  configOptions: SessionConfigOption[],
+  modes: WireSessionModeState | undefined,
+): SessionConfigOption[] {
+  if (!modes?.availableModes?.length || !modes.currentModeId) {
+    return configOptions;
+  }
+  const hasMode = configOptions.some(
+    (o) =>
+      o.type === "select" &&
+      (o.category === "mode" || o.id === "mode"),
+  );
+  if (hasMode) return configOptions;
+
+  const options = modes.availableModes
+    .filter((m): m is { id: string; name: string; description?: string | null } =>
+      !!m?.id && !!m?.name,
+    )
+    .map((m) => ({
+      value: m.id,
+      name: m.name,
+      description: m.description ?? undefined,
+    }));
+  if (options.length === 0) return configOptions;
+
+  return [
+    ...configOptions,
+    {
+      id: "mode",
+      name: "Permission",
+      category: "mode",
+      type: "select",
+      currentValue: modes.currentModeId,
+      options,
+    },
+  ];
+}
+
+/** Update the current value of a mode select option (config or synthesized). */
+export function withModeCurrentValue(
+  configOptions: SessionConfigOption[],
+  modeId: string,
+): SessionConfigOption[] {
+  let changed = false;
+  const next = configOptions.map((o) => {
+    if (
+      o.type === "select" &&
+      (o.category === "mode" || o.id === "mode") &&
+      o.currentValue !== modeId
+    ) {
+      changed = true;
+      return { ...o, currentValue: modeId };
+    }
+    return o;
+  });
+  return changed ? next : configOptions;
+}

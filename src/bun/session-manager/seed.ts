@@ -1,5 +1,8 @@
 import type { SessionUpdate } from "../../session/types";
 
+/** How seeded context is framed when the first prompt is sent to the agent. */
+export type SeedPurpose = "continue" | "review";
+
 /** Persist seed context as a timeline message of the original role. */
 export function seedUpdateForRole(
   text: string,
@@ -19,7 +22,24 @@ export function seedUpdateForRole(
  * Wrap the user's first prompt so the agent receives forked message context.
  * The seed is already shown in the UI timeline; this is for the model only.
  */
-export function formatSeededPrompt(seed: string, userText: string): string {
+export function formatSeededPrompt(
+  seed: string,
+  userText: string,
+  purpose: SeedPurpose = "continue",
+): string {
+  if (purpose === "review") {
+    return [
+      "The following is a structured summary of changes from a prior coding session.",
+      "Your job is to review those changes — do not re-implement them unless the user asks.",
+      "",
+      "---",
+      seed,
+      "---",
+      "",
+      userText,
+    ].join("\n");
+  }
+
   return [
     "The following is starting context for this thread (from a prior message). Continue from it.",
     "",
