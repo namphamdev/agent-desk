@@ -9,6 +9,7 @@ import type {
   ConnectionStatePayload,
   PermissionRequest,
   RecentProject,
+  RemoteAccessStatus,
   SessionConfigOption,
   SessionSummary,
   SessionUsage,
@@ -22,7 +23,7 @@ import {
   removeQueuedPrompt,
   type PromptQueues,
 } from "../promptQueue";
-import { getRpc, initRpc, setRpcListeners } from "../rpc";
+import { getRpc, initRpc, isRemoteAccessClient, setRpcListeners } from "../rpc";
 import { formatElapsed } from "../utils/formatElapsed";
 import {
   createAppRpcListeners,
@@ -60,11 +61,20 @@ export function useAppController() {
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [showSettings, setShowSettings] = useState(false);
+  const [showRemoteAccess, setShowRemoteAccess] = useState(false);
+  const [remoteAccess, setRemoteAccess] = useState<RemoteAccessStatus | null>(
+    null,
+  );
+  const [remoteAccessLoading, setRemoteAccessLoading] = useState(false);
+  const [remoteAccessError, setRemoteAccessError] = useState<string | null>(
+    null,
+  );
   const [showNewSession, setShowNewSession] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<SessionSummary | null>(
     null,
   );
   const [recentProjects, setRecentProjects] = useState<RecentProject[]>([]);
+  // Phone remote clients still show the session list; hide only if needed later.
   const [showSidebar, setShowSidebar] = useState(true);
   const [turnStartedAt, setTurnStartedAt] = useState<number | null>(null);
   const [now, setNow] = useState(Date.now());
@@ -624,6 +634,70 @@ export function useAppController() {
     [],
   );
 
+  const openRemoteAccess = useCallback(async () => {
+    if (isRemoteAccessClient()) return;
+    setShowRemoteAccess(true);
+    setRemoteAccessError(null);
+    setRemoteAccessLoading(true);
+    try {
+      const status = await getRpc().request.startRemoteAccess();
+      setRemoteAccess(status);
+      if (!status.running || !status.url) {
+        setRemoteAccessError(
+          "Could not start remote access. Ensure the desktop app is running and dist/ was built.",
+        );
+      }
+    } catch (err) {
+      setRemoteAccessError(
+        err instanceof Error ? err.message : String(err),
+      );
+    } finally {
+      setRemoteAccessLoading(false);
+    }
+  }, []);
+
+  const startRemoteAccess = useCallback(async () => {
+    setRemoteAccessError(null);
+    setRemoteAccessLoading(true);
+    try {
+      const status = await getRpc().request.startRemoteAccess();
+      setRemoteAccess(status);
+    } catch (err) {
+      setRemoteAccessError(
+        err instanceof Error ? err.message : String(err),
+      );
+    } finally {
+      setRemoteAccessLoading(false);
+    }
+  }, []);
+
+  const stopRemoteAccess = useCallback(async () => {
+    setRemoteAccessError(null);
+    try {
+      const status = await getRpc().request.stopRemoteAccess();
+      setRemoteAccess(status);
+    } catch (err) {
+      setRemoteAccessError(
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  }, []);
+
+  const regenerateRemoteAccess = useCallback(async () => {
+    setRemoteAccessError(null);
+    setRemoteAccessLoading(true);
+    try {
+      const status = await getRpc().request.regenerateRemoteAccess();
+      setRemoteAccess(status);
+    } catch (err) {
+      setRemoteAccessError(
+        err instanceof Error ? err.message : String(err),
+      );
+    } finally {
+      setRemoteAccessLoading(false);
+    }
+  }, []);
+
   const elapsed =
     turnStartedAt && connection.status === "prompting"
       ? formatElapsed(now - turnStartedAt)
@@ -648,6 +722,10 @@ export function useAppController() {
     settings,
     agents,
     showSettings,
+    showRemoteAccess,
+    remoteAccess,
+    remoteAccessLoading,
+    remoteAccessError,
     showNewSession,
     pendingDelete,
     recentProjects,
@@ -661,6 +739,7 @@ export function useAppController() {
     messageActions,
     // setters for simple UI toggles
     setShowSettings,
+    setShowRemoteAccess,
     setShowNewSession,
     setShowSidebar,
     setPendingDelete,
@@ -683,5 +762,9 @@ export function useAppController() {
     handleSaveSettings,
     handleRemoveRecentProject,
     handleWindowControl,
+    openRemoteAccess,
+    startRemoteAccess,
+    stopRemoteAccess,
+    regenerateRemoteAccess,
   };
 }

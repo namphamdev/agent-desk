@@ -13,6 +13,12 @@ import {
   AcpClient,
   type AcpSessionHandle,
 } from "../acp-client";
+import {
+  buildProviderEnv,
+  normalizeModelAlias,
+  providerConnectionKey,
+  resolveActiveProvider,
+} from "../providers";
 import type { SessionStore } from "../store";
 import type {
   RequestPermissionRequest,
@@ -35,6 +41,11 @@ export type AgentConnectionHost = {
 export class AgentConnection {
   client: AcpClient | null = null;
   connectedAgentId: string | null = null;
+  /**
+   * Provider+model fingerprint for the live ACP process. When settings
+   * change credentials or model mapping we must respawn, not reuse.
+   */
+  connectedProviderKey: string | null = null;
   /** Maps ACP agent session ids to our persisted local session ids. */
   agentToLocal = new Map<string, string>();
   connectionState: ConnectionStatePayload = { status: "idle" };
@@ -136,7 +147,14 @@ export class AgentConnection {
       return { ok: false as const, error: `Unknown agent: ${agentId}` };
     }
 
-    if (this.client && this.connectedAgentId === agentId) {
+    const desiredProviderKey = providerConnectionKey(this.host.settings);
+
+    // Reuse only when agent AND provider credentials/model match.
+    if (
+      this.client &&
+      this.connectedAgentId === agentId &&
+      this.connectedProviderKey === desiredProviderKey
+    ) {
       this.setConnection({
         status: "ready",
         agentName: agent.name,
@@ -152,6 +170,7 @@ export class AgentConnection {
       await this.client.dispose();
       this.client = null;
       this.connectedAgentId = null;
+      this.connectedProviderKey = null;
       this.agentToLocal.clear();
       for (const live of this.host.live.values()) {
         live.handle = null;
@@ -162,7 +181,24 @@ export class AgentConnection {
     this.setConnection({ status: "connecting", agentName: agent.name });
 
     try {
-      const client = new AcpClient(agent, {
+      const provider = resolveActiveProvider(this.host.settings);
+      const modelAlias = normalizeModelAlias(
+        this.host.settings.activeModelAlias,
+        "sonnet",
+      );
+      const providerEnv = buildProviderEnv(provider, modelAlias);
+      if (provider) {
+        console.log(
+          `[acp] spawning with provider "${provider.name}" model=${modelAlias}` +
+            (providerEnv?.ANTHROPIC_MODEL
+              ? ` → ${providerEnv.ANTHROPIC_MODEL}`
+              : ""),
+        );
+      }
+
+      const client = new AcpClient(
+        agent,
+        {
         enableFs: this.host.settings.enableFsCapabilities,
         onUpdate: (sessionId, update) => {
           const localId = this.agentToLocal.get(sessionId) ?? sessionId;
@@ -232,11 +268,14 @@ export class AgentConnection {
         onPermission: async (params) => {
           return this.host.queuePermission(params);
         },
-      });
+        },
+        providerEnv ? { env: providerEnv } : {},
+      );
 
       await client.connect();
       this.client = client;
       this.connectedAgentId = agentId;
+      this.connectedProviderKey = desiredProviderKey;
       this.setConnection({
         status: "ready",
         agentName: agent.name,
@@ -344,6 +383,7 @@ export class AgentConnection {
     }
     this.client = null;
     this.connectedAgentId = null;
+    this.connectedProviderKey = null;
     this.agentToLocal.clear();
     for (const l of this.host.live.values()) {
       l.handle = null;
@@ -356,6 +396,7 @@ export class AgentConnection {
     await this.client?.dispose();
     this.client = null;
     this.connectedAgentId = null;
+    this.connectedProviderKey = null;
     this.agentToLocal.clear();
   }
 }

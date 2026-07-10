@@ -53,26 +53,19 @@ npm i -g @agentclientprotocol/claude-agent-acp
 
 ```json
 {
-  "defaultAgentId": "demo",
+  "defaultAgentId": "claude-code",
   "agents": [
     {
       "id": "claude-code",
       "name": "Claude Code (ACP)",
       "command": "claude-agent-acp",
       "args": []
-    },
-    {
-      "id": "gemini",
-      "name": "Gemini CLI",
-      "command": "gemini",
-      "args": ["--acp"]
     }
   ]
 }
 ```
 
-real LLM — useful for UI work. Switch the default in Settings or the JSON
-file.
+Switch the default in Settings or the JSON file.
 
 If you see `Executable not found in $PATH: "…"`, the `command` field does not
 resolve. Fix the path/name in `~/.terminal-react/agents.json`.
@@ -116,6 +109,9 @@ src/
 - **Multi-session sidebar** with SQLite history across restarts
 - **Open project** — New task picks a folder (native dialog + recent projects); agent `cwd` is that folder
 - **Settings**: theme (dark/light/system), editor, default agent, FS capabilities
+- **Remote access** — phone icon in the sidebar footer; QR code + LAN URL with a
+  random access code so a browser on the same Wi‑Fi can view sessions and send
+  messages (uses a local HTTP/WebSocket server; requires a built `dist/`)
 - **Lazy Mermaid** — diagram types code-split out of the main bundle
 
 ## Protocol notes

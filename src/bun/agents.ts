@@ -1,6 +1,6 @@
 /**
  * Agent discovery: read `~/.terminal-react/agents.json` (or the app data dir)
- * so users can point at their own Claude Code / Codex / Gemini CLI binary.
+ * so users can point at their own Claude Code (ACP) binary.
  */
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -71,7 +71,7 @@ export function agentsConfigDir(): string {
 
 /**
  * Write a starter agents.json if none exists, so users know where to put
- * their Claude Code / Codex binary.
+ * their Claude Code (ACP) binary.
  */
 export async function ensureAgentsConfig(): Promise<void> {
   const file = Bun.file(AGENTS_PATH);

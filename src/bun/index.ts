@@ -7,6 +7,7 @@ import {
   showDesktopNotification,
   showNotificationsEnabledToast,
 } from "./notify";
+import { RemoteAccessServer } from "./remote-access";
 import { SessionManager } from "./session-manager";
 
 async function pickFolderDialog(startingFolder?: string): Promise<
@@ -66,6 +67,7 @@ const dataDir =
 let manager: SessionManager;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let mainWindow: BrowserWindow<any>;
+let remoteAccess: RemoteAccessServer;
 
 function rpc() {
   return mainWindow?.webview?.rpc as
@@ -200,6 +202,18 @@ const terminalRPC = BrowserView.defineRPC<TerminalRPC>({
           return { ok: false as const, error: message };
         }
       },
+      getRemoteAccess: async () => {
+        return remoteAccess.getStatus();
+      },
+      startRemoteAccess: async () => {
+        return remoteAccess.start();
+      },
+      stopRemoteAccess: async () => {
+        return remoteAccess.stop();
+      },
+      regenerateRemoteAccess: async () => {
+        return remoteAccess.regenerate();
+      },
     },
     messages: {},
   },
@@ -212,6 +226,7 @@ manager = new SessionManager(dataDir, {
     } catch (err) {
       console.warn("[rpc] onUpdate failed:", err);
     }
+    remoteAccess?.onUpdate(sessionId, update);
   },
   onTurnEnd: (sessionId, stopReason) => {
     try {
@@ -219,6 +234,7 @@ manager = new SessionManager(dataDir, {
     } catch (err) {
       console.warn("[rpc] onTurnEnd failed:", err);
     }
+    remoteAccess?.onTurnEnd({ sessionId, stopReason });
     // Native notification from Bun — Web Notification API is unreliable in WKWebView.
     try {
       const settings = manager.getSettings();
@@ -244,6 +260,7 @@ manager = new SessionManager(dataDir, {
     } catch (err) {
       console.warn("[rpc] onConnectionState failed:", err);
     }
+    remoteAccess?.onConnectionState(state);
   },
   onPermissionRequest: (req) => {
     try {
@@ -251,6 +268,7 @@ manager = new SessionManager(dataDir, {
     } catch (err) {
       console.warn("[rpc] onPermissionRequest failed:", err);
     }
+    remoteAccess?.onPermissionRequest(req);
   },
   onSessionList: (sessions, activeSessionId) => {
     try {
@@ -258,6 +276,7 @@ manager = new SessionManager(dataDir, {
     } catch (err) {
       console.warn("[rpc] onSessionList failed:", err);
     }
+    remoteAccess?.onSessionList({ sessions, activeSessionId });
   },
   onCommands: (sessionId, commands) => {
     try {
@@ -265,6 +284,7 @@ manager = new SessionManager(dataDir, {
     } catch (err) {
       console.warn("[rpc] onCommands failed:", err);
     }
+    remoteAccess?.onCommands(sessionId, commands);
   },
   onMode: (sessionId, mode) => {
     try {
@@ -272,6 +292,7 @@ manager = new SessionManager(dataDir, {
     } catch (err) {
       console.warn("[rpc] onMode failed:", err);
     }
+    remoteAccess?.onMode(sessionId, mode);
   },
   onConfigOptions: (sessionId, configOptions) => {
     try {
@@ -279,6 +300,7 @@ manager = new SessionManager(dataDir, {
     } catch (err) {
       console.warn("[rpc] onConfigOptions failed:", err);
     }
+    remoteAccess?.onConfigOptions(sessionId, configOptions);
   },
   onUsage: (sessionId, usage) => {
     try {
@@ -286,19 +308,57 @@ manager = new SessionManager(dataDir, {
     } catch (err) {
       console.warn("[rpc] onUsage failed:", err);
     }
+    remoteAccess?.onUsage(sessionId, usage);
   },
   onSessionLoaded: (session, updates, mode, commands, configOptions, usage) => {
+    const payload = {
+      session,
+      updates,
+      mode,
+      commands,
+      configOptions,
+      usage: usage ?? null,
+    };
     try {
-      rpc()?.send.onSessionLoaded({
-        session,
-        updates,
-        mode,
-        commands,
-        configOptions,
-        usage: usage ?? null,
-      });
+      rpc()?.send.onSessionLoaded(payload);
     } catch (err) {
       console.warn("[rpc] onSessionLoaded failed:", err);
+    }
+    remoteAccess?.onSessionLoaded(payload);
+  },
+});
+
+remoteAccess = new RemoteAccessServer({
+  sendPrompt: (text, sessionId) => manager.sendPrompt(text, sessionId),
+  cancel: (sessionId) => manager.cancel(sessionId),
+  listAgents: () => ({ agents: manager.getAgents() }),
+  listSessions: () => manager.listSessions(),
+  createSession: (params) => manager.createSession(params),
+  switchSession: (sessionId) => manager.switchSession(sessionId),
+  deleteSession: (sessionId) => manager.deleteSession(sessionId),
+  offloadSession: (sessionId) => manager.offloadSession(sessionId),
+  respondPermission: async (requestId, optionId) =>
+    manager.respondPermission(requestId, optionId),
+  openFile: (path, line) => manager.openFile(path, line),
+  getSettings: () => manager.getSettings(),
+  saveSettings: (patch) => manager.saveSettings(patch),
+  getConnectionState: () => manager.getConnectionState(),
+  connectAgent: (agentId, cwd) => manager.connectAgent(agentId, cwd),
+  listRecentProjects: () => ({ projects: manager.listRecentProjects() }),
+  removeRecentProject: (cwd) => {
+    const projects = manager.removeRecentProject(cwd);
+    return { ok: true as const, projects };
+  },
+  getGitBranch: (cwd) => manager.getGitBranch(cwd),
+  setConfigOption: (configId, value, sessionId) =>
+    manager.setConfigOption(configId, value, sessionId),
+  writeClipboard: async (text) => {
+    try {
+      Utils.clipboardWriteText(text ?? "");
+      return { ok: true as const };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { ok: false as const, error: message };
     }
   },
 });

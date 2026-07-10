@@ -4,6 +4,7 @@ import { Timeline } from "./components/Timeline";
 import { PromptInput } from "./components/PromptInput";
 import { PermissionPrompt } from "./components/PermissionPrompt";
 import { SettingsPanel } from "./components/SettingsPanel";
+import { RemoteAccessPanel } from "./components/RemoteAccessPanel";
 import { ConnectionBanner } from "./components/ConnectionBanner";
 import { ConfirmDialog } from "./components/ConfirmDialog";
 import { NewSessionDialog } from "./components/NewSessionDialog";
@@ -11,9 +12,11 @@ import { ChatEmptyState } from "./components/ChatEmptyState";
 import { SidebarResizeHandle } from "./components/SidebarResizeHandle";
 import { useAppController } from "./hooks/useAppController";
 import { useSidebarResize } from "./hooks/useSidebarResize";
+import { isRemoteAccessClient } from "./rpc";
 
 export default function App() {
   const app = useAppController();
+  const remoteClient = isRemoteAccessClient();
   const {
     sidebarWidth,
     isResizingSidebar,
@@ -25,6 +28,7 @@ export default function App() {
     <div
       className="app-shell flex h-full min-h-0 w-full overflow-hidden"
       data-theme={app.settings?.theme ?? "dark"}
+      data-remote={remoteClient ? "true" : undefined}
     >
       {app.showSidebar && (
         <>
@@ -39,7 +43,12 @@ export default function App() {
             onDeleteSession={app.handleDeleteSession}
             onOffloadSession={(id) => void app.handleOffloadSession(id)}
             onOpenSettings={() => app.setShowSettings(true)}
-            onWindowControl={app.handleWindowControl}
+            onOpenRemoteAccess={
+              remoteClient ? undefined : () => void app.openRemoteAccess()
+            }
+            onWindowControl={
+              remoteClient ? undefined : app.handleWindowControl
+            }
           />
           <SidebarResizeHandle
             width={sidebarWidth}
@@ -125,6 +134,17 @@ export default function App() {
               agents={app.agents}
               onClose={() => app.setShowSettings(false)}
               onSave={app.handleSaveSettings}
+            />
+          )}
+          {app.showRemoteAccess && (
+            <RemoteAccessPanel
+              status={app.remoteAccess}
+              loading={app.remoteAccessLoading}
+              error={app.remoteAccessError}
+              onClose={() => app.setShowRemoteAccess(false)}
+              onStart={() => void app.startRemoteAccess()}
+              onStop={() => void app.stopRemoteAccess()}
+              onRegenerate={() => void app.regenerateRemoteAccess()}
             />
           )}
           {app.showNewSession && (

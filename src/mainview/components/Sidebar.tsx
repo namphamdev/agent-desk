@@ -21,6 +21,8 @@ type Props = {
   /** Kill ACP agent for this session to free memory (keeps history). */
   onOffloadSession?: (id: string) => void;
   onOpenSettings: () => void;
+  /** Open remote-access panel (QR + LAN URL for phone browsers). */
+  onOpenRemoteAccess?: () => void;
   onWindowControl?: (action: WindowControlAction) => void;
 };
 
@@ -47,6 +49,7 @@ export function Sidebar({
   onDeleteSession,
   onOffloadSession,
   onOpenSettings,
+  onOpenRemoteAccess,
   onWindowControl,
 }: Props) {
   const [query, setQuery] = useState("");
@@ -349,13 +352,28 @@ export function Sidebar({
             <span>terminal-react</span>
           </div>
         </div>
-        <button
-          className="text-gray-500 hover:text-gray-300"
-          onClick={onOpenSettings}
-          aria-label="Settings"
-        >
-          <CogIcon />
-        </button>
+        <div className="flex items-center gap-2">
+          {onOpenRemoteAccess && (
+            <button
+              type="button"
+              className="text-gray-500 hover:text-gray-300"
+              onClick={onOpenRemoteAccess}
+              aria-label="Remote access"
+              title="Remote access — open on phone"
+            >
+              <PhoneIcon />
+            </button>
+          )}
+          <button
+            type="button"
+            className="text-gray-500 hover:text-gray-300"
+            onClick={onOpenSettings}
+            aria-label="Settings"
+            title="Settings"
+          >
+            <CogIcon />
+          </button>
+        </div>
       </div>
     </aside>
   );
@@ -459,5 +477,12 @@ const CogIcon = () => (
   <svg {...s} className="h-5 w-5">
     <path d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
     <path d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+  </svg>
+);
+/** Phone / remote access — outline smartphone. */
+const PhoneIcon = () => (
+  <svg {...s} className="h-5 w-5">
+    <rect x="7" y="2" width="10" height="20" rx="2" />
+    <path d="M11 18h2" />
   </svg>
 );

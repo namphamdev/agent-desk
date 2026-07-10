@@ -10,6 +10,7 @@ import type {
   ConnectionStatePayload,
   PermissionRequest,
   RecentProject,
+  RemoteAccessStatus,
   SessionConfigOption,
   SessionListPayload,
   SessionLoadedPayload,
@@ -117,6 +118,10 @@ type RpcClient = {
       subtitle?: string;
       silent?: boolean;
     }) => Promise<{ ok: boolean; error?: string }>;
+    getRemoteAccess: () => Promise<RemoteAccessStatus>;
+    startRemoteAccess: () => Promise<RemoteAccessStatus>;
+    stopRemoteAccess: () => Promise<RemoteAccessStatus>;
+    regenerateRemoteAccess: () => Promise<RemoteAccessStatus>;
   };
 };
 
@@ -127,12 +132,35 @@ function isElectrobun(): boolean {
   return typeof window !== "undefined" && !!(window as unknown as { __electrobunWebviewId?: number }).__electrobunWebviewId;
 }
 
+/** Access code injected by the remote-access HTTP server, or parsed from /r/<code>. */
+export function detectRemoteAccessCode(): string | null {
+  if (typeof window === "undefined") return null;
+  const injected = (
+    window as unknown as { __TERMINAL_REACT_REMOTE__?: { code?: string } }
+  ).__TERMINAL_REACT_REMOTE__?.code;
+  if (injected && typeof injected === "string") return injected;
+  const m = window.location.pathname.match(/^\/r\/([^/]+)/);
+  return m?.[1] ?? null;
+}
+
+export function isRemoteAccessClient(): boolean {
+  return detectRemoteAccessCode() != null;
+}
+
 export function setRpcListeners(next: RpcListeners) {
   listeners = next;
 }
 
 export function initRpc(): RpcClient {
   if (client) return client;
+
+  // Phone/browser remote mirror: talk to the desktop over WebSocket.
+  const remoteCode = detectRemoteAccessCode();
+  if (remoteCode) {
+    console.info("[rpc] remote access mode, code=", remoteCode.slice(0, 4) + "…");
+    client = createRemoteWsClient(remoteCode);
+    return client;
+  }
 
   if (isElectrobun()) {
     // Electrobun default maxRequestTime is 1s — far too short for native
@@ -184,6 +212,221 @@ export function initRpc(): RpcClient {
   console.info("[rpc] Electrobun not detected — using browser RPC stub");
   client = createBrowserMock();
   return client;
+}
+
+function createRemoteWsClient(code: string): RpcClient {
+  const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+  const wsUrl = `${proto}//${window.location.host}/r/${code}/ws`;
+
+  type Pending = {
+    resolve: (v: unknown) => void;
+    reject: (e: Error) => void;
+  };
+  const pending = new Map<string, Pending>();
+  let ws: WebSocket | null = null;
+  let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  let reqSeq = 0;
+  let openPromise: Promise<void> | null = null;
+
+  const dispatchMessage = (name: string, params: Record<string, unknown>) => {
+    switch (name) {
+      case "onUpdate":
+        listeners.onUpdate?.(
+          params.sessionId as string,
+          params.update as SessionUpdate,
+        );
+        break;
+      case "onTurnEnd":
+        listeners.onTurnEnd?.(params as unknown as TurnEndPayload);
+        break;
+      case "onConnectionState":
+        listeners.onConnectionState?.(
+          params as unknown as ConnectionStatePayload,
+        );
+        break;
+      case "onPermissionRequest":
+        listeners.onPermissionRequest?.(
+          params as unknown as PermissionRequest,
+        );
+        break;
+      case "onSessionList":
+        listeners.onSessionList?.(params as unknown as SessionListPayload);
+        break;
+      case "onSessionLoaded":
+        listeners.onSessionLoaded?.(params as unknown as SessionLoadedPayload);
+        break;
+      case "onCommands":
+        listeners.onCommands?.(
+          params.sessionId as string,
+          params.commands as AvailableCommand[],
+        );
+        break;
+      case "onMode":
+        listeners.onMode?.(params.sessionId as string, params.mode as string);
+        break;
+      case "onConfigOptions":
+        listeners.onConfigOptions?.(
+          params.sessionId as string,
+          params.configOptions as SessionConfigOption[],
+        );
+        break;
+      case "onUsage":
+        listeners.onUsage?.(
+          params.sessionId as string,
+          params.usage as SessionUsage,
+        );
+        break;
+      default:
+        console.warn("[rpc/remote] unknown message", name);
+    }
+  };
+
+  const connect = (): Promise<void> => {
+    if (ws?.readyState === WebSocket.OPEN) return Promise.resolve();
+    if (openPromise) return openPromise;
+    openPromise = new Promise((resolve, reject) => {
+      try {
+        ws = new WebSocket(wsUrl);
+      } catch (err) {
+        openPromise = null;
+        reject(err instanceof Error ? err : new Error(String(err)));
+        return;
+      }
+      ws.onopen = () => {
+        openPromise = null;
+        resolve();
+      };
+      ws.onerror = () => {
+        openPromise = null;
+        reject(new Error("WebSocket connection failed"));
+      };
+      ws.onclose = () => {
+        openPromise = null;
+        ws = null;
+        // Reject in-flight requests.
+        for (const [id, p] of pending) {
+          p.reject(new Error("WebSocket closed"));
+          pending.delete(id);
+        }
+        if (reconnectTimer) clearTimeout(reconnectTimer);
+        reconnectTimer = setTimeout(() => {
+          void connect().catch(() => {
+            /* retry later on next request */
+          });
+        }, 1500);
+      };
+      ws.onmessage = (ev) => {
+        let msg: {
+          type?: string;
+          id?: string;
+          result?: unknown;
+          error?: string;
+          name?: string;
+          params?: Record<string, unknown>;
+        };
+        try {
+          msg = JSON.parse(String(ev.data));
+        } catch {
+          return;
+        }
+        if (msg.type === "response" && msg.id) {
+          const p = pending.get(msg.id);
+          if (!p) return;
+          pending.delete(msg.id);
+          if (msg.error) p.reject(new Error(msg.error));
+          else p.resolve(msg.result);
+          return;
+        }
+        if (msg.type === "message" && msg.name) {
+          dispatchMessage(msg.name, msg.params ?? {});
+        }
+      };
+    });
+    return openPromise;
+  };
+
+  const request = async <T>(
+    method: string,
+    params?: Record<string, unknown>,
+  ): Promise<T> => {
+    await connect();
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      throw new Error("Remote access WebSocket not connected");
+    }
+    const id = `r${++reqSeq}-${Date.now().toString(36)}`;
+    const result = await new Promise<unknown>((resolve, reject) => {
+      pending.set(id, { resolve, reject });
+      ws!.send(JSON.stringify({ type: "request", id, method, params: params ?? {} }));
+      // Safety timeout (folder pick etc. can be long; remote doesn't pick folders).
+      setTimeout(() => {
+        if (pending.has(id)) {
+          pending.delete(id);
+          reject(new Error(`Remote request timed out: ${method}`));
+        }
+      }, 120_000);
+    });
+    return result as T;
+  };
+
+  // Kick off connection early.
+  void connect().catch((err) => {
+    console.warn("[rpc/remote] initial connect failed:", err);
+  });
+
+  const idleRemote: RemoteAccessStatus = {
+    running: true,
+    code,
+    port: null,
+    url: window.location.href,
+    urls: [window.location.href],
+    lanIps: [],
+  };
+
+  return {
+    request: {
+      sendPrompt: (p) => request("sendPrompt", p as Record<string, unknown>),
+      cancel: (p) => request("cancel", (p ?? {}) as Record<string, unknown>),
+      listAgents: () => request("listAgents"),
+      listSessions: () => request("listSessions"),
+      createSession: (p) =>
+        request("createSession", p as Record<string, unknown>),
+      switchSession: (p) =>
+        request("switchSession", p as Record<string, unknown>),
+      deleteSession: (p) =>
+        request("deleteSession", p as Record<string, unknown>),
+      offloadSession: (p) =>
+        request("offloadSession", p as Record<string, unknown>),
+      respondPermission: (p) =>
+        request("respondPermission", p as Record<string, unknown>),
+      openFile: (p) => request("openFile", p as Record<string, unknown>),
+      getSettings: () => request("getSettings"),
+      saveSettings: (p) =>
+        request("saveSettings", p as Record<string, unknown>),
+      getConnectionState: () => request("getConnectionState"),
+      connectAgent: (p) =>
+        request("connectAgent", (p ?? {}) as Record<string, unknown>),
+      pickFolder: (p) =>
+        request("pickFolder", (p ?? {}) as Record<string, unknown>),
+      listRecentProjects: () => request("listRecentProjects"),
+      removeRecentProject: (p) =>
+        request("removeRecentProject", p as Record<string, unknown>),
+      writeClipboard: (p) =>
+        request("writeClipboard", p as Record<string, unknown>),
+      getGitBranch: (p) =>
+        request("getGitBranch", p as Record<string, unknown>),
+      windowControl: async () => ({
+        ok: false as const,
+        error: "No window control on remote",
+      }),
+      setConfigOption: (p) =>
+        request("setConfigOption", p as Record<string, unknown>),
+      showDesktopNotification: async () => ({ ok: true }),
+      getRemoteAccess: async () => idleRemote,
+      startRemoteAccess: async () => idleRemote,
+      stopRemoteAccess: async () => idleRemote,
+      regenerateRemoteAccess: async () => idleRemote,
+    },
+  };
 }
 
 export function getRpc(): RpcClient {
@@ -466,6 +709,46 @@ async getGitBranch() {
         }
         console.info("[rpc] showDesktopNotification (mock):", title, body);
         return { ok: true };
+      },
+      async getRemoteAccess() {
+        return {
+          running: false,
+          code: null,
+          port: null,
+          url: null,
+          urls: [],
+          lanIps: [],
+        };
+      },
+      async startRemoteAccess() {
+        return {
+          running: false,
+          code: null,
+          port: null,
+          url: null,
+          urls: [],
+          lanIps: [],
+        };
+      },
+      async stopRemoteAccess() {
+        return {
+          running: false,
+          code: null,
+          port: null,
+          url: null,
+          urls: [],
+          lanIps: [],
+        };
+      },
+      async regenerateRemoteAccess() {
+        return {
+          running: false,
+          code: null,
+          port: null,
+          url: null,
+          urls: [],
+          lanIps: [],
+        };
       },
     },
   };

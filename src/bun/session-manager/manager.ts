@@ -11,6 +11,7 @@ import type {
 import type { SessionUpdate } from "../../session/types";
 import { ensureAgentsConfig, loadAgents } from "../agents";
 import { getGitBranch } from "../git-branch";
+import { providerConnectionKey } from "../providers";
 import { loadSettings, saveSettings } from "../settings";
 import { SessionStore } from "../store";
 import type {
@@ -105,8 +106,22 @@ export class SessionManager {
   }
 
   saveSettings(patch: Partial<AppSettings>) {
+    const prevProviderKey = providerConnectionKey(this.settings);
     this.settings = saveSettings(this.store, patch);
     if (patch.defaultAgentId) this.defaultAgentId = patch.defaultAgentId;
+
+    // Provider credentials / model mapping feed into the ACP process env.
+    // If they changed while an agent is running, force a respawn on next connect.
+    const nextProviderKey = providerConnectionKey(this.settings);
+    if (
+      this.conn.client &&
+      prevProviderKey !== nextProviderKey &&
+      this.conn.connectedProviderKey !== nextProviderKey
+    ) {
+      // Kill async; next prompt/switch will reconnect with new env.
+      void this.conn.killAgent().then(() => this.emitSessionList());
+    }
+
     return this.settings;
   }
 

@@ -45,6 +45,15 @@ export type AcpClientHandlers = {
   enableFs?: boolean;
 };
 
+/** Optional spawn overrides (e.g. provider credentials for Claude Code). */
+export type AcpClientOptions = {
+  /**
+   * Extra env vars merged over `process.env` when spawning the agent.
+   * Used for ANTHROPIC_BASE_URL / API_KEY / model mappings from Providers.
+   */
+  env?: Record<string, string | undefined>;
+};
+
 export type AcpSessionHandle = {
   sessionId: string;
   /** Initial config options from session/new (model, thought_level, …). */
@@ -67,6 +76,7 @@ export type AcpSessionHandle = {
 export class AcpClient {
   private agent: AgentInfo;
   private handlers: AcpClientHandlers;
+  private options: AcpClientOptions;
   private proc: Subprocess<"pipe", "pipe", "pipe"> | null = null;
   private connection: ClientConnection | null = null;
   private ctx: ClientContext | null = null;
@@ -81,9 +91,14 @@ export class AcpClient {
     reject: (error: unknown) => void;
   } | null = null;
 
-  constructor(agent: AgentInfo, handlers: AcpClientHandlers) {
+  constructor(
+    agent: AgentInfo,
+    handlers: AcpClientHandlers,
+    options: AcpClientOptions = {},
+  ) {
     this.agent = agent;
     this.handlers = handlers;
+    this.options = options;
   }
 
   /** OS pid of the spawned agent process, if still running. */
@@ -112,12 +127,25 @@ export class AcpClient {
   }
 
   async connect(): Promise<void> {
+    // Merge provider credentials / model maps over the host environment.
+    // Explicit undefined values are omitted so we never blank a parent var
+    // unintentionally; buildProviderEnv only sets defined strings.
+    const env: Record<string, string> = {};
+    for (const [k, v] of Object.entries(process.env)) {
+      if (v !== undefined) env[k] = v;
+    }
+    if (this.options.env) {
+      for (const [k, v] of Object.entries(this.options.env)) {
+        if (v !== undefined) env[k] = v;
+      }
+    }
+
     this.proc = spawn({
       cmd: [this.agent.command, ...this.agent.args],
       stdin: "pipe",
       stdout: "pipe",
       stderr: "pipe",
-      env: { ...process.env },
+      env,
     });
 
     // Pipe stderr so agent noise doesn't crash us.

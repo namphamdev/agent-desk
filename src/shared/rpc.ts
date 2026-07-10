@@ -96,6 +96,33 @@ export type SessionConfigOption = {
     }
 );
 
+/** Claude Code model aliases used for provider mapping + chat selection. */
+export type ClaudeModelAlias = "haiku" | "sonnet" | "opus";
+
+/**
+ * An LLM provider (Anthropic-compatible gateway or direct API).
+ * Credentials and model mappings are injected as env vars when spawning
+ * Claude Code ACP (`ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY`,
+ * `ANTHROPIC_DEFAULT_*_MODEL`, `ANTHROPIC_MODEL`).
+ */
+export type ProviderConfig = {
+  id: string;
+  name: string;
+  /** API base URL (e.g. https://api.anthropic.com or a gateway URL). */
+  baseUrl: string;
+  /** API key sent as ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN. */
+  apiKey: string;
+  /**
+   * Map Claude Code aliases to provider-specific model IDs.
+   * Empty string = let Claude Code resolve the alias itself.
+   */
+  models: {
+    haiku: string;
+    sonnet: string;
+    opus: string;
+  };
+};
+
 export type AppSettings = {
   editorCommand: string;
   theme: "dark" | "light" | "system";
@@ -117,6 +144,18 @@ export type AppSettings = {
   lastProjectCwd?: string | null;
   /** Project folders hidden from the New Session recent list. */
   dismissedRecentCwds?: string[];
+  /** User-configured LLM providers (base URL, key, model maps). */
+  providers?: ProviderConfig[];
+  /**
+   * Active provider for agent spawn. Null = system / Claude Code defaults
+   * (process env only, no override).
+   */
+  activeProviderId?: string | null;
+  /**
+   * Active Claude Code model alias (haiku / sonnet / opus) used when spawning
+   * and as the preferred ACP model config default.
+   */
+  activeModelAlias?: ClaudeModelAlias;
 };
 
 export type RecentProject = {
@@ -164,6 +203,18 @@ export type SessionLoadedPayload = {
   configOptions?: SessionConfigOption[];
   /** Latest context usage for this session, if known. */
   usage?: SessionUsage | null;
+};
+
+/** LAN remote-access server status (phone/browser mirror of the desktop UI). */
+export type RemoteAccessStatus = {
+  running: boolean;
+  code: string | null;
+  port: number | null;
+  /** Preferred LAN URL (first non-internal IPv4). */
+  url: string | null;
+  /** All candidate URLs (every non-internal IPv4 + localhost). */
+  urls: string[];
+  lanIps: string[];
 };
 
 /**
@@ -303,6 +354,26 @@ getGitBranch: {
           silent?: boolean;
         };
         response: { ok: boolean; error?: string };
+      };
+      /** Current LAN remote-access server status (may be stopped). */
+      getRemoteAccess: {
+        params: void;
+        response: RemoteAccessStatus;
+      };
+      /** Start (or return existing) remote-access HTTP/WS server. */
+      startRemoteAccess: {
+        params: void;
+        response: RemoteAccessStatus;
+      };
+      /** Stop the remote-access server. */
+      stopRemoteAccess: {
+        params: void;
+        response: RemoteAccessStatus;
+      };
+      /** Rotate the access code (restarts the server if running). */
+      regenerateRemoteAccess: {
+        params: void;
+        response: RemoteAccessStatus;
       };
     };
     messages: {
