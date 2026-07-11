@@ -5,6 +5,10 @@ import type {
   ClaudeModelAlias,
   ProviderConfig,
 } from "../../shared/rpc";
+import {
+  formatSymlinkPathsText,
+  parseSymlinkPathsText,
+} from "../../shared/worktree-paths";
 import { ensureNotificationPermission } from "../completionAlert";
 import { Select } from "./Select";
 
@@ -66,6 +70,9 @@ export function SettingsPanel({ settings, agents, onClose, onSave }: Props) {
     ...settings,
     providers: settings.providers ? [...settings.providers] : [],
   }));
+  const [worktreePathsText, setWorktreePathsText] = useState(() =>
+    formatSymlinkPathsText(settings.worktreeSymlinkPaths ?? ["node_modules"]),
+  );
   const [saving, setSaving] = useState(false);
   const [tab, setTab] = useState<SettingsTab>("general");
   const [selectedProviderId, setSelectedProviderId] = useState<string | null>(
@@ -96,6 +103,7 @@ export function SettingsPanel({ settings, agents, onClose, onSave }: Props) {
         ...draft,
         activeProviderId,
         providers: draft.providers ?? [],
+        worktreeSymlinkPaths: parseSymlinkPathsText(worktreePathsText),
       });
       onClose();
     } finally {
@@ -281,6 +289,25 @@ export function SettingsPanel({ settings, agents, onClose, onSave }: Props) {
                   Off by default. When on, the agent may read and write files via
                   ACP fs/* methods.
                 </p>
+
+                <Field label="Worktree shared paths">
+                  <textarea
+                    value={worktreePathsText}
+                    onChange={(e) => setWorktreePathsText(e.target.value)}
+                    rows={3}
+                    spellCheck={false}
+                    placeholder={"node_modules\n.venv"}
+                    className="w-full resize-y rounded-md border border-[#333] bg-[#121212] px-2 py-1.5 font-mono text-xs text-gray-200 placeholder-gray-600 focus:outline-none focus:ring-1 focus:ring-gray-500"
+                    aria-label="Worktree shared paths"
+                  />
+                  <p className="mt-1 text-[11px] text-gray-500">
+                    Relative paths (one per line or comma-separated) symlinked
+                    from the main project into new git worktrees. Avoids
+                    reinstalling large folders like{" "}
+                    <span className="font-mono">node_modules</span>. Absolute
+                    paths and <span className="font-mono">..</span> are ignored.
+                  </p>
+                </Field>
               </div>
             )}
 

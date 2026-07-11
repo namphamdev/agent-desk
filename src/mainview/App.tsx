@@ -5,6 +5,7 @@ import { PromptInput } from "./components/PromptInput";
 import { PermissionPrompt } from "./components/PermissionPrompt";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { SkillsPanel } from "./components/SkillsPanel";
+import { CommandPanel } from "./components/CommandPanel";
 import { ProjectHarnessModal } from "./components/ProjectHarnessModal";
 import { RemoteAccessPanel } from "./components/RemoteAccessPanel";
 import { ConnectionBanner } from "./components/ConnectionBanner";
@@ -68,6 +69,7 @@ export default function App() {
               onOffloadSession={(id) => void app.handleOffloadSession(id)}
               onOpenSettings={() => app.setShowSettings(true)}
               onOpenSkills={() => void app.openSkills()}
+              onOpenCommands={() => void app.openUserCommands()}
               onOpenRemoteAccess={
                 remoteClient ? undefined : () => void app.openRemoteAccess()
               }
@@ -193,6 +195,24 @@ export default function App() {
               onInstall={app.handleInstallSkill}
               onToggle={app.handleToggleSkill}
               onUninstall={app.handleUninstallSkill}
+            />
+          )}
+          {app.showCommands && (
+            <CommandPanel
+              commands={app.userCommands}
+              runs={app.commandRuns}
+              loading={app.commandsLoading}
+              error={app.commandsError}
+              busyId={app.commandsBusyId}
+              projectCwd={app.commandsProjectCwd}
+              projectName={app.activeSession?.project}
+              onClose={() => app.setShowCommands(false)}
+              onRefresh={app.refreshUserCommands}
+              onAdd={app.handleAddUserCommand}
+              onRemove={app.handleRemoveUserCommand}
+              onRun={app.handleRunUserCommand}
+              onStop={app.handleStopUserCommandRun}
+              onLoadLog={app.handleLoadUserCommandLog}
             />
           )}
           {app.showHarness && (

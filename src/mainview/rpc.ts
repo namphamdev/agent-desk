@@ -17,6 +17,8 @@ import type {
   SessionUsage,
   SkillInfo,
   ProjectHarness,
+  SavedCommand,
+  CommandRunSummary,
   TerminalRPC,
   TurnEndPayload,
 } from "../shared/rpc";
@@ -52,6 +54,11 @@ type RpcClient = {
       project?: string;
       cwd?: string;
       agentId?: string;
+      worktree?: {
+        branch: string;
+        createBranch?: boolean;
+        path?: string;
+      };
       seedContext?: {
         text: string;
         role?: "user" | "agent" | "thought";
@@ -161,6 +168,48 @@ type RpcClient = {
           ok: true;
           harness: ProjectHarness;
           written: string[];
+        }
+      | { ok: false; error: string }
+    >;
+    listUserCommands: (p: {
+      projectCwd: string;
+    }) => Promise<{ commands: SavedCommand[] }>;
+    addUserCommand: (p: {
+      projectCwd: string;
+      name: string;
+      command: string;
+    }) => Promise<
+      | { ok: true; command: SavedCommand; commands: SavedCommand[] }
+      | { ok: false; error: string }
+    >;
+    removeUserCommand: (p: {
+      projectCwd: string;
+      commandId: string;
+    }) => Promise<
+      { ok: true; commands: SavedCommand[] } | { ok: false; error: string }
+    >;
+    runUserCommand: (p: {
+      projectCwd: string;
+      commandId: string;
+    }) => Promise<
+      { ok: true; run: CommandRunSummary } | { ok: false; error: string }
+    >;
+    stopUserCommandRun: (p: {
+      runId: string;
+    }) => Promise<
+      { ok: true; run: CommandRunSummary } | { ok: false; error: string }
+    >;
+    listUserCommandRuns: (p: {
+      projectCwd: string;
+    }) => Promise<{ runs: CommandRunSummary[] }>;
+    getUserCommandRunLog: (p: {
+      runId: string;
+    }) => Promise<
+      | {
+          ok: true;
+          run: CommandRunSummary;
+          log: string;
+          truncated: boolean;
         }
       | { ok: false; error: string }
     >;
@@ -483,6 +532,20 @@ function createRemoteWsClient(code: string): RpcClient {
         request("getProjectHarness", p as Record<string, unknown>),
       applyProjectHarness: (p) =>
         request("applyProjectHarness", p as Record<string, unknown>),
+      listUserCommands: (p) =>
+        request("listUserCommands", p as Record<string, unknown>),
+      addUserCommand: (p) =>
+        request("addUserCommand", p as Record<string, unknown>),
+      removeUserCommand: (p) =>
+        request("removeUserCommand", p as Record<string, unknown>),
+      runUserCommand: (p) =>
+        request("runUserCommand", p as Record<string, unknown>),
+      stopUserCommandRun: (p) =>
+        request("stopUserCommandRun", p as Record<string, unknown>),
+      listUserCommandRuns: (p) =>
+        request("listUserCommandRuns", p as Record<string, unknown>),
+      getUserCommandRunLog: (p) =>
+        request("getUserCommandRunLog", p as Record<string, unknown>),
     },
   };
 }
@@ -875,9 +938,140 @@ async getGitBranch() {
           ],
         };
       },
+      async listUserCommands({ projectCwd }) {
+        const key = projectCwd?.trim() || "";
+        return {
+          commands: mockUserCommands.filter((c) => c.projectCwd === key),
+        };
+      },
+      async addUserCommand({ projectCwd, name, command }) {
+        const key = projectCwd?.trim() || "";
+        if (!key) {
+          return { ok: false as const, error: "Project folder is required" };
+        }
+        const n = name.trim();
+        const c = command.trim();
+        if (!n) return { ok: false as const, error: "Name is required" };
+        if (!c) return { ok: false as const, error: "Command is required" };
+        const entry: SavedCommand = {
+          id: `cmd_mock_${Date.now().toString(36)}`,
+          name: n,
+          command: c,
+          projectCwd: key,
+          createdAt: Date.now(),
+        };
+        mockUserCommands.unshift(entry);
+        return {
+          ok: true as const,
+          command: entry,
+          commands: mockUserCommands.filter((x) => x.projectCwd === key),
+        };
+      },
+      async removeUserCommand({ projectCwd, commandId }) {
+        const key = projectCwd?.trim() || "";
+        const idx = mockUserCommands.findIndex(
+          (c) => c.id === commandId && c.projectCwd === key,
+        );
+        if (idx < 0) return { ok: false as const, error: "Command not found" };
+        mockUserCommands.splice(idx, 1);
+        return {
+          ok: true as const,
+          commands: mockUserCommands.filter((c) => c.projectCwd === key),
+        };
+      },
+      async runUserCommand({ projectCwd, commandId }) {
+        const key = projectCwd?.trim() || "";
+        const saved = mockUserCommands.find(
+          (c) => c.id === commandId && c.projectCwd === key,
+        );
+        if (!saved) return { ok: false as const, error: "Command not found" };
+        const run: CommandRunSummary = {
+          id: `run_mock_${Date.now().toString(36)}`,
+          commandId: saved.id,
+          commandName: saved.name,
+          command: saved.command,
+          projectCwd: key,
+          cwd: key,
+          status: "running",
+          exitCode: null,
+          startedAt: Date.now(),
+          endedAt: null,
+          logBytes: 0,
+        };
+        const logLines = [
+          `$ ${saved.command}\n`,
+          `(browser mock — no real process)\n`,
+          `project: ${run.projectCwd}\n`,
+        ];
+        mockUserRuns.unshift({
+          run,
+          log: logLines.join(""),
+          truncated: false,
+        });
+        setTimeout(() => {
+          const entry = mockUserRuns.find((r) => r.run.id === run.id);
+          if (!entry || entry.run.status !== "running") return;
+          entry.log += "mock output: ok\n[exit 0]\n";
+          entry.run.status = "exited";
+          entry.run.exitCode = 0;
+          entry.run.endedAt = Date.now();
+          entry.run.logBytes = entry.log.length;
+        }, 400);
+        return { ok: true as const, run: { ...run } };
+      },
+      async stopUserCommandRun({ runId }) {
+        const entry = mockUserRuns.find((r) => r.run.id === runId);
+        if (!entry) return { ok: false as const, error: "Run not found" };
+        if (entry.run.status === "running") {
+          entry.run.status = "killed";
+          entry.run.endedAt = Date.now();
+          entry.log += "\n[process killed]\n";
+          entry.run.logBytes = entry.log.length;
+        }
+        return { ok: true as const, run: { ...entry.run } };
+      },
+      async listUserCommandRuns({ projectCwd }) {
+        const key = projectCwd?.trim() || "";
+        return {
+          runs: mockUserRuns
+            .filter((r) => r.run.projectCwd === key)
+            .map((r) => ({
+              ...r.run,
+              logBytes: r.log.length,
+            })),
+        };
+      },
+      async getUserCommandRunLog({ runId }) {
+        const entry = mockUserRuns.find((r) => r.run.id === runId);
+        if (!entry) return { ok: false as const, error: "Run not found" };
+        return {
+          ok: true as const,
+          run: { ...entry.run, logBytes: entry.log.length },
+          log: entry.log,
+          truncated: entry.truncated,
+        };
+      },
     },
   };
 }
+
+type MockUserRun = {
+  run: CommandRunSummary;
+  log: string;
+  truncated: boolean;
+};
+
+const mockUserCommands: SavedCommand[] = [
+  {
+    id: "cmd_mock_echo",
+    name: "Echo hello",
+    command: "echo hello from command panel",
+    projectCwd: "/tmp/demo-project",
+    createdAt: Date.now() - 60_000,
+  },
+];
+
+const mockUserRuns: MockUserRun[] = [];
 
 let mockHarnessApplied = false;
 
@@ -892,7 +1086,7 @@ function mockHarness(
     ok: true,
     hasClaudeMd: applied,
     hasAgentsMd: applied,
-    appliedCount: applied ? 1 : 0,
+    appliedCount: applied ? 2 : 0,
     optimizations: [
       {
         id: "karpathy-guidelines",
@@ -904,6 +1098,18 @@ function mockHarness(
         applied,
         details: applied
           ? "AGENTS.md · CLAUDE.md → @AGENTS.md · skill (mock)"
+          : null,
+      },
+      {
+        id: "project-memory",
+        name: "Project memory + arc42",
+        description:
+          "Sharded git-synced team memory, arc42 scaffold, Claude /remember and /memory-promote.",
+        sourceLabel: "arc42 · team memory",
+        sourceUrl: "https://arc42.org/",
+        applied,
+        details: applied
+          ? "docs/memory/INDEX.md · topics/ · docs/architecture/ (mock)"
           : null,
       },
     ],

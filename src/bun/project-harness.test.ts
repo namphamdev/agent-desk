@@ -15,10 +15,13 @@ import { join } from "node:path";
 import {
   applyProjectHarness,
   CLAUDE_MD_AGENTS_REF,
+  CLAUDE_MD_MEMORY_REF,
   containsAgentsMdRef,
   containsKarpathyGuidelines,
+  containsMemoryIndexRef,
   getProjectHarness,
   KARPATHY_AGENTS_MD,
+  MEMORY_INDEX_MD,
 } from "./project-harness";
 
 const dirs: string[] = [];
@@ -75,8 +78,11 @@ describe("getProjectHarness", () => {
     expect(h.hasClaudeMd).toBe(false);
     expect(h.hasAgentsMd).toBe(false);
     expect(h.appliedCount).toBe(0);
-    expect(h.optimizations[0]?.id).toBe("karpathy-guidelines");
-    expect(h.optimizations[0]?.applied).toBe(false);
+    expect(h.optimizations.map((o) => o.id)).toEqual([
+      "karpathy-guidelines",
+      "project-memory",
+    ]);
+    expect(h.optimizations.every((o) => !o.applied)).toBe(true);
   });
 
   it("detects existing AGENTS.md guidelines", () => {
@@ -89,6 +95,14 @@ describe("getProjectHarness", () => {
     expect(h.optimizations[0]?.applied).toBe(true);
     expect(h.optimizations[0]?.details).toContain("AGENTS.md");
     expect(h.optimizations[0]?.details).toContain("CLAUDE.md → @AGENTS.md");
+  });
+
+  it("does not treat CLAUDE.md @AGENTS.md pointer alone as Karpathy applied", () => {
+    const cwd = tempDir();
+    writeFileSync(join(cwd, "CLAUDE.md"), `${CLAUDE_MD_AGENTS_REF}\n`, "utf8");
+    const h = getProjectHarness(cwd);
+    expect(h.optimizations[0]?.id).toBe("karpathy-guidelines");
+    expect(h.optimizations[0]?.applied).toBe(false);
   });
 });
 
@@ -204,5 +218,75 @@ describe("applyProjectHarness", () => {
     );
     const h = getProjectHarness(cwd);
     expect(h.optimizations[0]?.applied).toBe(true);
+  });
+
+  it("scaffolds sharded memory + arc42 + Claude commands", () => {
+    const cwd = tempDir();
+    const res = applyProjectHarness(cwd, "project-memory", "demo");
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+
+    expect(res.written).toContain("docs/memory/INDEX.md");
+    expect(res.written).toContain("docs/memory/topics/conventions.md");
+    expect(res.written).toContain("docs/architecture/README.md");
+    expect(res.written).toContain(".claude/commands/remember.md");
+    expect(res.written).toContain(".claude/commands/memory-promote.md");
+    expect(res.written).toContain("CLAUDE.md");
+
+    const index = readFileSync(join(cwd, "docs", "memory", "INDEX.md"), "utf8");
+    expect(index).toContain("# Project memory index");
+    expect(index).toContain("topics/conventions.md");
+
+    const claude = readFileSync(join(cwd, "CLAUDE.md"), "utf8");
+    expect(containsMemoryIndexRef(claude)).toBe(true);
+    expect(containsAgentsMdRef(claude)).toBe(true);
+    expect(claude).toContain(CLAUDE_MD_MEMORY_REF);
+
+    const memOpt = res.harness.optimizations.find((o) => o.id === "project-memory");
+    expect(memOpt?.applied).toBe(true);
+    expect(res.harness.appliedCount).toBe(1);
+  });
+
+  it("is idempotent for project-memory and preserves existing INDEX", () => {
+    const cwd = tempDir();
+    const first = applyProjectHarness(cwd, "project-memory");
+    expect(first.ok).toBe(true);
+
+    const custom = `${MEMORY_INDEX_MD}\n\n## Hot facts\n\n- custom team fact\n`;
+    writeFileSync(join(cwd, "docs", "memory", "INDEX.md"), custom, "utf8");
+
+    const second = applyProjectHarness(cwd, "project-memory");
+    expect(second.ok).toBe(true);
+    if (!second.ok) return;
+    expect(second.written).not.toContain("docs/memory/INDEX.md");
+    expect(readFileSync(join(cwd, "docs", "memory", "INDEX.md"), "utf8")).toContain(
+      "custom team fact",
+    );
+    expect(second.harness.optimizations.find((o) => o.id === "project-memory")?.applied).toBe(
+      true,
+    );
+  });
+
+  it("adds memory import to existing CLAUDE.md without dropping body", () => {
+    const cwd = tempDir();
+    writeFileSync(
+      join(cwd, "CLAUDE.md"),
+      `${CLAUDE_MD_AGENTS_REF}\n\n# Local\n\nPrefer bun.\n`,
+      "utf8",
+    );
+    const res = applyProjectHarness(cwd, "project-memory");
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    const claude = readFileSync(join(cwd, "CLAUDE.md"), "utf8");
+    expect(claude).toContain("Prefer bun");
+    expect(containsAgentsMdRef(claude)).toBe(true);
+    expect(containsMemoryIndexRef(claude)).toBe(true);
+  });
+});
+
+describe("containsMemoryIndexRef", () => {
+  it("detects memory index import", () => {
+    expect(containsMemoryIndexRef("@docs/memory/INDEX.md\n")).toBe(true);
+    expect(containsMemoryIndexRef("@AGENTS.md\n")).toBe(false);
   });
 });

@@ -25,6 +25,8 @@ type Props = {
   onOpenSettings: () => void;
   /** Open skills management panel (install / enable / disable). */
   onOpenSkills?: () => void;
+  /** Open user command panel (save / run shell commands + logs). */
+  onOpenCommands?: () => void;
   /** Open remote-access panel (QR + LAN URL for phone browsers). */
   onOpenRemoteAccess?: () => void;
   onWindowControl?: (action: WindowControlAction) => void;
@@ -55,6 +57,7 @@ export function Sidebar({
   onOffloadSession,
   onOpenSettings,
   onOpenSkills,
+  onOpenCommands,
   onOpenRemoteAccess,
   onWindowControl,
 }: Props) {
@@ -162,7 +165,19 @@ export function Sidebar({
           </div>
         )}
         <div className="flex flex-1 items-center justify-between gap-2 text-gray-500">
-          <span className="text-[11px] uppercase tracking-wider">sessions</span>
+          <span className="flex min-w-0 items-center gap-2">
+            <img
+              src="./logo.png"
+              alt="AgentDesk"
+              width={18}
+              height={18}
+              className="h-[18px] w-[18px] shrink-0 rounded-[4px] object-cover"
+              draggable={false}
+            />
+            <span className="text-[11px] uppercase tracking-wider">
+              sessions
+            </span>
+          </span>
         </div>
       </div>
 
@@ -186,6 +201,14 @@ export function Sidebar({
             label="Skills"
             onClick={onOpenSkills}
             title="Install and manage agent skills"
+          />
+        )}
+        {onOpenCommands && (
+          <QuickAction
+            icon={<CommandsIcon />}
+            label="Commands"
+            onClick={onOpenCommands}
+            title="Save and run shell commands, view logs"
           />
         )}
       </div>
@@ -603,5 +626,12 @@ const SkillsIcon = () => (
     <path d="M12 3l1.5 4.5L18 9l-4.5 1.5L12 15l-1.5-4.5L6 9l4.5-1.5L12 3z" />
     <path d="M19 14l.75 2.25L22 17l-2.25.75L19 20l-.75-2.25L16 17l2.25-.75L19 14z" />
     <path d="M5 14l.5 1.5L7 16l-1.5.5L5 18l-.5-1.5L3 16l1.5-.5L5 14z" />
+  </svg>
+);
+/** Terminal prompt — user command panel. */
+const CommandsIcon = () => (
+  <svg {...s}>
+    <path d="M4 17l6-5-6-5" />
+    <path d="M12 19h8" />
   </svg>
 );

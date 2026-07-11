@@ -7,6 +7,10 @@ import {
   normalizeProviders,
   resolveActiveProvider,
 } from "./providers";
+import {
+  DEFAULT_WORKTREE_SYMLINK_PATHS,
+  normalizeSymlinkPaths,
+} from "../shared/worktree-paths";
 
 export const DEFAULT_SETTINGS: AppSettings = {
   editorCommand: process.env.EDITOR || process.env.VISUAL || "code",
@@ -24,6 +28,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   providers: [],
   activeProviderId: null,
   activeModelAlias: "sonnet",
+  worktreeSymlinkPaths: [...DEFAULT_WORKTREE_SYMLINK_PATHS],
 };
 
 const SETTINGS_KEY = "app_settings";
@@ -70,6 +75,9 @@ function normalizeSettings(parsed: Partial<AppSettings>): AppSettings {
     dismissedRecentCwds: Array.isArray(parsed.dismissedRecentCwds)
       ? parsed.dismissedRecentCwds.filter((c): c is string => typeof c === "string")
       : DEFAULT_SETTINGS.dismissedRecentCwds,
+    worktreeSymlinkPaths: normalizeSymlinkPaths(
+      parsed.worktreeSymlinkPaths ?? DEFAULT_SETTINGS.worktreeSymlinkPaths,
+    ),
   };
 }
 

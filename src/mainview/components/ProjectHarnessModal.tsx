@@ -37,7 +37,9 @@ export function ProjectHarnessModal({
       setFlash(null);
       try {
         await onApply(id);
-        setFlash("Applied — new sessions will pick up project guidelines.");
+        setFlash(
+          "Applied — new sessions pick up project files (restart open agents to reload CLAUDE.md).",
+        );
       } catch (err) {
         setLocalError(err instanceof Error ? err.message : String(err));
       }
@@ -118,13 +120,16 @@ export function ProjectHarnessModal({
               <span className="text-gray-600">AGENTS.md present</span>
             )}
             {harness?.hasClaudeMd && (
-              <span className="text-gray-600">CLAUDE.md → @AGENTS.md</span>
+              <span className="text-gray-600">CLAUDE.md present</span>
             )}
+            {harness?.optimizations.some(
+              (o) => o.id === "project-memory" && o.applied,
+            ) && <span className="text-gray-600">docs/memory</span>}
           </div>
           <p className="mt-2 text-xs leading-relaxed text-gray-500">
-            The harness installs project-level agent instructions (AGENTS.md,
-            CLAUDE.md pointer, and skills) so coding agents work more carefully
-            in this repo.
+            The harness installs project-level agent setup: coding guidelines,
+            sharded team memory + arc42 docs, Claude commands, and skills so
+            agents (and teammates via git) share the same project knowledge.
           </p>
         </div>
 
@@ -219,6 +224,29 @@ export function ProjectHarnessModal({
                         ["Simplicity", "Minimum code, no speculation"],
                         ["Surgical", "Touch only what you must"],
                         ["Goal-driven", "Verify with success criteria"],
+                      ].map(([label, hint]) => (
+                        <div
+                          key={label}
+                          className="rounded-md bg-[#1a1a1a] px-2.5 py-2"
+                        >
+                          <div className="text-[11px] font-medium text-gray-300">
+                            {label}
+                          </div>
+                          <div className="mt-0.5 text-[10px] text-gray-600">
+                            {hint}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {opt.id === "project-memory" && (
+                    <div className="mt-3 grid grid-cols-2 gap-2 border-t border-[#2a2a2a] pt-3">
+                      {[
+                        ["INDEX.md", "Always-on catalog (keep small)"],
+                        ["topics/", "Sharded durable team facts"],
+                        ["journal/", "Raw capture → promote later"],
+                        ["arc42", "docs/architecture + ADRs"],
                       ].map(([label, hint]) => (
                         <div
                           key={label}

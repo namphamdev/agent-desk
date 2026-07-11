@@ -40,6 +40,20 @@ describe("settings", () => {
     expect(DEFAULT_SETTINGS.providers).toEqual([]);
     expect(DEFAULT_SETTINGS.activeProviderId).toBeNull();
     expect(DEFAULT_SETTINGS.activeModelAlias).toBe("sonnet");
+    expect(DEFAULT_SETTINGS.worktreeSymlinkPaths).toEqual(["node_modules"]);
+  });
+
+  it("normalizes worktree symlink paths on save", () => {
+    const store = openStore();
+    const next = saveSettings(store, {
+      worktreeSymlinkPaths: ["node_modules", "../evil", "node_modules", ".venv"],
+    });
+    expect(next.worktreeSymlinkPaths).toEqual(["node_modules", ".venv"]);
+    expect(loadSettings(store).worktreeSymlinkPaths).toEqual([
+      "node_modules",
+      ".venv",
+    ]);
+    store.close();
   });
 
   it("returns defaults when nothing is stored", () => {

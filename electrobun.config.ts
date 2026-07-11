@@ -12,17 +12,21 @@ import type { ElectrobunConfig } from "electrobun";
  */
 export default {
   app: {
-    name: "Terminal React",
+    name: "AgentDesk",
     identifier: "com.github.namphamdev.terminal-react",
     version: "0.1.0",
     description:
-      "Desktop terminal that renders coding-agent output as rich React UI via ACP",
+      "Desktop app that renders coding-agent output as rich React UI via ACP",
   },
   build: {
     // Vite builds to dist/, Electrobun copies that into the bundle as the webview.
     copy: {
       "dist/index.html": "views/mainview/index.html",
       "dist/assets": "views/mainview/assets",
+      // Public brand assets (Vite copies these to dist/ root).
+      "dist/favicon.ico": "views/mainview/favicon.ico",
+      "dist/favicon.png": "views/mainview/favicon.png",
+      "dist/logo.png": "views/mainview/logo.png",
     },
     watchIgnore: ["dist/**"],
     buildFolder: "build",
@@ -33,11 +37,16 @@ export default {
       codesign: false,
       notarize: false,
       createDmg: true,
+      // Default path is icon.iconset; kept explicit for clarity.
+      icons: "icon.iconset",
     },
-    linux: { bundleCEF: false },
+    linux: {
+      bundleCEF: false,
+      icon: "assets/app-icon.png",
+    },
     win: {
       bundleCEF: false,
-      // Optional: "assets/icon.ico" (16/32/48/256) for installer + taskbar.
+      icon: "assets/icon.ico",
     },
   },
   release: {

@@ -7,6 +7,14 @@ export type NewSessionOptions = {
   project?: string;
   title?: string;
   agentId?: string;
+  /**
+   * When set, create/reuse a git worktree for this branch and open the session there.
+   * Shared dependency dirs are symlinked from the main project (see Settings).
+   */
+  worktree?: {
+    branch: string;
+    createBranch?: boolean;
+  };
 };
 
 type Props = {
@@ -43,6 +51,9 @@ export function NewSessionDialog({
       ? defaultAgentId
       : agents[0]?.id ?? "",
   );
+  const [useWorktree, setUseWorktree] = useState(false);
+  const [worktreeBranch, setWorktreeBranch] = useState("");
+  const [createBranch, setCreateBranch] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [picking, setPicking] = useState(false);
@@ -85,6 +96,10 @@ export function NewSessionDialog({
       setError("Choose a project folder to continue.");
       return;
     }
+    if (useWorktree && !worktreeBranch.trim()) {
+      setError("Enter a branch name for the worktree.");
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
@@ -93,6 +108,12 @@ export function NewSessionDialog({
         project: projectNameFromPath(folder),
         title: title.trim() || undefined,
         agentId: agentId || undefined,
+        worktree: useWorktree
+          ? {
+              branch: worktreeBranch.trim(),
+              createBranch,
+            }
+          : undefined,
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -255,6 +276,62 @@ export function NewSessionDialog({
               />
             </div>
           )}
+
+          <div className="rounded-md border border-[#2a2a2a] bg-[#141414] px-3 py-2.5">
+            <label className="flex items-start gap-2 text-gray-300">
+              <input
+                type="checkbox"
+                checked={useWorktree}
+                onChange={(e) => {
+                  setUseWorktree(e.target.checked);
+                  setError(null);
+                }}
+                disabled={busy}
+                className="mt-0.5 rounded border-[#444]"
+              />
+              <span>
+                <span className="block text-xs font-medium">
+                  Open in git worktree
+                </span>
+                <span className="mt-0.5 block text-[11px] text-gray-500">
+                  Isolated checkout for the branch. Shared paths (e.g.{" "}
+                  <span className="font-mono text-gray-400">node_modules</span>
+                  ) are symlinked from the main project — configure them in
+                  Settings.
+                </span>
+              </span>
+            </label>
+            {useWorktree && (
+              <div className="mt-3 space-y-2 border-t border-[#2a2a2a] pt-3">
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-gray-400">
+                    Branch
+                  </label>
+                  <input
+                    value={worktreeBranch}
+                    onChange={(e) => {
+                      setWorktreeBranch(e.target.value);
+                      setError(null);
+                    }}
+                    placeholder="feature/my-task"
+                    spellCheck={false}
+                    disabled={busy}
+                    className="w-full rounded-md border border-[#333] bg-[#121212] px-2 py-1.5 font-mono text-xs text-gray-200 placeholder-gray-600 focus:outline-none focus:ring-1 focus:ring-gray-500 disabled:opacity-50"
+                  />
+                </div>
+                <label className="flex items-center gap-2 text-[11px] text-gray-400">
+                  <input
+                    type="checkbox"
+                    checked={createBranch}
+                    onChange={(e) => setCreateBranch(e.target.checked)}
+                    disabled={busy}
+                    className="rounded border-[#444]"
+                  />
+                  Create branch if it does not exist
+                </label>
+              </div>
+            )}
+          </div>
 
           {error && (
             <p className="rounded-md border border-red-900/60 bg-red-950/40 px-3 py-2 text-xs text-red-300">

@@ -76,6 +76,9 @@ Sessions, settings, and raw ACP events live under
 ## Structure
 
 ```
+docs/
+  architecture/           # arc42 + ADRs (canonical design)
+  memory/                 # sharded team memory (INDEX + topics + journal)
 src/
   bun/
     index.ts              # Electrobun main — RPC + SessionManager
@@ -99,6 +102,8 @@ src/
       content/            # Markdown, Mermaid (lazy), DiffView
       entries/            # ToolCallCard, PlanView
 ```
+
+Architecture and team memory are git-synced under `docs/`. See [`docs/README.md`](docs/README.md).
 
 ## Features
 

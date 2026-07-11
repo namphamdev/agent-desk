@@ -156,6 +156,24 @@ export type AppSettings = {
    * and as the preferred ACP model config default.
    */
   activeModelAlias?: ClaudeModelAlias;
+  /**
+   * Relative paths symlinked from the main project into new git worktrees
+   * (e.g. node_modules) so large installs are not duplicated per worktree.
+   */
+  worktreeSymlinkPaths?: string[];
+};
+
+/** Options for opening a new session inside a git worktree. */
+export type CreateSessionWorktree = {
+  /** Branch to check out in the worktree. */
+  branch: string;
+  /**
+   * Create the branch when it does not exist (default true).
+   * If false, the branch must already exist.
+   */
+  createBranch?: boolean;
+  /** Optional explicit worktree path; default is next to the main repo. */
+  path?: string;
 };
 
 export type RecentProject = {
@@ -250,6 +268,37 @@ export type ProjectHarness = {
   appliedCount: number;
 };
 
+/** A project-scoped user-saved shell command (Command panel). */
+export type SavedCommand = {
+  id: string;
+  name: string;
+  /** Shell command string (run via zsh -c / cmd /c). */
+  command: string;
+  /** Absolute project folder this command belongs to (also the run cwd). */
+  projectCwd: string;
+  createdAt: number;
+};
+
+export type CommandRunStatus = "running" | "exited" | "error" | "killed";
+
+/** One process invocation of a saved command. */
+export type CommandRunSummary = {
+  id: string;
+  commandId: string;
+  commandName: string;
+  command: string;
+  /** Project this run belongs to. */
+  projectCwd: string;
+  /** Working directory used for the process (project cwd). */
+  cwd: string;
+  status: CommandRunStatus;
+  exitCode: number | null;
+  startedAt: number;
+  endedAt: number | null;
+  /** Current captured log size in characters. */
+  logBytes?: number;
+};
+
 /**
  * Electrobun typed RPC contract.
  *
@@ -281,6 +330,12 @@ export type TerminalRPC = {
           project?: string;
           cwd?: string;
           agentId?: string;
+          /**
+           * When set, create (or reuse) a git worktree under the project and
+           * open the session there. Shared paths from settings are symlinked
+           * from the main tree (e.g. node_modules).
+           */
+          worktree?: CreateSessionWorktree;
           /**
            * Optional starting context (e.g. forked from a message or a session
            * change summary for review). Shown in the timeline and prepended to
@@ -461,6 +516,56 @@ export type TerminalRPC = {
               ok: true;
               harness: ProjectHarness;
               written: string[];
+            }
+          | { ok: false; error: string };
+      };
+      /** List shell commands saved for a project folder. */
+      listUserCommands: {
+        params: { projectCwd: string };
+        response: { commands: SavedCommand[] };
+      };
+      /** Add a shell command for a project folder. */
+      addUserCommand: {
+        params: { projectCwd: string; name: string; command: string };
+        response:
+          | { ok: true; command: SavedCommand; commands: SavedCommand[] }
+          | { ok: false; error: string };
+      };
+      /** Remove a saved shell command from a project. */
+      removeUserCommand: {
+        params: { projectCwd: string; commandId: string };
+        response:
+          | { ok: true; commands: SavedCommand[] }
+          | { ok: false; error: string };
+      };
+      /** Spawn a project's saved command in that project folder. */
+      runUserCommand: {
+        params: { projectCwd: string; commandId: string };
+        response:
+          | { ok: true; run: CommandRunSummary }
+          | { ok: false; error: string };
+      };
+      /** Kill a running command process. */
+      stopUserCommandRun: {
+        params: { runId: string };
+        response:
+          | { ok: true; run: CommandRunSummary }
+          | { ok: false; error: string };
+      };
+      /** Recent command runs for a project. */
+      listUserCommandRuns: {
+        params: { projectCwd: string };
+        response: { runs: CommandRunSummary[] };
+      };
+      /** Captured stdout/stderr for a run. */
+      getUserCommandRunLog: {
+        params: { runId: string };
+        response:
+          | {
+              ok: true;
+              run: CommandRunSummary;
+              log: string;
+              truncated: boolean;
             }
           | { ok: false; error: string };
       };

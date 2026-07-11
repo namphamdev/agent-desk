@@ -48,6 +48,11 @@ export type RemoteAccessHandlers = {
     project?: string;
     cwd?: string;
     agentId?: string;
+    worktree?: {
+      branch: string;
+      createBranch?: boolean;
+      path?: string;
+    };
     seedContext?: {
       text: string;
       role?: "user" | "agent" | "thought";
@@ -472,8 +477,13 @@ export class RemoteAccessServer {
       return this.serveIndex();
     }
 
-    // Static assets (absolute /assets/*)
-    if (pathname.startsWith("/assets/") || pathname === "/favicon.ico") {
+    // Static assets (absolute /assets/*) + brand icons at SPA root
+    if (
+      pathname.startsWith("/assets/") ||
+      pathname === "/favicon.ico" ||
+      pathname === "/favicon.png" ||
+      pathname === "/logo.png"
+    ) {
       return this.serveStatic(pathname);
     }
 

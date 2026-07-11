@@ -6,6 +6,7 @@ import { basename } from "node:path";
 import type {
   AgentInfo,
   AppSettings,
+  CreateSessionWorktree,
   SessionConfigOption,
 } from "../../shared/rpc";
 import type { SessionUpdate } from "../../session/types";
@@ -13,6 +14,7 @@ import { ensureAgentsConfig, loadAgents } from "../agents";
 import { getGitBranch } from "../git-branch";
 import { loadSettings, saveSettings } from "../settings";
 import { SessionStore } from "../store";
+import { createWorktree } from "../worktree";
 import type {
   RequestPermissionRequest,
   RequestPermissionResponse,
@@ -199,6 +201,7 @@ export class SessionManager {
     project?: string;
     cwd?: string;
     agentId?: string;
+    worktree?: CreateSessionWorktree;
     seedContext?: {
       text: string;
       role?: "user" | "agent" | "thought";
@@ -211,9 +214,29 @@ export class SessionManager {
     if (!resolved.ok) {
       return { ok: false as const, error: resolved.error };
     }
-    const { cwd } = resolved;
+    let { cwd } = resolved;
+    const mainCwd = cwd;
+    const mainProjectName = basename(mainCwd);
 
-    const project = opts.project || basename(cwd);
+    // Optional: open the session inside a git worktree (shared heavy dirs
+    // like node_modules are symlinked from the main tree per settings).
+    if (opts.worktree?.branch?.trim()) {
+      const wt = await createWorktree({
+        mainCwd,
+        branch: opts.worktree.branch.trim(),
+        createBranch: opts.worktree.createBranch,
+        path: opts.worktree.path,
+        symlinkPaths:
+          this.settings.worktreeSymlinkPaths ?? ["node_modules"],
+      });
+      if (!wt.ok) {
+        return { ok: false as const, error: wt.error };
+      }
+      cwd = wt.path;
+    }
+
+    // Prefer the main repo folder name even when cwd is a worktree path.
+    const project = opts.project || mainProjectName;
     const agentId = opts.agentId || this.defaultAgentId;
     const id = this.uid();
     const seedText = opts.seedContext?.text?.trim() ?? "";
@@ -223,12 +246,12 @@ export class SessionManager {
         ? seedText.replace(/\s+/g, " ").slice(0, 60) || "New thread"
         : "New session");
 
-    // Remember for next "New task" dialog default.
-    if (this.settings.lastProjectCwd !== cwd) {
-      this.settings = saveSettings(this.store, { lastProjectCwd: cwd });
+    // Remember the main project for the next "New task" dialog (not the worktree).
+    if (this.settings.lastProjectCwd !== mainCwd) {
+      this.settings = saveSettings(this.store, { lastProjectCwd: mainCwd });
     }
     // Re-using a project restores it if it was removed from recents.
-    this.undismissRecentProject(cwd);
+    this.undismissRecentProject(mainCwd);
 
     const stored = this.store.createSession({
       id,

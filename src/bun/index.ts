@@ -27,6 +27,12 @@ import {
   setSkillEnabled,
   uninstallSkill,
 } from "./skills";
+import {
+  addCommand,
+  getCommandRunner,
+  loadCommands,
+  removeCommand,
+} from "./user-commands";
 
 // GUI launches (canary/stable .app) get a minimal PATH without Homebrew/npm.
 // Fix before any agent/editor/git spawn.
@@ -330,6 +336,38 @@ const terminalRPC = BrowserView.defineRPC<TerminalRPC>({
       },
       applyProjectHarness: async ({ cwd, optimizationId, project }) => {
         return applyProjectHarness(cwd, optimizationId, project);
+      },
+      listUserCommands: async ({ projectCwd }) => {
+        if (!projectCwd?.trim()) {
+          return { commands: [] };
+        }
+        return { commands: loadCommands(dataDir, projectCwd) };
+      },
+      addUserCommand: async ({ projectCwd, name, command }) => {
+        return addCommand(dataDir, { projectCwd, name, command });
+      },
+      removeUserCommand: async ({ projectCwd, commandId }) => {
+        return removeCommand(dataDir, projectCwd, commandId);
+      },
+      runUserCommand: async ({ projectCwd, commandId }) => {
+        if (!projectCwd?.trim()) {
+          return { ok: false as const, error: "Project folder is required" };
+        }
+        const commands = loadCommands(dataDir, projectCwd);
+        const saved = commands.find((c) => c.id === commandId);
+        if (!saved) return { ok: false as const, error: "Command not found" };
+        return getCommandRunner(dataDir).start(saved);
+      },
+      stopUserCommandRun: async ({ runId }) => {
+        return getCommandRunner(dataDir).stop(runId);
+      },
+      listUserCommandRuns: async ({ projectCwd }) => {
+        return {
+          runs: getCommandRunner(dataDir).listRuns(projectCwd),
+        };
+      },
+      getUserCommandRunLog: async ({ runId }) => {
+        return getCommandRunner(dataDir).getLog(runId);
       },
     },
     messages: {},

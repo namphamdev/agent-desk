@@ -20,6 +20,8 @@ import type {
   SessionUsage,
   SkillInfo,
   ProjectHarness,
+  SavedCommand,
+  CommandRunSummary,
 } from "../../shared/rpc";
 import type { NewSessionOptions } from "../components/NewSessionDialog";
 import {
@@ -73,6 +75,12 @@ export function useAppController() {
   const [skillsLoading, setSkillsLoading] = useState(false);
   const [skillsError, setSkillsError] = useState<string | null>(null);
   const [skillsBusyId, setSkillsBusyId] = useState<string | null>(null);
+  const [showCommands, setShowCommands] = useState(false);
+  const [userCommands, setUserCommands] = useState<SavedCommand[]>([]);
+  const [commandRuns, setCommandRuns] = useState<CommandRunSummary[]>([]);
+  const [commandsLoading, setCommandsLoading] = useState(false);
+  const [commandsError, setCommandsError] = useState<string | null>(null);
+  const [commandsBusyId, setCommandsBusyId] = useState<string | null>(null);
   const [showHarness, setShowHarness] = useState(false);
   const [harnessProject, setHarnessProject] = useState<string | null>(null);
   const [harness, setHarness] = useState<ProjectHarness | null>(null);
@@ -268,12 +276,16 @@ export function useAppController() {
         project: opts.project,
         title: opts.title,
         agentId: opts.agentId,
+        worktree: opts.worktree,
       });
       if (res.ok) {
         setActiveSessionId(res.session.id);
         setShowNewSession(false);
+        // Prefer remembering the main project folder (not the worktree path)
+        // so the next "New session" dialog defaults to the real repo.
+        const rememberCwd = opts.cwd.trim() || res.session.cwd;
         setSettings((prev) =>
-          prev ? { ...prev, lastProjectCwd: res.session.cwd } : prev,
+          prev ? { ...prev, lastProjectCwd: rememberCwd } : prev,
         );
         await refreshRecentProjects();
       } else {
@@ -873,6 +885,197 @@ export function useAppController() {
     await refreshSkills();
   }, [refreshSkills]);
 
+  /** Project folder for the Commands panel (active session, else last project). */
+  const resolveCommandsProjectCwd = useCallback((): string | null => {
+    const fromSession = sessionsRef.current.find(
+      (s) => s.id === activeSessionIdRef.current,
+    )?.cwd;
+    if (fromSession?.trim()) return fromSession.trim();
+    const last = settings?.lastProjectCwd?.trim();
+    return last || null;
+  }, [settings?.lastProjectCwd]);
+
+  const refreshUserCommands = useCallback(async () => {
+    const projectCwd = resolveCommandsProjectCwd();
+    setCommandsLoading(true);
+    setCommandsError(null);
+    if (!projectCwd) {
+      setUserCommands([]);
+      setCommandRuns([]);
+      setCommandsError("Open a project session to manage commands for that project.");
+      setCommandsLoading(false);
+      return;
+    }
+    try {
+      const [cmds, runs] = await Promise.all([
+        getRpc().request.listUserCommands({ projectCwd }),
+        getRpc().request.listUserCommandRuns({ projectCwd }),
+      ]);
+      setUserCommands(cmds.commands);
+      setCommandRuns(runs.runs);
+    } catch (err) {
+      setCommandsError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setCommandsLoading(false);
+    }
+  }, [resolveCommandsProjectCwd]);
+
+  const openUserCommands = useCallback(async () => {
+    setShowCommands(true);
+    await refreshUserCommands();
+  }, [refreshUserCommands]);
+
+  // When the Commands panel is open and the active project changes, reload.
+  const commandsProjectKey =
+    sessions.find((s) => s.id === activeSessionId)?.cwd ??
+    settings?.lastProjectCwd ??
+    null;
+  useEffect(() => {
+    if (!showCommands) return;
+    void refreshUserCommands();
+  }, [showCommands, commandsProjectKey, refreshUserCommands]);
+
+  const handleAddUserCommand = useCallback(
+    async (input: { name: string; command: string }) => {
+      const projectCwd = resolveCommandsProjectCwd();
+      if (!projectCwd) {
+        const msg = "Open a project session first";
+        setCommandsError(msg);
+        throw new Error(msg);
+      }
+      setCommandsError(null);
+      const res = await getRpc().request.addUserCommand({
+        projectCwd,
+        name: input.name,
+        command: input.command,
+      });
+      if (!res.ok) {
+        setCommandsError(res.error);
+        throw new Error(res.error);
+      }
+      setUserCommands(res.commands);
+    },
+    [resolveCommandsProjectCwd],
+  );
+
+  const handleRemoveUserCommand = useCallback(
+    async (commandId: string) => {
+      const projectCwd = resolveCommandsProjectCwd();
+      if (!projectCwd) {
+        setCommandsError("Open a project session first");
+        return;
+      }
+      setCommandsBusyId(commandId);
+      setCommandsError(null);
+      try {
+        const res = await getRpc().request.removeUserCommand({
+          projectCwd,
+          commandId,
+        });
+        if (!res.ok) {
+          setCommandsError(res.error);
+          return;
+        }
+        setUserCommands(res.commands);
+      } catch (err) {
+        setCommandsError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setCommandsBusyId(null);
+      }
+    },
+    [resolveCommandsProjectCwd],
+  );
+
+  const handleRunUserCommand = useCallback(
+    async (commandId: string): Promise<CommandRunSummary | null> => {
+      const projectCwd = resolveCommandsProjectCwd();
+      if (!projectCwd) {
+        const msg = "Open a project session first";
+        setCommandsError(msg);
+        throw new Error(msg);
+      }
+      setCommandsBusyId(commandId);
+      setCommandsError(null);
+      try {
+        const res = await getRpc().request.runUserCommand({
+          projectCwd,
+          commandId,
+        });
+        if (!res.ok) {
+          setCommandsError(res.error);
+          throw new Error(res.error);
+        }
+        const runs = await getRpc().request.listUserCommandRuns({ projectCwd });
+        setCommandRuns(runs.runs);
+        return res.run;
+      } catch (err) {
+        setCommandsError(err instanceof Error ? err.message : String(err));
+        throw err;
+      } finally {
+        setCommandsBusyId(null);
+      }
+    },
+    [resolveCommandsProjectCwd],
+  );
+
+  const handleStopUserCommandRun = useCallback(
+    async (runId: string) => {
+      const projectCwd = resolveCommandsProjectCwd();
+      setCommandsError(null);
+      try {
+        const res = await getRpc().request.stopUserCommandRun({ runId });
+        if (!res.ok) {
+          setCommandsError(res.error);
+          return;
+        }
+        if (projectCwd) {
+          const runs = await getRpc().request.listUserCommandRuns({
+            projectCwd,
+          });
+          setCommandRuns(runs.runs);
+        }
+      } catch (err) {
+        setCommandsError(err instanceof Error ? err.message : String(err));
+      }
+    },
+    [resolveCommandsProjectCwd],
+  );
+
+  const handleLoadUserCommandLog = useCallback(
+    async (
+      runId: string,
+    ): Promise<{
+      log: string;
+      truncated: boolean;
+      run: CommandRunSummary;
+    } | null> => {
+      try {
+        const res = await getRpc().request.getUserCommandRunLog({ runId });
+        if (!res.ok) {
+          setCommandsError(res.error);
+          return null;
+        }
+        // Keep run list status in sync while viewing logs.
+        setCommandRuns((prev) => {
+          const idx = prev.findIndex((r) => r.id === runId);
+          if (idx < 0) return [res.run, ...prev];
+          const next = [...prev];
+          next[idx] = res.run;
+          return next;
+        });
+        return {
+          log: res.log,
+          truncated: res.truncated,
+          run: res.run,
+        };
+      } catch (err) {
+        setCommandsError(err instanceof Error ? err.message : String(err));
+        return null;
+      }
+    },
+    [],
+  );
+
   const handleInstallSkill = useCallback(async (packageSpec: string) => {
     setSkillsError(null);
     const res = await getRpc().request.installSkill({ package: packageSpec });
@@ -1047,6 +1250,13 @@ export function useAppController() {
     skillsLoading,
     skillsError,
     skillsBusyId,
+    showCommands,
+    userCommands,
+    commandRuns,
+    commandsLoading,
+    commandsError,
+    commandsBusyId,
+    commandsProjectCwd: resolveCommandsProjectCwd(),
     showHarness,
     harness,
     harnessLoading,
@@ -1072,6 +1282,7 @@ export function useAppController() {
     // setters for simple UI toggles
     setShowSettings,
     setShowSkills,
+    setShowCommands,
     setShowHarness,
     setShowRemoteAccess,
     setShowNewSession,
@@ -1107,6 +1318,13 @@ export function useAppController() {
     handleInstallSkill,
     handleToggleSkill,
     handleUninstallSkill,
+    openUserCommands,
+    refreshUserCommands,
+    handleAddUserCommand,
+    handleRemoveUserCommand,
+    handleRunUserCommand,
+    handleStopUserCommandRun,
+    handleLoadUserCommandLog,
     openHarness,
     refreshHarness,
     handleApplyHarness,
