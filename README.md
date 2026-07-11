@@ -1,6 +1,6 @@
-# terminal-react
+# AgentDesk
 
-A desktop "terminal" that renders coding-agent output as rich React/HTML
+A desktop app that renders coding-agent output as rich React/HTML
 (Markdown, syntax-highlighted code, **Mermaid diagrams**, file diffs,
 tool-call cards, plans) instead of a flat TUI. Integration target is the
 [Agent Client Protocol (ACP)](https://agentclientprotocol.com). Built on
@@ -145,7 +145,7 @@ bun run build:stable   # production channel
 
 | Platform | Outputs |
 | --- | --- |
-| **macOS** | `build/canary-macos-*/Terminal React-canary.app`, DMG + update tarball under `artifacts/` |
+| **macOS** | `build/canary-macos-*/AgentDesk-canary.app`, DMG + update tarball under `artifacts/` |
 | **Windows** | App folder under `build/canary-win-*/`, self-extracting Setup `.exe` under `artifacts/` |
 
 CI: `.github/workflows/build.yml` runs canary on `main`/PRs and stable on `v*`
