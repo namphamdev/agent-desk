@@ -187,7 +187,7 @@ export function Sidebar({
           label="New task"
           shortcut="⌘ N"
           onClick={onNew}
-          title="Choose a project folder and start a chat"
+          title="Choose a project folder, workflow, and start a chat"
         />
         <QuickAction
           icon={<SearchIcon />}
@@ -465,10 +465,10 @@ export function Sidebar({
       <div className="flex items-center justify-between border-t border-[#2e2e2e] p-4">
         <div className="flex items-center space-x-2">
           <div className="flex h-8 w-8 items-center justify-center rounded bg-blue-600 text-sm font-bold text-white">
-            TR
+            AD
           </div>
           <div className="flex items-center space-x-2 text-sm font-medium">
-            <span>terminal-react</span>
+            <span>AgentDesk</span>
           </div>
         </div>
         <div className="flex items-center gap-2">

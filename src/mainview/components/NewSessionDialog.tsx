@@ -1,5 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import type { AgentInfo, RecentProject } from "../../shared/rpc";
+import {
+  WORKFLOWS,
+  type WorkflowId,
+  workflowSessionTitle,
+} from "../../session/workflows";
 import { Select } from "./Select";
 
 export type NewSessionOptions = {
@@ -15,6 +20,15 @@ export type NewSessionOptions = {
     branch: string;
     createBranch?: boolean;
   };
+  /**
+   * When set, auto-send a workflow-specific first prompt after the session
+   * is created (harness-aware: memory INDEX, architecture, AGENTS.md).
+   */
+  workflow?: {
+    id: WorkflowId;
+    task: string;
+    prRef?: string;
+  };
 };
 
 type Props = {
@@ -22,6 +36,11 @@ type Props = {
   defaultAgentId: string | null;
   defaultCwd: string;
   recentProjects: RecentProject[];
+  /**
+   * When true (e.g. New task from a project menu), hide project folder picker
+   * and recent projects — cwd is already fixed.
+   */
+  lockProject?: boolean;
   onPickFolder: (startingFolder?: string) => Promise<string | null>;
   onRemoveRecent: (cwd: string) => void | Promise<void>;
   onCancel: () => void;
@@ -39,6 +58,7 @@ export function NewSessionDialog({
   defaultAgentId,
   defaultCwd,
   recentProjects,
+  lockProject = false,
   onPickFolder,
   onRemoveRecent,
   onCancel,
@@ -54,6 +74,10 @@ export function NewSessionDialog({
   const [useWorktree, setUseWorktree] = useState(false);
   const [worktreeBranch, setWorktreeBranch] = useState("");
   const [createBranch, setCreateBranch] = useState(true);
+  /** null = free chat (no auto-prompt). */
+  const [workflowId, setWorkflowId] = useState<WorkflowId | null>(null);
+  const [task, setTask] = useState("");
+  const [prRef, setPrRef] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [picking, setPicking] = useState(false);
@@ -67,6 +91,10 @@ export function NewSessionDialog({
   }, [busy, onCancel]);
 
   const project = useMemo(() => projectNameFromPath(cwd.trim()), [cwd]);
+  const selectedWorkflow = useMemo(
+    () => (workflowId ? WORKFLOWS.find((w) => w.id === workflowId) : null),
+    [workflowId],
+  );
 
   const browse = async () => {
     setPicking(true);
@@ -100,13 +128,39 @@ export function NewSessionDialog({
       setError("Enter a branch name for the worktree.");
       return;
     }
+    if (workflowId) {
+      if (workflowId === "review_pr") {
+        if (!prRef.trim() && !task.trim()) {
+          setError("Enter a PR URL/number or review notes to continue.");
+          return;
+        }
+      } else if (!task.trim()) {
+        setError("Describe the task for this workflow.");
+        return;
+      }
+    }
     setBusy(true);
     setError(null);
     try {
+      const workflow =
+        workflowId != null
+          ? {
+              id: workflowId,
+              task: task.trim(),
+              prRef: prRef.trim() || undefined,
+            }
+          : undefined;
+
+      const sessionTitle =
+        title.trim() ||
+        (workflow
+          ? workflowSessionTitle(workflow.id, workflow.task, workflow.prRef)
+          : undefined);
+
       await onCreate({
         cwd: folder,
         project: projectNameFromPath(folder),
-        title: title.trim() || undefined,
+        title: sessionTitle,
         agentId: agentId || undefined,
         worktree: useWorktree
           ? {
@@ -114,6 +168,7 @@ export function NewSessionDialog({
               createBranch,
             }
           : undefined,
+        workflow,
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -131,11 +186,18 @@ export function NewSessionDialog({
         if (e.target === e.currentTarget && !busy) onCancel();
       }}
     >
-      <div className="w-full max-w-lg overflow-hidden rounded-2xl border border-[#333] bg-[#1a1a1a] shadow-2xl">
-        <div className="flex items-center justify-between border-b border-[#2e2e2e] px-5 py-3">
-          <h2 id="new-session-title" className="text-sm font-semibold text-gray-100">
-            New session
-          </h2>
+      <div className="flex max-h-[min(720px,90vh)] w-full max-w-lg flex-col overflow-hidden rounded-2xl border border-[#333] bg-[#1a1a1a] shadow-2xl">
+        <div className="flex shrink-0 items-center justify-between border-b border-[#2e2e2e] px-5 py-3">
+          <div className="min-w-0">
+            <h2 id="new-session-title" className="text-sm font-semibold text-gray-100">
+              New task
+            </h2>
+            {lockProject && cwd.trim() && (
+              <p className="mt-0.5 truncate text-xs text-gray-500" title={cwd}>
+                {project}
+              </p>
+            )}
+          </div>
           <button
             onClick={onCancel}
             disabled={busy}
@@ -146,7 +208,8 @@ export function NewSessionDialog({
           </button>
         </div>
 
-        <div className="space-y-4 px-5 py-4 text-sm">
+        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-4 text-sm">
+          {!lockProject && (
           <div>
             <label className="mb-1 block text-xs font-medium text-gray-400">
               Project folder
@@ -179,8 +242,9 @@ export function NewSessionDialog({
               </p>
             )}
           </div>
+          )}
 
-          {recentProjects.length > 0 && (
+          {!lockProject && recentProjects.length > 0 && (
             <div>
               <div className="mb-1.5 text-xs font-medium text-gray-400">
                 Recent projects
@@ -252,13 +316,138 @@ export function NewSessionDialog({
           )}
 
           <div>
+            <div className="mb-1.5 text-xs font-medium text-gray-400">
+              Workflow
+            </div>
+            <div
+              className="grid grid-cols-2 gap-1.5"
+              role="radiogroup"
+              aria-label="Workflow"
+            >
+              <button
+                type="button"
+                role="radio"
+                aria-checked={workflowId === null}
+                disabled={busy}
+                onClick={() => {
+                  setWorkflowId(null);
+                  setError(null);
+                }}
+                className={`rounded-md border px-2.5 py-2 text-left transition-colors disabled:opacity-50 ${
+                  workflowId === null
+                    ? "border-blue-600/70 bg-blue-950/40 text-gray-100"
+                    : "border-[#2a2a2a] bg-[#141414] text-gray-300 hover:border-[#3a3a3a] hover:bg-[#1a1a1a]"
+                }`}
+              >
+                <span className="block text-xs font-medium">Free chat</span>
+                <span className="mt-0.5 block text-[10px] leading-snug text-gray-500">
+                  Empty session — type your own prompt
+                </span>
+              </button>
+              {WORKFLOWS.map((w) => {
+                const active = workflowId === w.id;
+                return (
+                  <button
+                    key={w.id}
+                    type="button"
+                    role="radio"
+                    aria-checked={active}
+                    disabled={busy}
+                    onClick={() => {
+                      setWorkflowId(w.id);
+                      setError(null);
+                    }}
+                    className={`rounded-md border px-2.5 py-2 text-left transition-colors disabled:opacity-50 ${
+                      active
+                        ? "border-blue-600/70 bg-blue-950/40 text-gray-100"
+                        : "border-[#2a2a2a] bg-[#141414] text-gray-300 hover:border-[#3a3a3a] hover:bg-[#1a1a1a]"
+                    }`}
+                  >
+                    <span className="block text-xs font-medium">{w.label}</span>
+                    <span className="mt-0.5 block text-[10px] leading-snug text-gray-500">
+                      {w.description}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+            {selectedWorkflow && (
+              <p className="mt-2 text-[11px] text-gray-500">
+                Starts with a harness-aware prompt (memory INDEX, architecture,
+                AGENTS.md) tailored to this workflow.
+              </p>
+            )}
+          </div>
+
+          {selectedWorkflow && (
+            <div className="space-y-3">
+              {selectedWorkflow.needsPrRef && (
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-gray-400">
+                    PR URL or number
+                  </label>
+                  <input
+                    value={prRef}
+                    onChange={(e) => {
+                      setPrRef(e.target.value);
+                      setError(null);
+                    }}
+                    placeholder="#42 or https://github.com/org/repo/pull/42"
+                    spellCheck={false}
+                    disabled={busy}
+                    className="w-full rounded-md border border-[#333] bg-[#121212] px-2 py-1.5 font-mono text-xs text-gray-200 placeholder-gray-600 focus:outline-none focus:ring-1 focus:ring-gray-500 disabled:opacity-50"
+                  />
+                </div>
+              )}
+              <div>
+                <label className="mb-1 block text-xs font-medium text-gray-400">
+                  {selectedWorkflow.needsPrRef
+                    ? "Review notes"
+                    : "Task"}{" "}
+                  {!selectedWorkflow.needsPrRef && (
+                    <span className="font-normal text-red-400/80">*</span>
+                  )}
+                  {selectedWorkflow.needsPrRef && (
+                    <span className="font-normal text-gray-600">
+                      (optional if PR is set)
+                    </span>
+                  )}
+                </label>
+                <textarea
+                  value={task}
+                  onChange={(e) => {
+                    setTask(e.target.value);
+                    setError(null);
+                  }}
+                  placeholder={selectedWorkflow.taskPlaceholder}
+                  rows={3}
+                  disabled={busy}
+                  className="w-full resize-y rounded-md border border-[#333] bg-[#121212] px-2 py-1.5 text-xs text-gray-200 placeholder-gray-600 focus:outline-none focus:ring-1 focus:ring-gray-500 disabled:opacity-50"
+                />
+              </div>
+            </div>
+          )}
+
+          <div>
             <label className="mb-1 block text-xs font-medium text-gray-400">
-              Title <span className="font-normal text-gray-600">(optional)</span>
+              Title{" "}
+              <span className="font-normal text-gray-600">
+                (optional
+                {selectedWorkflow ? "; defaults from workflow" : ""})
+              </span>
             </label>
             <input
               value={title}
               onChange={(e) => setTitle(e.target.value)}
-              placeholder="New session"
+              placeholder={
+                selectedWorkflow
+                  ? workflowSessionTitle(
+                      selectedWorkflow.id,
+                      task,
+                      prRef || undefined,
+                    )
+                  : "New session"
+              }
               className="w-full rounded-md border border-[#333] bg-[#121212] px-2 py-1.5 text-gray-200 placeholder-gray-600 focus:outline-none focus:ring-1 focus:ring-gray-500"
             />
           </div>
@@ -340,7 +529,7 @@ export function NewSessionDialog({
           )}
         </div>
 
-        <div className="flex items-center justify-end gap-2 border-t border-[#2e2e2e] px-5 py-3">
+        <div className="flex shrink-0 items-center justify-end gap-2 border-t border-[#2e2e2e] px-5 py-3">
           <button
             type="button"
             onClick={onCancel}
@@ -355,7 +544,11 @@ export function NewSessionDialog({
             disabled={busy || !cwd.trim()}
             className="rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-500 disabled:opacity-50"
           >
-            {busy ? "Starting…" : "Start chat"}
+            {busy
+              ? "Starting…"
+              : selectedWorkflow
+                ? "Start workflow"
+                : "Start chat"}
           </button>
         </div>
       </div>

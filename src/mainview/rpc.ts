@@ -10,6 +10,7 @@ import type {
   ConnectionStatePayload,
   PermissionRequest,
   RecentProject,
+  AgentSetupStatus,
   RemoteAccessStatus,
   SessionConfigOption,
   SessionListPayload,
@@ -135,6 +136,8 @@ type RpcClient = {
     startRemoteAccess: () => Promise<RemoteAccessStatus>;
     stopRemoteAccess: () => Promise<RemoteAccessStatus>;
     regenerateRemoteAccess: () => Promise<RemoteAccessStatus>;
+    getAgentSetup: () => Promise<AgentSetupStatus>;
+    ensureAgentSetup: () => Promise<AgentSetupStatus>;
     listSkills: (p?: {
       projectCwd?: string | null;
     }) => Promise<{ skills: SkillInfo[] }>;
@@ -520,6 +523,9 @@ function createRemoteWsClient(code: string): RpcClient {
       startRemoteAccess: async () => idleRemote,
       stopRemoteAccess: async () => idleRemote,
       regenerateRemoteAccess: async () => idleRemote,
+      getAgentSetup: () => request("getAgentSetup") as Promise<AgentSetupStatus>,
+      ensureAgentSetup: () =>
+        request("ensureAgentSetup") as Promise<AgentSetupStatus>,
       listSkills: (p) =>
         request("listSkills", (p ?? {}) as Record<string, unknown>),
       installSkill: (p) =>
@@ -882,6 +888,32 @@ async getGitBranch() {
           urls: [],
           lanIps: [],
         };
+      },
+      async getAgentSetup() {
+        return {
+          configPath: "~/.terminal-react/agents.json",
+          configExists: true,
+          defaultAgentId: "claude-code",
+          agents: [
+            {
+              id: "claude-code",
+              name: "Claude Code (ACP)",
+              command: "claude-agent-acp",
+              args: [],
+              resolvedPath: null,
+              ok: false,
+            },
+          ],
+          ready: false,
+          claudeAcpOk: false,
+          claudeAcpPath: null,
+          claudeCliOk: false,
+          claudeCliPath: null,
+          installCommand: "npm i -g @agentclientprotocol/claude-agent-acp",
+        };
+      },
+      async ensureAgentSetup() {
+        return this.getAgentSetup();
       },
       async listSkills() {
         return { skills: [...mockSkills] };

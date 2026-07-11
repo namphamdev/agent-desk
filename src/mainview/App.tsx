@@ -182,6 +182,14 @@ export default function App() {
               agents={app.agents}
               onClose={() => app.setShowSettings(false)}
               onSave={app.handleSaveSettings}
+              showRemoteControl={!remoteClient}
+              remoteAccess={app.remoteAccess}
+              remoteAccessLoading={app.remoteAccessLoading}
+              remoteAccessError={app.remoteAccessError}
+              onRemoteStart={() => void app.startRemoteAccess()}
+              onRemoteStop={() => void app.stopRemoteAccess()}
+              onRemoteRegenerate={() => void app.regenerateRemoteAccess()}
+              onRemoteRefresh={() => void app.refreshRemoteAccess()}
             />
           )}
           {app.showSkills && (
@@ -244,11 +252,13 @@ export default function App() {
                 app.settings?.defaultAgentId ?? app.agents[0]?.id ?? null
               }
               defaultCwd={
+                app.newSessionDefaultCwd ||
                 app.settings?.lastProjectCwd ||
                 app.activeSession?.cwd ||
                 app.recentProjects[0]?.cwd ||
                 ""
               }
+              lockProject={Boolean(app.newSessionDefaultCwd)}
               recentProjects={app.recentProjects}
               onPickFolder={app.handlePickFolder}
               onRemoveRecent={app.handleRemoveRecentProject}

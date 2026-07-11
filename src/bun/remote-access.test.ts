@@ -110,6 +110,30 @@ function mockHandlers() {
       appliedCount: 0,
     }),
     applyProjectHarness: () => ({ ok: false as const, error: "n/a" }),
+    getAgentSetup: async () => ({
+      configPath: "/tmp/agents.json",
+      configExists: false,
+      defaultAgentId: "",
+      agents: [],
+      ready: false,
+      claudeAcpOk: false,
+      claudeAcpPath: null,
+      claudeCliOk: false,
+      claudeCliPath: null,
+      installCommand: "npm i -g @agentclientprotocol/claude-agent-acp",
+    }),
+    ensureAgentSetup: async () => ({
+      configPath: "/tmp/agents.json",
+      configExists: true,
+      defaultAgentId: "claude-code",
+      agents: [],
+      ready: false,
+      claudeAcpOk: false,
+      claudeAcpPath: null,
+      claudeCliOk: false,
+      claudeCliPath: null,
+      installCommand: "npm i -g @agentclientprotocol/claude-agent-acp",
+    }),
   };
 }
 

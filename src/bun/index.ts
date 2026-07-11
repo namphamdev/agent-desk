@@ -33,6 +33,7 @@ import {
   loadCommands,
   removeCommand,
 } from "./user-commands";
+import { ensureAgentSetup, getAgentSetupStatus } from "./agents";
 
 // GUI launches (canary/stable .app) get a minimal PATH without Homebrew/npm.
 // Fix before any agent/editor/git spawn.
@@ -305,6 +306,12 @@ const terminalRPC = BrowserView.defineRPC<TerminalRPC>({
       regenerateRemoteAccess: async () => {
         return remoteAccess.regenerate();
       },
+      getAgentSetup: async () => {
+        return getAgentSetupStatus();
+      },
+      ensureAgentSetup: async () => {
+        return ensureAgentSetup();
+      },
       listSkills: async (params) => {
         const listed = manager.listSessions();
         const projectCwd =
@@ -543,6 +550,8 @@ remoteAccess = new RemoteAccessServer({
   getProjectHarness: (cwd, project) => getProjectHarness(cwd, project),
   applyProjectHarness: (cwd, optimizationId, project) =>
     applyProjectHarness(cwd, optimizationId, project),
+  getAgentSetup: () => getAgentSetupStatus(),
+  ensureAgentSetup: () => ensureAgentSetup(),
 });
 
 await manager.init();

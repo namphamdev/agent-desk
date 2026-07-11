@@ -6,6 +6,7 @@ import {
   agentsConfigDir,
   agentsConfigPath,
   ensureAgentsConfig,
+  getAgentSetupStatus,
   loadAgents,
 } from "./agents";
 
@@ -35,6 +36,25 @@ describe("agents", () => {
       agents?: Array<{ id?: string; name: string; command: string }>;
     };
     expect(parsed.agents?.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("getAgentSetupStatus reports config path and agent resolution", async () => {
+    await ensureAgentsConfig();
+    const status = await getAgentSetupStatus();
+    expect(status.configPath).toBe(agentsConfigPath());
+    expect(status.configExists).toBe(true);
+    expect(status.installCommand).toContain("claude-agent-acp");
+    expect(Array.isArray(status.agents)).toBe(true);
+    // Each entry has ok + resolvedPath fields (may or may not resolve on CI).
+    for (const a of status.agents) {
+      expect(typeof a.id).toBe("string");
+      expect(typeof a.command).toBe("string");
+      expect(typeof a.ok).toBe("boolean");
+      if (a.ok) expect(a.resolvedPath).toBeTruthy();
+      else expect(a.resolvedPath).toBeNull();
+    }
+    expect(typeof status.claudeAcpOk).toBe("boolean");
+    expect(typeof status.ready).toBe("boolean");
   });
 });
 

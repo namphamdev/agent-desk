@@ -15,6 +15,7 @@
 | Timeline | Ordered UI model produced by `reduce()` from ACP updates |
 | Project cwd | Folder the agent runs in; source of git-synced docs/memory |
 | Harness | Applies project agent optimizations (e.g. AGENTS.md, skills) |
+| Workflow | New-task mode (feature / bug / review PR / explore) with a harness-aware first prompt (`src/session/workflows.ts`) |
 | Skills | On-demand `SKILL.md` procedures |
 | Memory | Sharded team facts under `docs/memory/` (not session DB) |
 

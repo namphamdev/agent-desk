@@ -235,6 +235,37 @@ export type RemoteAccessStatus = {
   lanIps: string[];
 };
 
+/** One configured agent and whether its command resolves on PATH. */
+export type AgentSetupEntry = {
+  id: string;
+  name: string;
+  command: string;
+  args: string[];
+  /** Absolute path when found; null if not on PATH. */
+  resolvedPath: string | null;
+  ok: boolean;
+};
+
+/**
+ * Claude Code / ACP agent setup diagnostics for Settings → Claude Code.
+ * Claude Code is not ACP-native; this app uses `claude-agent-acp`.
+ */
+export type AgentSetupStatus = {
+  configPath: string;
+  configExists: boolean;
+  defaultAgentId: string;
+  agents: AgentSetupEntry[];
+  /** Config present and at least one agent command resolves. */
+  ready: boolean;
+  /** `claude-agent-acp` (or agents.json entry for it) resolves. */
+  claudeAcpOk: boolean;
+  claudeAcpPath: string | null;
+  /** Optional: Claude Code CLI (`claude`) if present. */
+  claudeCliOk: boolean;
+  claudeCliPath: string | null;
+  installCommand: string;
+};
+
 /** An installed agent skill (SKILL.md package under ~/.agents/skills). */
 export type SkillInfo = {
   id: string;
@@ -472,6 +503,22 @@ export type TerminalRPC = {
       regenerateRemoteAccess: {
         params: void;
         response: RemoteAccessStatus;
+      };
+      /**
+       * Diagnose Claude Code ACP setup: agents.json + PATH resolution for
+       * configured agent binaries (and common claude / claude-agent-acp names).
+       */
+      getAgentSetup: {
+        params: void;
+        response: AgentSetupStatus;
+      };
+      /**
+       * Write the starter `~/.terminal-react/agents.json` if missing, then
+       * re-run diagnostics.
+       */
+      ensureAgentSetup: {
+        params: void;
+        response: AgentSetupStatus;
       };
       /** List installed agent skills (global + optional project). */
       listSkills: {

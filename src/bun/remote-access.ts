@@ -8,6 +8,7 @@ import { networkInterfaces } from "node:os";
 import { join, normalize, extname, dirname } from "node:path";
 import type {
   AgentInfo,
+  AgentSetupStatus,
   AppSettings,
   AvailableCommand,
   ConnectionStatePayload,
@@ -134,6 +135,8 @@ export type RemoteAccessHandlers = {
         written: string[];
       }
     | { ok: false; error: string };
+  getAgentSetup: () => Promise<AgentSetupStatus>;
+  ensureAgentSetup: () => Promise<AgentSetupStatus>;
 };
 
 type WsClient = {
@@ -715,6 +718,10 @@ export class RemoteAccessServer {
           String(params.optimizationId ?? ""),
           params.project != null ? String(params.project) : undefined,
         );
+      case "getAgentSetup":
+        return h.getAgentSetup();
+      case "ensureAgentSetup":
+        return h.ensureAgentSetup();
       default:
         throw new Error(`Unknown method: ${method}`);
     }

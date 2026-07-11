@@ -7,6 +7,7 @@ import {
   reviewSessionTitle,
   summarizeSessionChanges,
 } from "../../session/session-summary";
+import { buildWorkflowPrompt } from "../../session/workflows";
 import type {
   AgentInfo,
   AppSettings,
@@ -96,6 +97,8 @@ export function useAppController() {
     null,
   );
   const [showNewSession, setShowNewSession] = useState(false);
+  /** Prefill project folder when opening New task (e.g. from project menu). */
+  const [newSessionDefaultCwd, setNewSessionDefaultCwd] = useState<string>("");
   const [pendingDelete, setPendingDelete] = useState<SessionSummary | null>(
     null,
   );
@@ -261,6 +264,7 @@ export function useAppController() {
 
   const handleNewSession = useCallback(async () => {
     await refreshRecentProjects();
+    setNewSessionDefaultCwd("");
     setShowNewSession(true);
   }, [refreshRecentProjects]);
 
@@ -288,12 +292,22 @@ export function useAppController() {
           prev ? { ...prev, lastProjectCwd: rememberCwd } : prev,
         );
         await refreshRecentProjects();
+
+        // Workflow sessions: auto-send harness-aware first prompt (same pattern
+        // as review-in-new-session).
+        if (opts.workflow) {
+          const prompt = buildWorkflowPrompt(opts.workflow.id, {
+            task: opts.workflow.task,
+            prRef: opts.workflow.prRef,
+          });
+          await dispatchPrompt(prompt, res.session.id);
+        }
       } else {
         setConnection({ status: "error", error: res.error });
         throw new Error(res.error);
       }
     },
-    [refreshRecentProjects],
+    [dispatchPrompt, refreshRecentProjects],
   );
 
   const handlePrompt = useCallback(
@@ -380,7 +394,10 @@ export function useAppController() {
     }
   }, [activeSessionId]);
 
-  /** Create a new chat in an existing project (sidebar + button), no folder picker. */
+  /**
+   * Open New task modal for an existing project (sidebar project menu).
+   * Prefills the project folder so the user can pick a workflow and start.
+   */
   const handleNewInProject = useCallback(
     async (project: string) => {
       const fromSession = sessions.find(
@@ -388,29 +405,17 @@ export function useAppController() {
       );
       const fromRecent = recentProjects.find((p) => p.project === project);
       const cwd = fromSession?.cwd || fromRecent?.cwd;
+      await refreshRecentProjects();
       if (!cwd) {
-        // Unknown path — fall back to the full new-session dialog.
-        await handleNewSession();
+        // Unknown path — full dialog without prefill.
+        setNewSessionDefaultCwd("");
+        setShowNewSession(true);
         return;
       }
-      try {
-        await handleCreateSession({
-          cwd,
-          project: project === "other" ? undefined : project,
-          agentId:
-            fromSession?.agentId || settings?.defaultAgentId || undefined,
-        });
-      } catch {
-        // handleCreateSession already sets connection error state.
-      }
+      setNewSessionDefaultCwd(cwd);
+      setShowNewSession(true);
     },
-    [
-      handleCreateSession,
-      handleNewSession,
-      recentProjects,
-      sessions,
-      settings?.defaultAgentId,
-    ],
+    [recentProjects, refreshRecentProjects, sessions],
   );
 
   const handlePickFolder = useCallback(
@@ -864,6 +869,20 @@ export function useAppController() {
     }
   }, []);
 
+  /** Load current remote-access status without starting the server. */
+  const refreshRemoteAccess = useCallback(async () => {
+    if (isRemoteAccessClient()) return;
+    setRemoteAccessError(null);
+    try {
+      const status = await getRpc().request.getRemoteAccess();
+      setRemoteAccess(status);
+    } catch (err) {
+      setRemoteAccessError(
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  }, []);
+
   const refreshSkills = useCallback(async () => {
     setSkillsLoading(true);
     setSkillsError(null);
@@ -1267,6 +1286,7 @@ export function useAppController() {
     remoteAccessLoading,
     remoteAccessError,
     showNewSession,
+    newSessionDefaultCwd,
     pendingDelete,
     recentProjects,
     showSidebar,
@@ -1313,6 +1333,7 @@ export function useAppController() {
     startRemoteAccess,
     stopRemoteAccess,
     regenerateRemoteAccess,
+    refreshRemoteAccess,
     openSkills,
     refreshSkills,
     handleInstallSkill,
