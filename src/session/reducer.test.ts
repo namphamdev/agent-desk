@@ -261,6 +261,55 @@ describe("session reducer", () => {
     });
   });
 
+  it("updates the existing plan in place instead of stacking PlanViews", () => {
+    let s = initialSession;
+    s = reduce(s, {
+      sessionUpdate: "plan",
+      plan: {
+        entries: [
+          { content: "Diagnose", state: "in_progress" },
+          { content: "Fix", state: "pending" },
+        ],
+      },
+    });
+    const planId =
+      s.timeline[0]?.type === "plan" ? s.timeline[0].id : undefined;
+    expect(planId).toBeTruthy();
+
+    // Intervening messages must not create a second plan entry
+    s = reduce(s, {
+      sessionUpdate: "agent_message_chunk",
+      content: { type: "text", text: "working…" },
+    });
+    s = reduce(s, {
+      sessionUpdate: "plan",
+      plan: {
+        entries: [
+          { content: "Diagnose", state: "completed" },
+          { content: "Fix", state: "in_progress" },
+          { content: "Verify", state: "pending" },
+        ],
+      },
+    });
+
+    const plans = s.timeline.filter((e) => e.type === "plan");
+    expect(plans).toHaveLength(1);
+    expect(plans[0]).toMatchObject({
+      id: planId,
+      type: "plan",
+      plan: {
+        entries: [
+          { content: "Diagnose", state: "completed" },
+          { content: "Fix", state: "in_progress" },
+          { content: "Verify", state: "pending" },
+        ],
+      },
+    });
+    // Plan stays at its original position (before the agent message)
+    expect(s.timeline[0]?.type).toBe("plan");
+    expect(s.timeline[1]?.type).toBe("message");
+  });
+
   it("leaves state unchanged for unknown update shapes", () => {
     const s = reduce(initialSession, {
       // @ts-expect-error intentional unknown discriminator

@@ -34,6 +34,11 @@ import {
   removeCommand,
 } from "./user-commands";
 import { ensureAgentSetup, getAgentSetupStatus } from "./agents";
+import { BrowserControlServer } from "./browser-control-server";
+import type {
+  BrowserControlRequest,
+  BrowserControlResponse,
+} from "../shared/browser-control";
 
 // GUI launches (canary/stable .app) get a minimal PATH without Homebrew/npm.
 // Fix before any agent/editor/git spawn.
@@ -150,11 +155,32 @@ let manager: SessionManager;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let mainWindow: BrowserWindow<any>;
 let remoteAccess: RemoteAccessServer;
+let browserControl: BrowserControlServer;
 
 function rpc() {
   return mainWindow?.webview?.rpc as
     | ReturnType<typeof BrowserView.defineRPC<TerminalRPC>>
     | undefined;
+}
+
+async function dispatchBrowserControl(
+  req: BrowserControlRequest,
+): Promise<BrowserControlResponse> {
+  const r = rpc();
+  if (!r?.request?.browserControl) {
+    return {
+      ok: false,
+      error: "Webview not ready — open the desktop window and try again",
+    };
+  }
+  try {
+    return await r.request.browserControl(req);
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
 }
 
 const terminalRPC = BrowserView.defineRPC<TerminalRPC>({
@@ -381,7 +407,21 @@ const terminalRPC = BrowserView.defineRPC<TerminalRPC>({
   },
 });
 
-manager = new SessionManager(dataDir, {
+browserControl = new BrowserControlServer(
+  (req) => dispatchBrowserControl(req),
+  (sessionId, url) => {
+    try {
+      rpc()?.send.onBrowserOpen({ sessionId, url });
+    } catch (err) {
+      console.warn("[rpc] onBrowserOpen failed:", err);
+    }
+  },
+);
+browserControl.start();
+
+manager = new SessionManager(
+  dataDir,
+  {
   onUpdate: (sessionId, update) => {
     try {
       rpc()?.send.onUpdate({ sessionId, update });
@@ -487,6 +527,99 @@ manager = new SessionManager(dataDir, {
       console.warn("[rpc] onSessionLoaded failed:", err);
     }
     remoteAccess?.onSessionLoaded(payload);
+  },
+  },
+  {
+    getBrowserControl: () =>
+      browserControl
+        ? { url: browserControl.baseUrl, token: browserControl.authToken }
+        : null,
+  },
+);
+
+// Token store + session binding for the published browser MCP.
+browserControl.setSecrets({
+  store: ({ sessionId, key, value, label, domain }) => {
+    const cwd = manager.getSessionCwd(sessionId);
+    if (cwd == null) {
+      return { ok: false, error: "Unknown session for token store" };
+    }
+    try {
+      const rec = manager.upsertBrowserToken({
+        key,
+        value,
+        projectCwd: cwd,
+        label,
+        domain,
+        sessionId,
+      });
+      console.log(
+        `[browser-tokens] stored key=${rec.key} project=${cwd} session=${sessionId.slice(0, 8)}…`,
+      );
+      return {
+        ok: true,
+        sessionId,
+        projectCwd: cwd,
+        message:
+          `Stored token "${rec.key}" in SQLite for project ${cwd} ` +
+          `(chat ${sessionId.slice(0, 8)}…). ` +
+          `Future prompts inject it automatically.`,
+      };
+    } catch (err) {
+      return {
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+  },
+  list: (sessionId) => {
+    const cwd = manager.getSessionCwd(sessionId);
+    if (cwd == null) {
+      return { ok: false, error: "Unknown session for token list" };
+    }
+    const tokens = manager.listBrowserTokens(cwd).map((t) => ({
+      key: t.key,
+      value: t.value,
+      label: t.label || undefined,
+      domain: t.domain || undefined,
+      updatedAt: t.updatedAt,
+      sessionId: t.sessionId,
+    }));
+    return { ok: true, tokens, projectCwd: cwd };
+  },
+  delete: (sessionId, key) => {
+    const cwd = manager.getSessionCwd(sessionId);
+    if (cwd == null) {
+      return { ok: false, error: "Unknown session for token delete" };
+    }
+    const ok = manager.deleteBrowserToken(cwd, key);
+    return ok
+      ? {
+          ok: true,
+          sessionId,
+          projectCwd: cwd,
+          message: `Deleted token "${key}"`,
+        }
+      : { ok: false, error: `No token named "${key}" for this project` };
+  },
+  sessionInfo: (sessionId) => {
+    const cwd = manager.getSessionCwd(sessionId);
+    if (cwd == null) {
+      return { ok: false, error: "Unknown chat session — reconnect the agent" };
+    }
+    const tokens = manager.listBrowserTokens(cwd).map((t) => ({
+      key: t.key,
+      value: t.value,
+      label: t.label || undefined,
+      domain: t.domain || undefined,
+      updatedAt: t.updatedAt,
+      sessionId: t.sessionId,
+    }));
+    return {
+      ok: true,
+      projectCwd: cwd,
+      tokens,
+    };
   },
 });
 

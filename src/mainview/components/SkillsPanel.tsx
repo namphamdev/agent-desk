@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { RiCloseLine, RiDeleteBinLine } from "react-icons/ri";
 import type { SkillInfo } from "../../shared/rpc";
 
 type Props = {
@@ -110,7 +111,7 @@ export function SkillsPanel({
               className="rounded p-1 text-gray-500 hover:bg-[#2a2a2a] hover:text-gray-200"
               aria-label="Close skills"
             >
-              ✕
+              <RiCloseLine className="h-4 w-4" aria-hidden />
             </button>
           </div>
         </div>
@@ -264,7 +265,7 @@ export function SkillsPanel({
                           title="Uninstall"
                           aria-label={`Uninstall ${skill.name}`}
                         >
-                          <TrashIcon />
+                          <RiDeleteBinLine className="h-4 w-4" aria-hidden />
                         </button>
                       )}
                     </div>
@@ -308,21 +309,5 @@ function Toggle({
         }`}
       />
     </button>
-  );
-}
-
-function TrashIcon() {
-  return (
-    <svg
-      className="h-4 w-4"
-      fill="none"
-      stroke="currentColor"
-      viewBox="0 0 24 24"
-      strokeWidth={2}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2" />
-    </svg>
   );
 }

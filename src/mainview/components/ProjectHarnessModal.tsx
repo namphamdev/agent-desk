@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { RiCloseLine } from "react-icons/ri";
 import type { ProjectHarness } from "../../shared/rpc";
 
 type Props = {
@@ -95,7 +96,7 @@ export function ProjectHarnessModal({
               className="rounded p-1 text-gray-500 hover:bg-[#2a2a2a] hover:text-gray-200"
               aria-label="Close harness"
             >
-              ✕
+              <RiCloseLine className="h-4 w-4" aria-hidden />
             </button>
           </div>
         </div>

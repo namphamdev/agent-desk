@@ -113,6 +113,33 @@ function applyToolCallUpdate(
   return { ...state, timeline };
 }
 
+/**
+ * ACP plan updates carry the full plan snapshot each time (item states change
+ * as work progresses). Replace the existing plan entry in place so the timeline
+ * keeps a single PlanView rather than stacking duplicates.
+ */
+function applyPlan(
+  state: SessionState,
+  update: Extract<SessionUpdate, { sessionUpdate: "plan" }>,
+): SessionState {
+  const idx = state.timeline.findIndex((e) => e.type === "plan");
+  if (idx === -1) {
+    return {
+      ...state,
+      timeline: [
+        ...state.timeline,
+        { id: uid("plan"), type: "plan", plan: update.plan },
+      ],
+    };
+  }
+  const timeline = state.timeline.map((entry, i) =>
+    i === idx && entry.type === "plan"
+      ? { ...entry, plan: update.plan }
+      : entry,
+  );
+  return { ...state, timeline };
+}
+
 /** Reduce one session/update notification onto the session state. Pure. */
 export function reduce(
   state: SessionState,
@@ -130,13 +157,7 @@ export function reduce(
     case "tool_call_update":
       return applyToolCallUpdate(state, update);
     case "plan":
-      return {
-        ...state,
-        timeline: [
-          ...state.timeline,
-          { id: uid("plan"), type: "plan", plan: update.plan },
-        ],
-      };
+      return applyPlan(state, update);
     case "current_mode":
       return { ...state, mode: update.mode };
     default:

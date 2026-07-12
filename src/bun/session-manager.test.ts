@@ -100,6 +100,19 @@ const mockConfigOptions: SessionConfigOption[] = [
       { value: "low", name: "Low" },
     ],
   },
+  {
+    id: "mode",
+    name: "Permission",
+    category: "mode",
+    type: "select",
+    currentValue: "default",
+    options: [
+      { value: "default", name: "Default" },
+      { value: "acceptEdits", name: "Accept Edits" },
+      { value: "plan", name: "Plan" },
+      { value: "bypassPermissions", name: "Bypass Permissions" },
+    ],
+  },
 ];
 
 /** Tracks mock AcpClient instances for offload / dispose assertions. */
@@ -429,6 +442,42 @@ describe("SessionManager", () => {
     expect(thought?.type).toBe("select");
     if (thought?.type === "select") {
       expect(thought.currentValue).toBe("medium");
+    }
+  });
+
+  it("applies defaultPermissionMode when a session opens", async () => {
+    const { mgr, c, agentId } = await boot();
+    mgr.saveSettings({ defaultPermissionMode: "acceptEdits" });
+
+    const created = await mgr.createSession({ agentId });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    const latest = [...c.configOptions]
+      .reverse()
+      .find((e) => e.sessionId === created.session.id);
+    const mode = latest?.configOptions.find((o) => o.id === "mode");
+    expect(mode?.type).toBe("select");
+    if (mode?.type === "select") {
+      expect(mode.currentValue).toBe("acceptEdits");
+    }
+  });
+
+  it("matches defaultPermissionMode case-insensitively by name", async () => {
+    const { mgr, c, agentId } = await boot();
+    mgr.saveSettings({ defaultPermissionMode: "Plan" });
+
+    const created = await mgr.createSession({ agentId });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    const latest = [...c.configOptions]
+      .reverse()
+      .find((e) => e.sessionId === created.session.id);
+    const mode = latest?.configOptions.find((o) => o.id === "mode");
+    expect(mode?.type).toBe("select");
+    if (mode?.type === "select") {
+      expect(mode.currentValue).toBe("plan");
     }
   });
 

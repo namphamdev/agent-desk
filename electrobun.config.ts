@@ -27,6 +27,8 @@ export default {
       "dist/favicon.ico": "views/mainview/favicon.ico",
       "dist/favicon.png": "views/mainview/favicon.png",
       "dist/logo.png": "views/mainview/logo.png",
+      // In-app browser MCP stdio server (spawned by Claude Code per session).
+      "src/bun/browser-mcp-stdio.ts": "bun/browser-mcp-stdio.ts",
     },
     watchIgnore: ["dist/**"],
     buildFolder: "build",

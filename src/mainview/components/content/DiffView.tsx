@@ -1,5 +1,6 @@
 import { diffLines } from "diff";
 import { useState } from "react";
+import { RiArrowDownSLine, RiArrowRightSLine } from "react-icons/ri";
 
 interface DiffViewProps {
   path: string;
@@ -33,7 +34,13 @@ export function DiffView({ path, oldText, newText }: DiffViewProps) {
         className="flex w-full items-center justify-between bg-[#1d1d1d] px-3 py-2 text-left text-xs hover:bg-[#222]"
       >
         <span className="flex items-center gap-2 font-mono text-gray-300">
-          <span className="text-gray-500">{expanded ? "▾" : "▸"}</span>
+          <span className="text-gray-500" aria-hidden>
+            {expanded ? (
+              <RiArrowDownSLine className="h-3.5 w-3.5" />
+            ) : (
+              <RiArrowRightSLine className="h-3.5 w-3.5" />
+            )}
+          </span>
           {filename}
           {newFile && (
             <span className="rounded bg-emerald-900/40 px-1.5 py-0.5 text-[10px] text-emerald-400">

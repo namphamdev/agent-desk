@@ -1,18 +1,34 @@
-import { useState } from "react";
+import { useState, type ComponentType } from "react";
+import type { IconBaseProps } from "react-icons";
+import {
+  RiArrowDownSLine,
+  RiArrowRightSLine,
+  RiBookOpenLine,
+  RiBox3Line,
+  RiCheckLine,
+  RiCloseLine,
+  RiDeleteBinLine,
+  RiEditLine,
+  RiGlobalLine,
+  RiLightbulbLine,
+  RiPlayLine,
+  RiSearchLine,
+  RiSubtractLine,
+} from "react-icons/ri";
 import type { ToolCall, ToolKind } from "../../../session/types";
 import { Content } from "../content/Content";
 import { DiffView } from "../content/DiffView";
 
-const kindIcon: Record<ToolKind, string> = {
-  read: "📖",
-  edit: "✏️",
-  delete: "🗑️",
-  move: "📦",
-  search: "🔍",
-  execute: "▶",
-  think: "💭",
-  fetch: "🌐",
-  other: "•",
+const kindIcon: Record<ToolKind, ComponentType<IconBaseProps>> = {
+  read: RiBookOpenLine,
+  edit: RiEditLine,
+  delete: RiDeleteBinLine,
+  move: RiBox3Line,
+  search: RiSearchLine,
+  execute: RiPlayLine,
+  think: RiLightbulbLine,
+  fetch: RiGlobalLine,
+  other: RiSubtractLine,
 };
 
 const statusStyle: Record<ToolCall["status"], string> = {
@@ -60,6 +76,7 @@ export function ToolCallCard({
   onOpenFile?: (path: string, line?: number) => void;
 }) {
   const kind = toolCall.kind ?? "other";
+  const KindIcon = kindIcon[kind];
   const loc = toolCall.locations?.[0];
   const body = hasBody(toolCall);
   const [expanded, setExpanded] = useState(false);
@@ -83,10 +100,17 @@ export function ToolCallCard({
         >
           {body && (
             <span className="shrink-0 text-[var(--text-faint)]" aria-hidden>
-              {expanded ? "▾" : "▸"}
+              {expanded ? (
+                <RiArrowDownSLine className="h-3.5 w-3.5" />
+              ) : (
+                <RiArrowRightSLine className="h-3.5 w-3.5" />
+              )}
             </span>
           )}
-          <span aria-hidden>{kindIcon[kind]}</span>
+          <KindIcon
+            className="h-3.5 w-3.5 shrink-0 text-[var(--text-muted)]"
+            aria-hidden
+          />
           <span className="truncate font-medium text-[var(--text)]">
             {toolCall.title}
           </span>
@@ -97,8 +121,12 @@ export function ToolCallCard({
             {toolCall.status === "in_progress" && (
               <span className="inline-block h-3 w-3 animate-spin rounded-full border border-amber-500 border-t-transparent" />
             )}
-            {toolCall.status === "completed" && <span>✓</span>}
-            {toolCall.status === "failed" && <span>✕</span>}
+            {toolCall.status === "completed" && (
+              <RiCheckLine className="h-3.5 w-3.5" aria-hidden />
+            )}
+            {toolCall.status === "failed" && (
+              <RiCloseLine className="h-3.5 w-3.5" aria-hidden />
+            )}
             {statusLabel[toolCall.status]}
           </span>
         </button>

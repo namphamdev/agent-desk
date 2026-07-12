@@ -16,6 +16,14 @@ export const EFFORT_OPTIONS = [
   { value: "max", label: "Max" },
 ] as const;
 
+/** Common ACP permission / session modes (Claude Code and similar agents). */
+export const PERMISSION_MODE_OPTIONS = [
+  { value: "default", label: "Default" },
+  { value: "acceptEdits", label: "Accept edits" },
+  { value: "plan", label: "Plan" },
+  { value: "bypassPermissions", label: "Bypass permissions" },
+] as const;
+
 export const MODEL_ALIAS_OPTIONS: {
   value: ClaudeModelAlias;
   label: string;
@@ -38,6 +46,14 @@ export function normalizeEffortValue(raw: string | undefined): string {
   const lower = raw.toLowerCase();
   const known = EFFORT_OPTIONS.find((o) => o.value === lower);
   return known?.value ?? lower;
+}
+
+export function normalizePermissionModeValue(raw: string | undefined): string {
+  if (!raw) return "default";
+  const known = PERMISSION_MODE_OPTIONS.find(
+    (o) => o.value.toLowerCase() === raw.toLowerCase(),
+  );
+  return known?.value ?? raw;
 }
 
 export function newProviderLocal(): ProviderConfig {

@@ -24,6 +24,11 @@ import type {
   TurnEndPayload,
 } from "../shared/rpc";
 import type { SessionUpdate } from "../session/types";
+import type {
+  BrowserControlRequest,
+  BrowserControlResponse,
+} from "../shared/browser-control";
+import { waitForBrowserPanel } from "./browser/registry";
 
 export type RpcListeners = {
   onUpdate?: (sessionId: string, update: SessionUpdate) => void;
@@ -39,6 +44,10 @@ export type RpcListeners = {
     configOptions: SessionConfigOption[],
   ) => void;
   onUsage?: (sessionId: string, usage: SessionUsage) => void;
+  onBrowserOpen?: (payload: {
+    sessionId: string;
+    url?: string;
+  }) => void;
 };
 
 type RpcClient = {
@@ -263,7 +272,25 @@ export function initRpc(): RpcClient {
     const rpc = Electroview.defineRPC<TerminalRPC>({
       maxRequestTime: 600_000,
       handlers: {
-        requests: {},
+        requests: {
+          browserControl: async (
+            params: BrowserControlRequest,
+          ): Promise<BrowserControlResponse> => {
+            // onBrowserOpen is sent just before this RPC; give React a moment
+            // to mount BrowserPanel and register the handler.
+            const handler = await waitForBrowserPanel(params.sessionId, 8000);
+            if (!handler) {
+              return {
+                ok: false,
+                error:
+                  `Built-in browser panel did not mount for session ${params.sessionId.slice(0, 12)}… ` +
+                  "It should open automatically on browser_navigate; " +
+                  "click the globe icon if it stays closed.",
+              };
+            }
+            return handler(params);
+          },
+        },
         messages: {
           onUpdate: ({ sessionId, update }) => {
             listeners.onUpdate?.(sessionId, update);
@@ -294,6 +321,9 @@ export function initRpc(): RpcClient {
           },
           onUsage: ({ sessionId, usage }) => {
             listeners.onUsage?.(sessionId, usage);
+          },
+          onBrowserOpen: (payload) => {
+            listeners.onBrowserOpen?.(payload);
           },
         },
       },
@@ -724,6 +754,7 @@ function createBrowserMock(): RpcClient {
           theme: "dark" as const,
           defaultAgentId: null,
           enableFsCapabilities: false,
+          enableBrowserMcp: true,
           enableNotifications: true,
           enableSound: true,
         };
@@ -734,6 +765,7 @@ function createBrowserMock(): RpcClient {
           theme: "dark" as const,
           defaultAgentId: null,
           enableFsCapabilities: false,
+          enableBrowserMcp: true,
           enableNotifications: true,
           enableSound: true,
           ...patch,

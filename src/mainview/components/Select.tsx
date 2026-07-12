@@ -7,6 +7,7 @@ import {
   useState,
 } from "react";
 import { createPortal } from "react-dom";
+import { RiArrowDownSLine, RiCheckLine } from "react-icons/ri";
 
 export type SelectOption = {
   value: string;
@@ -329,18 +330,10 @@ export function Select({
                   >
                     <span className="truncate">{opt.label}</span>
                     {isSelected && (
-                      <svg
+                      <RiCheckLine
                         className="h-3.5 w-3.5 shrink-0 text-gray-300"
-                        fill="none"
-                        stroke="currentColor"
-                        viewBox="0 0 24 24"
-                        strokeWidth={2.5}
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
                         aria-hidden
-                      >
-                        <path d="M5 13l4 4L19 7" />
-                      </svg>
+                      />
                     )}
                   </li>
                 );
@@ -378,18 +371,10 @@ export function Select({
         <span className={selected ? "truncate" : "truncate text-gray-500"}>
           {selected?.label ?? placeholder}
         </span>
-        <svg
+        <RiArrowDownSLine
           className={`h-3.5 w-3.5 shrink-0 text-gray-500 transition-transform ${open ? "rotate-180" : ""}`}
-          fill="none"
-          stroke="currentColor"
-          viewBox="0 0 24 24"
-          strokeWidth={2}
-          strokeLinecap="round"
-          strokeLinejoin="round"
           aria-hidden
-        >
-          <path d="M19 9l-7 7-7-7" />
-        </svg>
+        />
       </button>
 
       {menu}

@@ -27,6 +27,7 @@ import {
   withModeCurrentValue,
 } from "./translate";
 import type { SessionUpdate } from "../session/types";
+import { buildBrowserMcpServers } from "./browser-mcp";
 
 export type PermissionHandler = (
   req: RequestPermissionRequest & { requestId: string },
@@ -46,6 +47,16 @@ export type AcpClientHandlers = {
   onError?: (error: unknown) => void;
   onPermission: PermissionHandler;
   enableFs?: boolean;
+  /** Inject in-app browser MCP on session/new (default false if omitted). */
+  enableBrowserMcp?: boolean;
+  /**
+   * Localhost control plane for the built-in browser panel.
+   * Required when enableBrowserMcp is true.
+   */
+  browserControl?: {
+    url: string;
+    token: string;
+  };
 };
 
 /** Optional spawn / session overrides (e.g. provider credentials for Claude Code). */
@@ -285,7 +296,10 @@ export class AcpClient {
     );
   }
 
-  async openSession(cwd: string): Promise<AcpSessionHandle> {
+  async openSession(
+    cwd: string,
+    opts?: { localSessionId?: string },
+  ): Promise<AcpSessionHandle> {
     if (!this.ctx) throw new Error("not connected");
 
     // Stop prior pump + session routing before opening a new one.
@@ -297,10 +311,37 @@ export class AcpClient {
     }
     this.active = null;
 
+    const localSessionId = opts?.localSessionId;
+    const ctrl = this.handlers.browserControl;
+    const mcpServers =
+      this.handlers.enableBrowserMcp && localSessionId && ctrl
+        ? buildBrowserMcpServers({
+            enabled: true,
+            sessionId: localSessionId,
+            projectCwd: cwd,
+            controlUrl: ctrl.url,
+            controlToken: ctrl.token,
+          })
+        : [];
+    if (mcpServers.length > 0) {
+      console.log(
+        `[acp] registered MCP: ${mcpServers.map((s) => s.name).join(", ")} ` +
+          `→ chat ${localSessionId?.slice(0, 8)}… cwd=${cwd}`,
+      );
+    } else if (this.handlers.enableBrowserMcp) {
+      console.warn(
+        "[acp] browser MCP NOT registered " +
+          `(sessionId=${localSessionId ? "ok" : "missing"}, ` +
+          `control=${ctrl ? "ok" : "missing"})`,
+      );
+    }
+
+    // Always pass session meta when present so ENABLE_TOOL_SEARCH stays off and
+    // system prompt documents the browser MCP — even if mcpServers is empty.
     const session = await this.ctx
       .buildSession({
         cwd,
-        mcpServers: [],
+        mcpServers,
         ...(this.options.sessionMeta
           ? { _meta: this.options.sessionMeta }
           : {}),

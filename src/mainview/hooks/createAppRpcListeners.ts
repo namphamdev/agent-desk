@@ -11,6 +11,7 @@ import type {
   SessionSummary,
   SessionUsage,
 } from "../../shared/rpc";
+import { notifyBrowserOpen } from "../browser/open-bridge";
 import { alertTurnComplete } from "../completionAlert";
 import type { RpcListeners } from "../rpc";
 
@@ -106,12 +107,22 @@ export function createAppRpcListeners(deps: Deps): RpcListeners {
         (state.status === "error" || state.status === "disconnected") &&
         state.sessionId
       ) {
+        busySessionsRef.current.delete(state.sessionId);
         setSessionActivity((prev) => {
           if (prev[state.sessionId!] !== "processing") return prev;
           const next = { ...prev };
           delete next[state.sessionId!];
           return next;
         });
+      }
+      // Recover leftover queue if we became ready/idle without a flush
+      // (e.g. cancel path race, or a prompt enqueued against a stale busy flag).
+      if (
+        (state.status === "ready" || state.status === "idle") &&
+        state.sessionId &&
+        !busySessionsRef.current.has(state.sessionId)
+      ) {
+        flushPromptQueueRef.current(state.sessionId);
       }
     },
     onPermissionRequest: (req) => setPermission(req),
@@ -164,6 +175,9 @@ export function createAppRpcListeners(deps: Deps): RpcListeners {
     onUsage: (sessionId, nextUsage) => {
       const active = activeSessionIdRef.current;
       if (!active || sessionId === active) setUsage(nextUsage);
+    },
+    onBrowserOpen: ({ sessionId, url }) => {
+      notifyBrowserOpen(sessionId, url);
     },
   };
 }

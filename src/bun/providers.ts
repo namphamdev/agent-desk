@@ -160,37 +160,75 @@ export function buildProviderEnv(
 }
 
 /**
+ * Keep in-app browser MCP tools always listed (not deferred behind ToolSearch).
+ * Agents otherwise reverse-engineer the control plane when tools are hidden.
+ */
+export function withBrowserMcpAlwaysLoaded(
+  env: Record<string, string | undefined>,
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(env)) {
+    if (v !== undefined) out[k] = v;
+  }
+  // Empty string is falsy in Claude Code env bool parsing (not "1"/"true"/"yes"/"on").
+  out.ENABLE_TOOL_SEARCH = "";
+  return out;
+}
+
+/**
+ * Appended to Claude Code system prompt so the model discovers the registered
+ * `browser` MCP and uses it for the current chat's panel + tokens.
+ */
+export const BROWSER_MCP_SYSTEM_APPEND = `
+## Built-in browser (AgentDesk / terminal-react)
+This session has a registered MCP server named **browser** bound to THIS chat.
+- Tools: browser_session_info, browser_open, browser_navigate, browser_snapshot, browser_click, browser_type, browser_fill, browser_evaluate, browser_store_token, browser_list_tokens, browser_delete_token, browser_get_url, browser_navigate_back, browser_navigate_forward, browser_reload, browser_press_key
+- The panel is the right-side in-app browser for this chat only (not a separate Chrome window).
+- browser_open / browser_navigate auto-open the panel if closed.
+- browser_session_info returns this chat's session id, project cwd, panel state, and stored tokens.
+- After multi-step login: browser_evaluate → browser_store_token. Tokens are SQLite-backed per project and injected into later prompts.
+- Do NOT curl localhost, invent control tokens, or use Playwright/external browsers for this.
+`.trim();
+
+/**
  * ACP session/new `_meta.claudeCode.options` so credentials win over
  * ~/.claude/settings.json (claude-agent-acp merges options.env over process.env
  * and loads user settings via settingSources).
+ *
+ * When no provider is configured, still returns meta so browser MCP tools stay
+ * always-loaded and system prompt documents the `browser` server.
  */
 export function buildClaudeCodeSessionMeta(
   provider: ProviderConfig | null,
   modelAlias: ClaudeModelAlias,
-): Record<string, unknown> | undefined {
-  const env = buildProviderEnv(provider, modelAlias);
-  if (!env) return undefined;
+): Record<string, unknown> {
+  const providerEnv = buildProviderEnv(provider, modelAlias) ?? {};
+  const env = withBrowserMcpAlwaysLoaded(providerEnv);
 
   return {
+    systemPrompt: {
+      type: "preset",
+      preset: "claude_code",
+      append: BROWSER_MCP_SYSTEM_APPEND,
+    },
     claudeCode: {
       options: {
         env,
-        // Prefer alias so ACP model picker + ANTHROPIC_DEFAULT_* maps work.
-        // Mapped id is still applied via env.ANTHROPIC_MODEL.
-        model: modelAlias,
-        // Skip user settings.env (~/.claude/settings.json) which would
-        // otherwise overwrite the selected provider's base_url / api_key.
-        // Project + local settings still apply (repo permissions, etc.).
-        settingSources: ["project", "local"],
+        ...(provider
+          ? {
+              model: modelAlias,
+              // Skip user settings that re-enable ToolSearch / hide MCP tools.
+              settingSources: ["project", "local"],
+            }
+          : {
+              // Keep user settings when no app provider, but env still clears ToolSearch.
+              settingSources: ["user", "project", "local"],
+            }),
       },
     },
   };
 }
 
-/**
- * Stable key for "would a reconnect pick up different credentials/model?"
- * Used to force-respawn the ACP process when the active provider changes.
- */
 export function providerConnectionKey(
   settings: Pick<
     AppSettings,

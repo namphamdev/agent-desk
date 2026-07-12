@@ -33,14 +33,19 @@ export function resolveSelectOptionValue(
 }
 
 /**
- * Apply settings defaults (thought_level / model) via session/set_config_option
- * when the agent exposes matching select options. Matching is case-insensitive
- * on value or display name so stored "High" maps to agent value "high".
+ * Apply settings defaults (thought_level / mode / model) via
+ * session/set_config_option when the agent exposes matching select options.
+ * Matching is case-insensitive on value or display name so stored "High"
+ * maps to agent value "high". Permission mode uses category/id `mode`
+ * (Claude Code ACP; may be routed to session/set_mode by AcpClient).
  */
 export async function applyPreferredConfigDefaults(
   handle: AcpSessionHandle,
   configOptions: SessionConfigOption[],
-  settings: Pick<AppSettings, "defaultEffort" | "defaultModel">,
+  settings: Pick<
+    AppSettings,
+    "defaultEffort" | "defaultPermissionMode" | "defaultModel"
+  >,
 ): Promise<SessionConfigOption[]> {
   let options = configOptions;
   const prefs: Array<{
@@ -52,6 +57,11 @@ export async function applyPreferredConfigDefaults(
       preferred: settings.defaultEffort,
       category: "thought_level",
       idFallback: "thought_level",
+    },
+    {
+      preferred: settings.defaultPermissionMode,
+      category: "mode",
+      idFallback: "mode",
     },
     {
       preferred: settings.defaultModel,

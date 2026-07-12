@@ -1,7 +1,13 @@
 import type { Dispatch, SetStateAction } from "react";
 import type { AgentInfo, AppSettings } from "../../../shared/rpc";
 import { Select } from "../Select";
-import { EFFORT_OPTIONS, THEME_OPTIONS, normalizeEffortValue } from "./constants";
+import {
+  EFFORT_OPTIONS,
+  PERMISSION_MODE_OPTIONS,
+  THEME_OPTIONS,
+  normalizeEffortValue,
+  normalizePermissionModeValue,
+} from "./constants";
 import { Field } from "./Field";
 
 type Props = {
@@ -85,6 +91,21 @@ export function GeneralTab({
         </p>
       </Field>
 
+      <Field label="Default permission mode">
+        <Select
+          value={normalizePermissionModeValue(draft.defaultPermissionMode)}
+          options={[...PERMISSION_MODE_OPTIONS]}
+          onChange={(defaultPermissionMode) =>
+            setDraft((d) => ({ ...d, defaultPermissionMode }))
+          }
+          aria-label="Default permission mode"
+        />
+        <p className="mt-1 text-[11px] text-gray-500">
+          Applied when a session starts (if the agent exposes a permission /
+          mode selector). You can still change it per turn in the prompt bar.
+        </p>
+      </Field>
+
       <label className="flex items-center gap-2 text-gray-300">
         <input
           type="checkbox"
@@ -102,6 +123,26 @@ export function GeneralTab({
       <p className="text-[11px] text-gray-500">
         Off by default. When on, the agent may read and write files via ACP
         fs/* methods.
+      </p>
+
+      <label className="flex items-center gap-2 text-gray-300">
+        <input
+          type="checkbox"
+          checked={draft.enableBrowserMcp !== false}
+          onChange={(e) =>
+            setDraft((d) => ({
+              ...d,
+              enableBrowserMcp: e.target.checked,
+            }))
+          }
+          className="rounded border-[#444]"
+        />
+        Built-in browser (agent can control the panel)
+      </label>
+      <p className="text-[11px] text-gray-500">
+        On by default. When a session starts, Claude Code gets MCP tools that
+        drive the in-app browser panel (globe icon) — navigate, snapshot, click,
+        type — not a separate Chrome window. Applies to new sessions.
       </p>
 
       <Field label="Worktree shared paths">

@@ -1,10 +1,17 @@
-import type { Plan } from "../../../session/types";
+import type { ComponentType } from "react";
+import type { IconBaseProps } from "react-icons";
+import {
+  RiCheckboxBlankCircleLine,
+  RiCheckLine,
+  RiSubtractLine,
+} from "react-icons/ri";
+import type { Plan, PlanEntry } from "../../../session/types";
 
-const marker = {
-  completed: "✓",
-  in_progress: "○",
-  pending: "•",
-} as const;
+const marker: Record<PlanEntry["state"], ComponentType<IconBaseProps>> = {
+  completed: RiCheckLine,
+  in_progress: RiCheckboxBlankCircleLine,
+  pending: RiSubtractLine,
+};
 
 const cls = {
   completed: "text-emerald-400",
@@ -20,14 +27,17 @@ export function PlanView({ plan }: { plan: Plan }) {
         Plan
       </div>
       <ul className="space-y-1">
-        {plan.entries.map((e, i) => (
-          <li key={i} className={`flex items-start gap-2 text-sm ${cls[e.state]}`}>
-            <span className="mt-0.5 w-4 select-none">{marker[e.state]}</span>
-            <span className={e.state === "pending" ? "text-gray-400" : "text-gray-200"}>
-              {e.content}
-            </span>
-          </li>
-        ))}
+        {plan.entries.map((e, i) => {
+          const Marker = marker[e.state];
+          return (
+            <li key={i} className={`flex items-start gap-2 text-sm ${cls[e.state]}`}>
+              <Marker className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+              <span className={e.state === "pending" ? "text-gray-400" : "text-gray-200"}>
+                {e.content}
+              </span>
+            </li>
+          );
+        })}
       </ul>
     </div>
   );

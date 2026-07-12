@@ -197,4 +197,42 @@ describe("SessionStore", () => {
     expect(store2.getSetting("theme")).toBe("dark");
     store2.close();
   });
+
+  it("upserts and lists browser tokens per project", () => {
+    const { store, dir } = openStore();
+    store.upsertBrowserToken({
+      key: "oauth_access_token",
+      value: "tok-1",
+      projectCwd: "/proj/a",
+      label: "GitHub",
+      domain: "github.com",
+    });
+    store.upsertBrowserToken({
+      key: "oauth_access_token",
+      value: "tok-2",
+      projectCwd: "/proj/a",
+      label: "GitHub",
+    });
+    store.upsertBrowserToken({
+      key: "api_key",
+      value: "key-x",
+      projectCwd: "/proj/b",
+    });
+
+    const a = store.listBrowserTokens("/proj/a");
+    expect(a).toHaveLength(1);
+    expect(a[0]!.key).toBe("oauth_access_token");
+    expect(a[0]!.value).toBe("tok-2");
+    expect(a[0]!.label).toBe("GitHub");
+
+    expect(store.listBrowserTokens("/proj/b")).toHaveLength(1);
+    expect(store.deleteBrowserToken("/proj/a", "oauth_access_token")).toBe(true);
+    expect(store.listBrowserTokens("/proj/a")).toEqual([]);
+    store.close();
+
+    const store2 = new SessionStore(dir);
+    expect(store2.listBrowserTokens("/proj/b")[0]!.value).toBe("key-x");
+    store2.close();
+  });
 });
+

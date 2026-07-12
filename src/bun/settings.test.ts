@@ -31,10 +31,12 @@ describe("settings", () => {
   it("exposes sensible defaults", () => {
     expect(DEFAULT_SETTINGS.theme).toBe("dark");
     expect(DEFAULT_SETTINGS.enableFsCapabilities).toBe(false);
+    expect(DEFAULT_SETTINGS.enableBrowserMcp).toBe(true);
     expect(DEFAULT_SETTINGS.enableNotifications).toBe(true);
     expect(DEFAULT_SETTINGS.enableSound).toBe(true);
     expect(DEFAULT_SETTINGS.defaultAgentId).toBeNull();
     expect(DEFAULT_SETTINGS.defaultEffort).toBe("high");
+    expect(DEFAULT_SETTINGS.defaultPermissionMode).toBe("default");
     expect(DEFAULT_SETTINGS.editorCommand).toBeTruthy();
     expect(DEFAULT_SETTINGS.dataDir).toContain(".terminal-react");
     expect(DEFAULT_SETTINGS.providers).toEqual([]);
@@ -61,6 +63,31 @@ describe("settings", () => {
     const s = loadSettings(store);
     expect(s.theme).toBe(DEFAULT_SETTINGS.theme);
     expect(s.enableFsCapabilities).toBe(false);
+    expect(s.enableBrowserMcp).toBe(true);
+    store.close();
+  });
+
+  it("defaults enableBrowserMcp to true when missing from stored JSON", () => {
+    const store = openStore();
+    // Simulate older settings without the flag.
+    store.setSetting(
+      "app_settings",
+      JSON.stringify({
+        theme: "light",
+        enableFsCapabilities: false,
+      }),
+    );
+    const s = loadSettings(store);
+    expect(s.enableBrowserMcp).toBe(true);
+    expect(s.theme).toBe("light");
+    store.close();
+  });
+
+  it("persists enableBrowserMcp false", () => {
+    const store = openStore();
+    const next = saveSettings(store, { enableBrowserMcp: false });
+    expect(next.enableBrowserMcp).toBe(false);
+    expect(loadSettings(store).enableBrowserMcp).toBe(false);
     store.close();
   });
 
@@ -81,9 +108,20 @@ describe("settings", () => {
     });
     // Unpatched fields stay at defaults.
     expect(next.defaultEffort).toBe(DEFAULT_SETTINGS.defaultEffort);
+    expect(next.defaultPermissionMode).toBe(
+      DEFAULT_SETTINGS.defaultPermissionMode,
+    );
 
     const reloaded = loadSettings(store);
     expect(reloaded).toEqual(next);
+    store.close();
+  });
+
+  it("persists defaultPermissionMode", () => {
+    const store = openStore();
+    const next = saveSettings(store, { defaultPermissionMode: "acceptEdits" });
+    expect(next.defaultPermissionMode).toBe("acceptEdits");
+    expect(loadSettings(store).defaultPermissionMode).toBe("acceptEdits");
     store.close();
   });
 

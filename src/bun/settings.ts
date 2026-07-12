@@ -17,12 +17,15 @@ export const DEFAULT_SETTINGS: AppSettings = {
   theme: "dark",
   defaultAgentId: null,
   enableFsCapabilities: false,
+  enableBrowserMcp: true,
   enableNotifications: true,
   enableSound: true,
   dataDir: join(homedir(), ".terminal-react"),
   defaultModel: undefined,
   /** ACP thought_level value applied when a session opens (e.g. low|medium|high|xhigh|max). */
   defaultEffort: "high",
+  /** ACP permission mode applied when a session opens (e.g. default|acceptEdits|plan|bypassPermissions). */
+  defaultPermissionMode: "default",
   lastProjectCwd: null,
   dismissedRecentCwds: [],
   providers: [],
@@ -72,6 +75,10 @@ function normalizeSettings(parsed: Partial<AppSettings>): AppSettings {
     activeProviderId,
     activeModelAlias,
     defaultModel: derivedDefaultModel ?? parsed.defaultModel,
+    enableBrowserMcp:
+      typeof parsed.enableBrowserMcp === "boolean"
+        ? parsed.enableBrowserMcp
+        : DEFAULT_SETTINGS.enableBrowserMcp,
     dismissedRecentCwds: Array.isArray(parsed.dismissedRecentCwds)
       ? parsed.dismissedRecentCwds.filter((c): c is string => typeof c === "string")
       : DEFAULT_SETTINGS.dismissedRecentCwds,

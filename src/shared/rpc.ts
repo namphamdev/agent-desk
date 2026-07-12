@@ -5,6 +5,11 @@ import type {
   ToolCall,
   ToolKind,
 } from "../session/types";
+import type {
+  BrowserControlRequest,
+  BrowserControlResponse,
+  BrowserOpenMessage,
+} from "./browser-control";
 
 /** Connection lifecycle as seen by the webview. */
 export type ConnectionStatus =
@@ -128,6 +133,11 @@ export type AppSettings = {
   theme: "dark" | "light" | "system";
   defaultAgentId: string | null;
   enableFsCapabilities: boolean;
+  /**
+   * Inject Playwright MCP on session/new so Claude Code can control a real
+   * browser (navigate, snapshot, click, fill, screenshot). On by default.
+   */
+  enableBrowserMcp: boolean;
   /** System notification when an agent turn completes. */
   enableNotifications: boolean;
   /** Play a sound when an agent turn completes. */
@@ -140,6 +150,12 @@ export type AppSettings = {
    * (typical values: low, medium, high, xhigh, max).
    */
   defaultEffort?: string;
+  /**
+   * Default permission / session mode applied when an ACP session opens.
+   * Matched case-insensitively against the agent's `mode` options
+   * (typical values: default, acceptEdits, plan, bypassPermissions).
+   */
+  defaultPermissionMode?: string;
   /** Last folder chosen for a new session (used as dialog default). */
   lastProjectCwd?: string | null;
   /** Project folders hidden from the New Session recent list. */
@@ -623,7 +639,14 @@ export type TerminalRPC = {
   }>;
   webview: RPCSchema<{
     requests: {
-      // bun → webview request/response (unused for now)
+      /**
+       * Agent MCP → Bun control plane → webview: drive the built-in browser
+       * panel for a chat session (navigate, snapshot, click, …).
+       */
+      browserControl: {
+        params: BrowserControlRequest;
+        response: BrowserControlResponse;
+      };
     };
     messages: {
       onUpdate: { sessionId: string; update: SessionUpdate };
@@ -643,6 +666,8 @@ export type TerminalRPC = {
         usage: SessionUsage;
       };
       onPlan: { sessionId: string; plan: Plan };
+      /** Open the built-in browser panel for a session (agent is driving it). */
+      onBrowserOpen: BrowserOpenMessage;
     };
   }>;
 };

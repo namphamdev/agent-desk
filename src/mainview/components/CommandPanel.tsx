@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { RiCloseLine } from "react-icons/ri";
 import type { CommandRunSummary, SavedCommand } from "../../shared/rpc";
 
 type Props = {
@@ -209,7 +210,7 @@ export function CommandPanel({
               className="rounded p-1 text-gray-500 hover:bg-[#2a2a2a] hover:text-gray-200"
               aria-label="Close commands"
             >
-              ✕
+              <RiCloseLine className="h-4 w-4" aria-hidden />
             </button>
           </div>
         </div>

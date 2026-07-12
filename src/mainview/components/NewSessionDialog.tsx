@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { RiCloseLine, RiDeleteBinLine } from "react-icons/ri";
 import type { AgentInfo, RecentProject } from "../../shared/rpc";
 import {
   WORKFLOWS,
@@ -204,7 +205,7 @@ export function NewSessionDialog({
             className="rounded p-1 text-gray-500 hover:bg-[#2a2a2a] hover:text-gray-200 disabled:opacity-50"
             aria-label="Close"
           >
-            ✕
+            <RiCloseLine className="h-4 w-4" aria-hidden />
           </button>
         </div>
 
@@ -290,23 +291,10 @@ export function NewSessionDialog({
                         }}
                         className="mt-1.5 mr-1 shrink-0 rounded p-1 text-gray-600 opacity-0 transition-opacity hover:bg-[#2a2a2a] hover:text-gray-200 group-hover:opacity-100 focus:opacity-100 disabled:opacity-40"
                       >
-                        <svg
-                          width="12"
-                          height="12"
-                          viewBox="0 0 24 24"
-                          fill="none"
-                          stroke="currentColor"
-                          strokeWidth="2"
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          aria-hidden="true"
-                        >
-                          <path d="M3 6h18" />
-                          <path d="M8 6V4h8v2" />
-                          <path d="M19 6l-1 14H6L5 6" />
-                          <path d="M10 11v6" />
-                          <path d="M14 11v6" />
-                        </svg>
+                        <RiDeleteBinLine
+                          className="h-3 w-3"
+                          aria-hidden
+                        />
                       </button>
                     </div>
                   );

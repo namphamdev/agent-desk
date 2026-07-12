@@ -1,4 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  RiArrowDownSLine,
+  RiArrowUpLine,
+  RiCloseLine,
+  RiStopFill,
+} from "react-icons/ri";
 import type {
   AvailableCommand,
   ClaudeModelAlias,
@@ -302,17 +308,7 @@ export function PromptInput({
                       className="shrink-0 rounded p-0.5 text-gray-500 hover:bg-[#333] hover:text-gray-200"
                       aria-label={`Remove queued prompt ${index + 1}`}
                     >
-                      <svg
-                        className="h-3.5 w-3.5"
-                        fill="none"
-                        stroke="currentColor"
-                        viewBox="0 0 24 24"
-                        strokeWidth={2}
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                      >
-                        <path d="M6 18L18 6M6 6l12 12" />
-                      </svg>
+                      <RiCloseLine className="h-3.5 w-3.5" aria-hidden />
                     </button>
                   )}
                 </li>
@@ -497,9 +493,7 @@ export function PromptInput({
                 className="flex items-center gap-1 rounded-md bg-red-900/60 px-2.5 py-1.5 text-xs font-medium text-red-200 hover:bg-red-800/60"
                 aria-label="Stop generation"
               >
-                <svg className="h-3.5 w-3.5" fill="currentColor" viewBox="0 0 20 20">
-                  <rect x="5" y="5" width="10" height="10" rx="1" />
-                </svg>
+                <RiStopFill className="h-3.5 w-3.5" aria-hidden />
                 Stop
               </button>
             )}
@@ -511,17 +505,7 @@ export function PromptInput({
               aria-label={prompting ? "Queue prompt" : "Send prompt"}
               title={prompting ? "Queue follow-up (sends when agent finishes)" : "Send"}
             >
-              <svg
-                className="h-4 w-4"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-                strokeWidth={2}
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <path d="M5 10l7-7m0 0l7 7m-7-7v18" />
-              </svg>
+              <RiArrowUpLine className="h-4 w-4" aria-hidden />
             </button>
           </div>
         </div>
@@ -703,17 +687,7 @@ function Selector({
       >
         {prefix && <span>{prefix}</span>}
         <span className="max-w-[14rem] truncate">{displayValue ?? value}</span>
-        <svg
-          className="h-3 w-3 shrink-0 text-gray-500"
-          fill="none"
-          stroke="currentColor"
-          viewBox="0 0 24 24"
-          strokeWidth={2}
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        >
-          <path d="M19 9l-7 7-7-7" />
-        </svg>
+        <RiArrowDownSLine className="h-3 w-3 shrink-0 text-gray-500" aria-hidden />
       </button>
       {open && (
         <div className="absolute bottom-full left-0 z-50 mb-1 max-h-64 min-w-[10rem] overflow-y-auto rounded-lg border border-[#3a3a3a] bg-[#1e1e1e] py-1 shadow-xl">
@@ -794,17 +768,7 @@ function GroupedSelector({
         <span className="min-w-0 truncate" title={displayValue ?? value}>
           {displayValue ?? value}
         </span>
-        <svg
-          className="h-3 w-3 shrink-0 text-gray-500"
-          fill="none"
-          stroke="currentColor"
-          viewBox="0 0 24 24"
-          strokeWidth={2}
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        >
-          <path d="M19 9l-7 7-7-7" />
-        </svg>
+        <RiArrowDownSLine className="h-3 w-3 shrink-0 text-gray-500" aria-hidden />
       </button>
       {open && (
         <div

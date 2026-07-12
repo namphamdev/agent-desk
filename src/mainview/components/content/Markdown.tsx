@@ -1,13 +1,18 @@
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import remarkBreaks from "remark-breaks";
 import rehypeHighlight from "rehype-highlight";
 import { memo, useState, type ReactNode } from "react";
+import { RiArrowDownSLine, RiArrowRightSLine } from "react-icons/ri";
 import { MermaidDiagram } from "./MermaidDiagram";
 
 /**
  * Renders agent text as styled HTML: GFM tables/tasklists, syntax-highlighted
  * code fences, and Mermaid diagrams. Long fences collapse by default so a
  * dumped package.json doesn't dominate the timeline.
+ *
+ * remark-breaks keeps single newlines as <br> so Shift+Enter in the prompt
+ * (and multi-line agent text) still show as multiple lines in the timeline.
  */
 
 /**
@@ -83,7 +88,11 @@ function CodeBlock({
         <span className="flex items-center gap-2 font-mono text-[var(--text-muted)]">
           {collapsible && (
             <span className="text-[var(--text-faint)]" aria-hidden>
-              {expanded ? "▾" : "▸"}
+              {expanded ? (
+                <RiArrowDownSLine className="h-3.5 w-3.5" />
+              ) : (
+                <RiArrowRightSLine className="h-3.5 w-3.5" />
+              )}
             </span>
           )}
           <span className="text-[var(--text-muted)]">{label}</span>
@@ -140,7 +149,7 @@ export const Markdown = memo(function Markdown({ children }: { children: string 
   return (
     <div className="prose-chat">
       <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
+        remarkPlugins={[remarkGfm, remarkBreaks]}
         rehypePlugins={[
           [
             rehypeHighlight,

@@ -24,8 +24,10 @@ import { resolveWorkingDirectory } from "./cwd";
 import { openFileInEditor } from "./open-file";
 import { toPermissionRequest } from "./permissions";
 import { buildRecentProjects } from "./recent-projects";
+import { injectBrowserTokensIntoPrompt } from "../browser-tokens";
 import { formatSeededPrompt, seedUpdateForRole } from "./seed";
 import type { LiveSession, SessionManagerEvents } from "./types";
+import type { BrowserTokenRecord } from "../store";
 
 export class SessionManager {
   private store: SessionStore;
@@ -46,7 +48,13 @@ export class SessionManager {
   /** Serializes background agent prep so rapid session switches don't race. */
   private prepareChain: Promise<void> = Promise.resolve();
 
-  constructor(dataDir: string, events: SessionManagerEvents) {
+  constructor(
+    dataDir: string,
+    events: SessionManagerEvents,
+    options?: {
+      getBrowserControl?: () => { url: string; token: string } | null;
+    },
+  ) {
     this.store = new SessionStore(dataDir);
     this.settings = loadSettings(this.store);
     this.events = events;
@@ -69,6 +77,7 @@ export class SessionManager {
         return mgr.activeSessionId;
       },
       queuePermission: (params) => mgr.queuePermission(params),
+      getBrowserControl: options?.getBrowserControl,
     });
   }
 
@@ -100,6 +109,31 @@ export class SessionManager {
 
   getAgents() {
     return this.agents;
+  }
+
+  /** Project-scoped browser tokens stored in SQLite. */
+  listBrowserTokens(projectCwd: string): BrowserTokenRecord[] {
+    return this.store.listBrowserTokens(projectCwd);
+  }
+
+  upsertBrowserToken(input: {
+    key: string;
+    value: string;
+    projectCwd: string;
+    domain?: string;
+    label?: string;
+    sessionId?: string | null;
+  }): BrowserTokenRecord {
+    return this.store.upsertBrowserToken(input);
+  }
+
+  deleteBrowserToken(projectCwd: string, key: string): boolean {
+    return this.store.deleteBrowserToken(projectCwd, key);
+  }
+
+  /** Resolve project cwd for a chat session (for token scoping). */
+  getSessionCwd(sessionId: string): string | null {
+    return this.live.get(sessionId)?.summary.cwd ?? null;
   }
 
   getSettings() {
@@ -555,6 +589,15 @@ export class SessionManager {
       );
       live.contextSeed = null;
       live.contextSeedPurpose = undefined;
+    }
+
+    // Inject project browser tokens into the agent prompt only (UI/history keep
+    // the clean user text). Lets multi-step OAuth tokens skip re-login.
+    try {
+      const tokens = this.store.listBrowserTokens(live.summary.cwd);
+      promptText = injectBrowserTokensIntoPrompt(promptText, tokens);
+    } catch (err) {
+      console.warn("[session-manager] browser token inject failed:", err);
     }
 
     // Don't await the full turn — stream via events. But we should catch errors.

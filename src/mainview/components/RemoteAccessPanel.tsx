@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { RiCloseLine } from "react-icons/ri";
 import type { RemoteAccessStatus } from "../../shared/rpc";
 import { qrToDataUrl } from "../utils/qrcode";
 
@@ -224,7 +225,7 @@ export function RemoteAccessPanel({
             className="rounded p-1 text-gray-500 hover:bg-[#2a2a2a] hover:text-gray-200"
             aria-label="Close remote access"
           >
-            ✕
+            <RiCloseLine className="h-4 w-4" aria-hidden />
           </button>
         </div>
 

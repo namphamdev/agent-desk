@@ -125,18 +125,40 @@ describe("providers", () => {
     });
   });
 
-  it("buildClaudeCodeSessionMeta passes env + skips user settings", () => {
+  it("buildClaudeCodeSessionMeta always registers browser MCP awareness", () => {
     const meta = buildClaudeCodeSessionMeta(sample, "sonnet");
-    expect(meta).toEqual({
+    const baseEnv = buildProviderEnv(sample, "sonnet")!;
+    expect(meta).toMatchObject({
+      systemPrompt: {
+        type: "preset",
+        preset: "claude_code",
+      },
       claudeCode: {
         options: {
-          env: buildProviderEnv(sample, "sonnet"),
+          env: {
+            ...baseEnv,
+            ENABLE_TOOL_SEARCH: "",
+          },
           model: "sonnet",
           settingSources: ["project", "local"],
         },
       },
     });
-    expect(buildClaudeCodeSessionMeta(null, "sonnet")).toBeUndefined();
+    expect(String((meta as { systemPrompt: { append: string } }).systemPrompt.append)).toContain(
+      "browser_navigate",
+    );
+
+    // Without app provider, still return meta so MCP tools stay discoverable.
+    const noProvider = buildClaudeCodeSessionMeta(null, "sonnet");
+    expect(noProvider).toBeDefined();
+    expect(
+      (noProvider as { claudeCode: { options: { env: { ENABLE_TOOL_SEARCH: string } } } })
+        .claudeCode.options.env.ENABLE_TOOL_SEARCH,
+    ).toBe("");
+    expect(
+      (noProvider as { claudeCode: { options: { settingSources: string[] } } })
+        .claudeCode.options.settingSources,
+    ).toEqual(["user", "project", "local"]);
   });
 
   it("providerConnectionKey changes when credentials or model change", () => {

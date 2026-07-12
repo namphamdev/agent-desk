@@ -12,6 +12,19 @@ export type StoredSession = SessionSummary & {
   mode: string;
 };
 
+/** Token/secret captured from the built-in browser and reused across prompts. */
+export type BrowserTokenRecord = {
+  id: string;
+  key: string;
+  value: string;
+  projectCwd: string;
+  domain: string;
+  label: string;
+  sessionId: string | null;
+  createdAt: number;
+  updatedAt: number;
+};
+
 export class SessionStore {
   private db: Database;
 
@@ -52,7 +65,116 @@ export class SessionStore {
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
       );
+
+      -- Tokens / secrets captured from the built-in browser (OAuth, API keys).
+      -- Scoped by project cwd so chats in the same project reuse them.
+      CREATE TABLE IF NOT EXISTS browser_tokens (
+        id TEXT PRIMARY KEY,
+        key TEXT NOT NULL,
+        value TEXT NOT NULL,
+        project_cwd TEXT NOT NULL DEFAULT '',
+        domain TEXT NOT NULL DEFAULT '',
+        label TEXT NOT NULL DEFAULT '',
+        session_id TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        UNIQUE(project_cwd, key)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_browser_tokens_project
+        ON browser_tokens(project_cwd);
     `);
+  }
+
+  // --- Browser tokens (persisted secrets for agent reuse) ---
+
+  upsertBrowserToken(input: {
+    key: string;
+    value: string;
+    projectCwd: string;
+    domain?: string;
+    label?: string;
+    sessionId?: string | null;
+  }): BrowserTokenRecord {
+    const key = input.key.trim();
+    if (!key) throw new Error("token key required");
+    const projectCwd = input.projectCwd || "";
+    const now = Date.now();
+    const existing = this.db
+      .query(
+        `SELECT id, created_at as createdAt FROM browser_tokens
+         WHERE project_cwd = ? AND key = ?`,
+      )
+      .get(projectCwd, key) as { id: string; createdAt: number } | null;
+
+    const id = existing?.id ?? crypto.randomUUID();
+    const createdAt = existing?.createdAt ?? now;
+    this.db
+      .query(
+        `INSERT INTO browser_tokens
+           (id, key, value, project_cwd, domain, label, session_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(project_cwd, key) DO UPDATE SET
+           value = excluded.value,
+           domain = excluded.domain,
+           label = excluded.label,
+           session_id = excluded.session_id,
+           updated_at = excluded.updated_at`,
+      )
+      .run(
+        id,
+        key,
+        input.value,
+        projectCwd,
+        input.domain ?? "",
+        input.label ?? "",
+        input.sessionId ?? null,
+        createdAt,
+        now,
+      );
+    return {
+      id,
+      key,
+      value: input.value,
+      projectCwd,
+      domain: input.domain ?? "",
+      label: input.label ?? "",
+      sessionId: input.sessionId ?? null,
+      createdAt,
+      updatedAt: now,
+    };
+  }
+
+  listBrowserTokens(projectCwd: string): BrowserTokenRecord[] {
+    const rows = this.db
+      .query(
+        `SELECT id, key, value, project_cwd as projectCwd, domain, label,
+                session_id as sessionId, created_at as createdAt, updated_at as updatedAt
+         FROM browser_tokens WHERE project_cwd = ? ORDER BY key ASC`,
+      )
+      .all(projectCwd || "") as BrowserTokenRecord[];
+    return rows;
+  }
+
+  getBrowserToken(
+    projectCwd: string,
+    key: string,
+  ): BrowserTokenRecord | null {
+    const row = this.db
+      .query(
+        `SELECT id, key, value, project_cwd as projectCwd, domain, label,
+                session_id as sessionId, created_at as createdAt, updated_at as updatedAt
+         FROM browser_tokens WHERE project_cwd = ? AND key = ?`,
+      )
+      .get(projectCwd || "", key.trim()) as BrowserTokenRecord | null;
+    return row ?? null;
+  }
+
+  deleteBrowserToken(projectCwd: string, key: string): boolean {
+    const res = this.db
+      .query(`DELETE FROM browser_tokens WHERE project_cwd = ? AND key = ?`)
+      .run(projectCwd || "", key.trim());
+    return res.changes > 0;
   }
 
   listSessions(): SessionSummary[] {

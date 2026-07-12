@@ -320,10 +320,11 @@ export function useAppController() {
 
       const sessionId = activeSessionId;
       // ACP only allows one prompt at a time — queue follow-ups while busy.
-      const sessionBusy =
-        busySessionsRef.current.has(sessionId) ||
-        (connection.status === "prompting" &&
-          (connection.sessionId === sessionId || !connection.sessionId));
+      // Use busySessionsRef only (updated synchronously on send / onTurnEnd).
+      // Do NOT gate on React connection.status: after turn end, status can stay
+      // "prompting" until the next render, which would enqueue forever with no
+      // subsequent onTurnEnd to flush.
+      const sessionBusy = busySessionsRef.current.has(sessionId);
       if (sessionBusy) {
         setPromptQueues((prev) => {
           const next = enqueuePrompt(prev, sessionId, text);
@@ -333,7 +334,8 @@ export function useAppController() {
         return;
       }
 
-      // Idle but leftover queue (e.g. after a failed send): keep FIFO order.
+      // Idle but leftover queue (e.g. after a failed send or a stale-busy race):
+      // keep FIFO order and kick the head immediately.
       if (getQueue(promptQueuesRef.current, sessionId).length > 0) {
         setPromptQueues((prev) => {
           const next = enqueuePrompt(prev, sessionId, text);
@@ -346,14 +348,7 @@ export function useAppController() {
 
       await dispatchPrompt(text, sessionId);
     },
-    [
-      activeSessionId,
-      connection.sessionId,
-      connection.status,
-      dispatchPrompt,
-      flushPromptQueue,
-      handleNewSession,
-    ],
+    [activeSessionId, dispatchPrompt, flushPromptQueue, handleNewSession],
   );
 
   const handleRemoveQueued = useCallback(

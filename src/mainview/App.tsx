@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { Sidebar } from "./components/Sidebar";
 import { Header } from "./components/Header";
 import { Timeline } from "./components/Timeline";
@@ -12,8 +13,12 @@ import { ConnectionBanner } from "./components/ConnectionBanner";
 import { ConfirmDialog } from "./components/ConfirmDialog";
 import { NewSessionDialog } from "./components/NewSessionDialog";
 import { ChatEmptyState } from "./components/ChatEmptyState";
+import { BrowserPanel } from "./components/BrowserPanel";
 import { SidebarResizeHandle } from "./components/SidebarResizeHandle";
+import { setBrowserOpenHandler } from "./browser/open-bridge";
 import { useAppController } from "./hooks/useAppController";
+import { useBrowserPanelResize } from "./hooks/useBrowserPanelResize";
+import { useSessionBrowserState } from "./hooks/useSessionBrowserState";
 import { useSidebarResize } from "./hooks/useSidebarResize";
 import { isRemoteAccessClient } from "./rpc";
 
@@ -26,6 +31,42 @@ export default function App() {
     handleSidebarResizeStart,
     nudgeSidebarWidth,
   } = useSidebarResize();
+  const {
+    browserWidth,
+    isResizingBrowser,
+    handleBrowserResizeStart,
+    nudgeBrowserWidth,
+  } = useBrowserPanelResize();
+  const browser = useSessionBrowserState(app.activeSessionId);
+
+  // Drop browser state for deleted chats.
+  useEffect(() => {
+    browser.pruneSessions(new Set(app.sessions.map((s) => s.id)));
+  }, [app.sessions, browser.pruneSessions]);
+
+  // Agent MCP → open the built-in panel for that chat (and optional URL).
+  // If the agent targets a non-focused chat, switch to it so the user sees
+  // the panel and handlers register under the correct session id.
+  useEffect(() => {
+    setBrowserOpenHandler((sessionId, url) => {
+      browser.openForSession(sessionId, url);
+      if (sessionId !== app.activeSessionId) {
+        void app.handleSwitchSession(sessionId);
+      }
+    });
+    return () => setBrowserOpenHandler(null);
+  }, [browser.openForSession, app.activeSessionId, app.handleSwitchSession]);
+
+  const showBrowser = Boolean(browser.sessionId && browser.open);
+
+  const browserSuppressed =
+    app.showSettings ||
+    app.showSkills ||
+    app.showCommands ||
+    app.showHarness ||
+    app.showRemoteAccess ||
+    app.showNewSession ||
+    Boolean(app.pendingDelete);
 
   return (
     <div
@@ -89,14 +130,14 @@ export default function App() {
         </>
       )}
       <main
-        className={`relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden ${
+        className={`relative flex min-h-0 min-w-0 flex-1 overflow-hidden ${
           remoteClient ? "py-0" : "py-[8px]"
         }`}
       >
         <div
-          className={`relative flex h-full w-full flex-col main-bg ${
+          className={`relative flex h-full min-w-0 flex-1 flex-col main-bg ${
             remoteClient ? "rounded-none" : "rounded-[8px]"
-          }`}
+          } ${showBrowser && !remoteClient ? "rounded-r-none" : ""}`}
         >
           <div className="shrink-0">
             <Header
@@ -107,6 +148,16 @@ export default function App() {
               connection={app.connection}
               onToggleSidebar={() => app.setShowSidebar((s) => !s)}
               onOpenSettings={() => app.setShowSettings(true)}
+              onToggleBrowser={() => {
+                // Always show the control; without an active chat, open New task.
+                if (!app.activeSessionId) {
+                  void app.handleNewSession();
+                  return;
+                }
+                browser.toggle();
+              }}
+              browserOpen={showBrowser}
+              browserEnabled={Boolean(app.activeSessionId)}
               canReview={app.canReviewSession}
               reviewBusy={app.reviewBusy}
               onReviewInNewSession={() => void app.handleReviewInNewSession()}
@@ -278,6 +329,36 @@ export default function App() {
             />
           )}
         </div>
+        {showBrowser && browser.sessionId && (
+          <div
+            className={`flex h-full min-h-0 shrink-0 ${
+              remoteClient ? "" : "pr-[8px]"
+            }`}
+          >
+            <div
+              className={`flex h-full min-h-0 overflow-hidden main-bg ${
+                remoteClient ? "rounded-none" : "rounded-r-[8px]"
+              }`}
+            >
+              <BrowserPanel
+                key={browser.sessionId}
+                sessionId={browser.sessionId}
+                url={browser.url}
+                onUrlChange={browser.setUrl}
+                width={
+                  remoteClient
+                    ? Math.min(browserWidth, 360)
+                    : browserWidth
+                }
+                isResizing={isResizingBrowser}
+                onResizeStart={handleBrowserResizeStart}
+                onNudge={nudgeBrowserWidth}
+                onClose={() => browser.setOpen(false)}
+                suppressNative={browserSuppressed}
+              />
+            </div>
+          </div>
+        )}
       </main>
     </div>
   );

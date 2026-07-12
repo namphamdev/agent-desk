@@ -1,4 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  RiAddLine,
+  RiArrowDownSLine,
+  RiArrowUpSLine,
+  RiDeleteBinLine,
+  RiDownloadLine,
+  RiFolderLine,
+  RiMore2Line,
+  RiSearchLine,
+  RiSettings3Line,
+  RiSmartphoneLine,
+  RiSparklingLine,
+  RiTerminalLine,
+} from "react-icons/ri";
 import type { SessionSummary } from "../../shared/rpc";
 
 type WindowControlAction = "close" | "minimize" | "maximize";
@@ -183,21 +197,21 @@ export function Sidebar({
 
       <div className="electrobun-webkit-app-region-no-drag space-y-1 p-3">
         <QuickAction
-          icon={<PlusIcon />}
+          icon={<RiAddLine className="h-4 w-4" aria-hidden />}
           label="New task"
           shortcut="⌘ N"
           onClick={onNew}
           title="Choose a project folder, workflow, and start a chat"
         />
         <QuickAction
-          icon={<SearchIcon />}
+          icon={<RiSearchLine className="h-4 w-4" aria-hidden />}
           label="Search"
           shortcut="⌘ K"
           onClick={() => setSearchOpen((o) => !o)}
         />
         {onOpenSkills && (
           <QuickAction
-            icon={<SkillsIcon />}
+            icon={<RiSparklingLine className="h-4 w-4" aria-hidden />}
             label="Skills"
             onClick={onOpenSkills}
             title="Install and manage agent skills"
@@ -205,7 +219,7 @@ export function Sidebar({
         )}
         {onOpenCommands && (
           <QuickAction
-            icon={<CommandsIcon />}
+            icon={<RiTerminalLine className="h-4 w-4" aria-hidden />}
             label="Commands"
             onClick={onOpenCommands}
             title="Save and run shell commands, view logs"
@@ -253,12 +267,13 @@ export function Sidebar({
                 aria-expanded={!isCollapsed}
                 title={isCollapsed ? "Expand" : "Collapse"}
               >
-                <ChevronIcon
+                <RiArrowDownSLine
                   className={`mr-1 h-3 w-3 shrink-0 transition-transform ${
                     isCollapsed ? "-rotate-90" : ""
                   }`}
+                  aria-hidden
                 />
-                <FolderIcon />
+                <RiFolderLine className="mr-1 h-3 w-3" aria-hidden />
                 <span className="truncate">{project}</span>
               </button>
               <div
@@ -283,7 +298,7 @@ export function Sidebar({
                     menuOpen ? "bg-[#2a2a2a] text-gray-200" : ""
                   }`}
                 >
-                  <MoreMiniIcon />
+                  <RiMore2Line className="h-3.5 w-3.5" aria-hidden />
                 </button>
                 {menuOpen && (
                   <div
@@ -300,7 +315,7 @@ export function Sidebar({
                         onOpenHarness?.(project);
                       }}
                     >
-                      <HarnessMiniIcon />
+                      <RiSparklingLine className="h-3.5 w-3.5 shrink-0" aria-hidden />
                       AI harness
                     </button>
                     <button
@@ -312,7 +327,7 @@ export function Sidebar({
                         onNewInProject?.(project);
                       }}
                     >
-                      <PlusMiniIcon />
+                      <RiAddLine className="h-3.5 w-3.5 shrink-0" aria-hidden />
                       New task
                     </button>
                     <div className="my-1 border-t border-[#2e2e2e]" />
@@ -326,7 +341,7 @@ export function Sidebar({
                         // Keep menu open so you can move multiple steps.
                       }}
                     >
-                      <ChevronUpMiniIcon />
+                      <RiArrowUpSLine className="h-3.5 w-3.5 shrink-0" aria-hidden />
                       Move up
                     </button>
                     <button
@@ -338,7 +353,7 @@ export function Sidebar({
                         moveProject(project, 1);
                       }}
                     >
-                      <ChevronDownMiniIcon />
+                      <RiArrowDownSLine className="h-3.5 w-3.5 shrink-0" aria-hidden />
                       Move down
                     </button>
                     <div className="my-1 border-t border-[#2e2e2e]" />
@@ -351,7 +366,7 @@ export function Sidebar({
                         onDeleteProject?.(project);
                       }}
                     >
-                      <TrashIcon />
+                      <RiDeleteBinLine className="h-3.5 w-3.5 shrink-0" aria-hidden />
                       Delete
                     </button>
                   </div>
@@ -417,7 +432,7 @@ export function Sidebar({
                             }}
                             className="text-gray-500 hover:text-amber-400"
                           >
-                            <OffloadMiniIcon />
+                            <RiDownloadLine className="h-3.5 w-3.5" aria-hidden />
                           </button>
                         )}
                         <button
@@ -430,7 +445,7 @@ export function Sidebar({
                           }}
                           className="text-gray-500 hover:text-red-400"
                         >
-                          <TrashMiniIcon />
+                          <RiDeleteBinLine className="h-3.5 w-3.5" aria-hidden />
                         </button>
                       </span>
                     </span>
@@ -480,7 +495,7 @@ export function Sidebar({
               aria-label="Remote access"
               title="Remote access — open on phone"
             >
-              <PhoneIcon />
+              <RiSmartphoneLine className="h-5 w-5" aria-hidden />
             </button>
           )}
           <button
@@ -490,7 +505,7 @@ export function Sidebar({
             aria-label="Settings"
             title="Settings"
           >
-            <CogIcon />
+            <RiSettings3Line className="h-5 w-5" aria-hidden />
           </button>
         </div>
       </div>
@@ -526,112 +541,4 @@ function QuickAction({
   );
 }
 
-const s = {
-  className: "h-4 w-4",
-  fill: "none",
-  stroke: "currentColor",
-  viewBox: "0 0 24 24",
-  strokeWidth: 2,
-  strokeLinecap: "round" as const,
-  strokeLinejoin: "round" as const,
-};
-const PlusIcon = () => (
-  <svg {...s}>
-    <path d="M12 4v16m8-8H4" />
-  </svg>
-);
-const PlusMiniIcon = () => (
-  <svg {...s} className="h-3.5 w-3.5 shrink-0">
-    <path d="M12 5v14M5 12h14" />
-  </svg>
-);
-const ChevronUpMiniIcon = () => (
-  <svg {...s} className="h-3.5 w-3.5 shrink-0">
-    <path d="M18 15l-6-6-6 6" />
-  </svg>
-);
-const ChevronDownMiniIcon = () => (
-  <svg {...s} className="h-3.5 w-3.5 shrink-0">
-    <path d="M6 9l6 6 6-6" />
-  </svg>
-);
-/** Three-dot overflow menu for project actions. */
-const MoreMiniIcon = () => (
-  <svg {...s} className="h-3.5 w-3.5">
-    <circle cx="12" cy="5" r="1.25" fill="currentColor" stroke="none" />
-    <circle cx="12" cy="12" r="1.25" fill="currentColor" stroke="none" />
-    <circle cx="12" cy="19" r="1.25" fill="currentColor" stroke="none" />
-  </svg>
-);
-const TrashMiniIcon = () => (
-  <svg {...s} className="h-3.5 w-3.5">
-    <path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2" />
-  </svg>
-);
-/** Arrow-into-tray: unload agent process without deleting the chat. */
-const OffloadMiniIcon = () => (
-  <svg {...s} className="h-3.5 w-3.5">
-    <path d="M12 3v12m0 0l-4-4m4 4l4-4M4 19h16" />
-  </svg>
-);
-/** Circuit / spark — project AI harness. */
-const HarnessMiniIcon = () => (
-  <svg {...s} className="h-3.5 w-3.5 shrink-0">
-    <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83" />
-    <circle cx="12" cy="12" r="3" />
-  </svg>
-);
-const ChevronIcon = ({ className }: { className?: string }) => (
-  <svg
-    {...s}
-    className={className}
-    fill="none"
-    stroke="currentColor"
-    viewBox="0 0 24 24"
-  >
-    <path d="M6 9l6 6 6-6" />
-  </svg>
-);
-const TrashIcon = () => (
-  <svg {...s} className="h-3.5 w-3.5 shrink-0">
-    <path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2" />
-  </svg>
-);
-const SearchIcon = () => (
-  <svg {...s}>
-    <path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-  </svg>
-);
-const FolderIcon = () => (
-  <svg {...s} className="mr-1 h-3 w-3">
-    <path d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
-  </svg>
-);
-const CogIcon = () => (
-  <svg {...s} className="h-5 w-5">
-    <path d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-    <path d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-  </svg>
-);
-/** Phone / remote access — outline smartphone. */
-const PhoneIcon = () => (
-  <svg {...s} className="h-5 w-5">
-    <rect x="7" y="2" width="10" height="20" rx="2" />
-    <path d="M11 18h2" />
-  </svg>
-);
-/** Sparkles — agent skills. */
-const SkillsIcon = () => (
-  <svg {...s}>
-    <path d="M12 3l1.5 4.5L18 9l-4.5 1.5L12 15l-1.5-4.5L6 9l4.5-1.5L12 3z" />
-    <path d="M19 14l.75 2.25L22 17l-2.25.75L19 20l-.75-2.25L16 17l2.25-.75L19 14z" />
-    <path d="M5 14l.5 1.5L7 16l-1.5.5L5 18l-.5-1.5L3 16l1.5-.5L5 14z" />
-  </svg>
-);
-/** Terminal prompt — user command panel. */
-const CommandsIcon = () => (
-  <svg {...s}>
-    <path d="M4 17l6-5-6-5" />
-    <path d="M12 19h8" />
-  </svg>
-);
+

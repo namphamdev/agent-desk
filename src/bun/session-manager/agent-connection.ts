@@ -19,6 +19,7 @@ import {
   normalizeModelAlias,
   providerConnectionKey,
   resolveActiveProvider,
+  withBrowserMcpAlwaysLoaded,
 } from "../providers";
 import type { SessionStore } from "../store";
 import type {
@@ -37,6 +38,8 @@ export type AgentConnectionHost = {
   queuePermission: (
     params: RequestPermissionRequest & { requestId: string },
   ) => Promise<RequestPermissionResponse>;
+  /** Built-in browser control plane (in-app panel MCP). */
+  getBrowserControl?: () => { url: string; token: string } | null;
 };
 
 export class AgentConnection {
@@ -188,6 +191,7 @@ export class AgentConnection {
         "sonnet",
       );
       const providerEnv = buildProviderEnv(provider, modelAlias);
+      // Always attach meta: browser MCP system append + ToolSearch disabled.
       const sessionMeta = buildClaudeCodeSessionMeta(provider, modelAlias);
       if (provider) {
         console.log(
@@ -202,14 +206,23 @@ export class AgentConnection {
         );
       } else {
         console.log(
-          "[acp] spawning without app provider (Claude Code user settings apply)",
+          "[acp] spawning without app provider (browser MCP still registered per session)",
         );
       }
 
+      const browserControl = this.host.getBrowserControl?.() ?? null;
+      if (!browserControl) {
+        console.warn(
+          "[acp] browser control plane unavailable — in-app browser MCP will not register",
+        );
+      }
       const client = new AcpClient(
         agent,
         {
           enableFs: this.host.settings.enableFsCapabilities,
+          enableBrowserMcp:
+            this.host.settings.enableBrowserMcp !== false && !!browserControl,
+          ...(browserControl ? { browserControl } : {}),
           onUpdate: (sessionId, update) => {
             const localId = this.agentToLocal.get(sessionId) ?? sessionId;
             // We persist user messages ourselves in sendPrompt. Skip any the
@@ -282,8 +295,9 @@ export class AgentConnection {
           },
         },
         {
-          ...(providerEnv ? { env: providerEnv } : {}),
-          ...(sessionMeta ? { sessionMeta } : {}),
+          // Always surface browser MCP tools (disable deferred tool search).
+          env: withBrowserMcpAlwaysLoaded(providerEnv ?? {}),
+          sessionMeta,
         },
       );
 
@@ -337,7 +351,9 @@ export class AgentConnection {
       other.handle = null;
     }
 
-    const handle = await this.client.openSession(cwd ?? live.summary.cwd);
+    const handle = await this.client.openSession(cwd ?? live.summary.cwd, {
+      localSessionId: sessionId,
+    });
     // Map agent session id → local id before draining updates so early
     // notifications (available_commands_update, config_option_update, …)
     // land on the correct live session.
@@ -346,7 +362,7 @@ export class AgentConnection {
     // Apply session/new config options now that agent→local mapping is ready.
     let configOptions = handle.configOptions;
 
-    // Push user defaults (thinking level, model) before the UI sees options.
+    // Push user defaults (thinking level, permission mode, model) before the UI sees options.
     configOptions = await applyPreferredConfigDefaults(
       handle,
       configOptions,

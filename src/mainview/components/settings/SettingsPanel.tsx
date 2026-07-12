@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { RiCloseLine } from "react-icons/ri";
 import type { AppSettings, ProviderConfig } from "../../../shared/rpc";
 import {
   formatSymlinkPathsText,
@@ -152,7 +153,7 @@ export function SettingsPanel({
             className="rounded p-1 text-gray-500 hover:bg-[#2a2a2a] hover:text-gray-200"
             aria-label="Close settings"
           >
-            ✕
+            <RiCloseLine className="h-4 w-4" aria-hidden />
           </button>
         </div>
 

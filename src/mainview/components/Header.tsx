@@ -1,3 +1,11 @@
+import {
+  RiFileList3Line,
+  RiFolderLine,
+  RiGitBranchLine,
+  RiGlobalLine,
+  RiMenuLine,
+  RiSettings3Line,
+} from "react-icons/ri";
 import type { ConnectionStatePayload } from "../../shared/rpc";
 
 type WindowControlAction = "close" | "minimize" | "maximize";
@@ -12,6 +20,15 @@ interface HeaderProps {
   connection?: ConnectionStatePayload;
   onToggleSidebar?: () => void;
   onOpenSettings?: () => void;
+  /** Toggle the built-in browser panel (right of the chat view). */
+  onToggleBrowser?: () => void;
+  /** Whether the browser panel is open (styles the header control). */
+  browserOpen?: boolean;
+  /**
+   * When false, the control stays visible but indicates no active chat
+   * (click still runs onToggleBrowser — typically opens New task).
+   */
+  browserEnabled?: boolean;
   /**
    * Summarize this session's work and open a new chat to review it.
    * Only shown when `canReview` is true.
@@ -62,6 +79,9 @@ export function Header({
   connection,
   onToggleSidebar,
   onOpenSettings,
+  onToggleBrowser,
+  browserOpen = false,
+  browserEnabled = true,
   onReviewInNewSession,
   canReview = false,
   reviewBusy = false,
@@ -122,19 +142,7 @@ export function Header({
           }`}
           aria-label="Toggle sidebar"
         >
-          <svg
-            className="h-5 w-5"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-            strokeWidth={2}
-          >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              d="M4 6h16M4 12h16M4 18h16"
-            />
-          </svg>
+          <RiMenuLine className="h-5 w-5" aria-hidden />
         </button>
 
         {/* Title + meta: stacked on narrow screens, row on sm+.
@@ -155,17 +163,10 @@ export function Header({
                 className="flex min-w-0 max-w-[40vw] items-center truncate rounded bg-[#2a2a2a] px-1.5 py-0.5 sm:max-w-[180px] sm:px-2 sm:py-1"
                 title={cwd || project}
               >
-                <svg
+                <RiFolderLine
                   className="mr-1 hidden h-3 w-3 shrink-0 sm:block"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                  strokeWidth={2}
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                >
-                  <path d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
-                </svg>
+                  aria-hidden
+                />
                 <span className="truncate">{projectLabel}</span>
               </span>
             )}
@@ -174,17 +175,7 @@ export function Header({
                 className="hidden max-w-[100px] items-center truncate rounded bg-[#2a2a2a] px-2 py-1 sm:flex"
                 title={`Git branch: ${branch}`}
               >
-                <svg
-                  className="mr-1 h-3 w-3 shrink-0"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                  strokeWidth={2}
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                >
-                  <path d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
-                </svg>
+                <RiGitBranchLine className="mr-1 h-3 w-3 shrink-0" aria-hidden />
                 <span className="truncate">{branch}</span>
               </span>
             )}
@@ -226,23 +217,36 @@ export function Header({
             title="Summarize this session's work and open a new chat to review it"
             aria-label="Review changes in new session"
           >
-            <svg
-              className="h-3.5 w-3.5 shrink-0"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-              strokeWidth={2}
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              aria-hidden
-            >
-              <path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2" />
-              <path d="M9 5a2 2 0 012-2h2a2 2 0 012 2v0a2 2 0 01-2 2h-2a2 2 0 01-2-2v0z" />
-              <path d="M9 12h6M9 16h4" />
-            </svg>
+            <RiFileList3Line className="h-3.5 w-3.5 shrink-0" aria-hidden />
             <span className="hidden sm:inline">
               {reviewBusy ? "Starting…" : "Review"}
             </span>
+          </button>
+        )}
+        {onToggleBrowser && (
+          <button
+            type="button"
+            className={`rounded p-1.5 hover:bg-[#2a2a2a] hover:text-gray-200 ${
+              browserOpen ? "bg-[#2a2a2a] text-sky-300" : ""
+            } ${!browserEnabled ? "opacity-60" : ""}`}
+            onClick={onToggleBrowser}
+            aria-label={
+              !browserEnabled
+                ? "Open a chat to use the browser"
+                : browserOpen
+                  ? "Close browser panel"
+                  : "Open browser panel"
+            }
+            aria-pressed={browserOpen}
+            title={
+              !browserEnabled
+                ? "Create or select a chat, then open the built-in browser"
+                : browserOpen
+                  ? "Close browser panel"
+                  : "Open built-in browser panel"
+            }
+          >
+            <RiGlobalLine className="h-5 w-5" aria-hidden />
           </button>
         )}
         <button
@@ -251,18 +255,7 @@ export function Header({
           onClick={onOpenSettings}
           aria-label="Settings"
         >
-          <svg
-            className="h-5 w-5"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-            strokeWidth={2}
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          >
-            <path d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-            <path d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-          </svg>
+          <RiSettings3Line className="h-5 w-5" aria-hidden />
         </button>
       </div>
     </header>
