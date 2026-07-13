@@ -131,6 +131,102 @@ async function pickFolderDialog(startingFolder?: string): Promise<
   }
 }
 
+/** Escape a string for AppleScript double-quoted literals. */
+function appleScriptString(value: string): string {
+  return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+}
+
+/**
+ * Native Save As path picker.
+ * macOS: NSSavePanel via osascript `choose file name`.
+ * Other platforms: folder picker + default file name.
+ */
+async function pickSaveFilePath(opts: {
+  defaultName: string;
+  startingFolder?: string;
+  prompt?: string;
+}): Promise<
+  | { ok: true; path: string }
+  | { ok: false; cancelled?: boolean; error?: string }
+> {
+  const defaultName =
+    opts.defaultName.trim() || "export.json";
+  const prompt = opts.prompt?.trim() || "Save As";
+  const start =
+    opts.startingFolder?.trim() ||
+    manager?.getSettings()?.lastProjectCwd ||
+    process.cwd() ||
+    homedir();
+
+  if (process.platform === "darwin") {
+    try {
+      const script = [
+        "try",
+        `set theName to ${appleScriptString(defaultName)}`,
+        `set thePrompt to ${appleScriptString(prompt)}`,
+        `set theLoc to POSIX file ${appleScriptString(start)}`,
+        "set theFile to choose file name with prompt thePrompt default name theName default location theLoc",
+        "return POSIX path of theFile",
+        "on error number -128",
+        'return ""',
+        "end try",
+      ].join("\n");
+      const proc = Bun.spawn(["osascript", "-e", script], {
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const [stdout, stderr, exitCode] = await Promise.all([
+        new Response(proc.stdout).text(),
+        new Response(proc.stderr).text(),
+        proc.exited,
+      ]);
+      const path = stdout.trim();
+      if (path) return { ok: true, path };
+      if (exitCode === 0) return { ok: false, cancelled: true };
+      const err = stderr.trim() || `osascript exited ${exitCode}`;
+      if (/user canceled|cancelled|canceled|-128/i.test(err)) {
+        return { ok: false, cancelled: true };
+      }
+      return { ok: false, error: err };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (/null|cancelled|canceled/i.test(message)) {
+        return { ok: false, cancelled: true };
+      }
+      return { ok: false, error: message };
+    }
+  }
+
+  // No native save panel in Electrobun — pick a folder and use defaultName.
+  const folder = await pickFolderDialog(start);
+  if (!folder.ok) return folder;
+  return { ok: true, path: join(folder.path, defaultName) };
+}
+
+async function saveTextFileDialog(params: {
+  content: string;
+  defaultName: string;
+  startingFolder?: string;
+  prompt?: string;
+}): Promise<
+  | { ok: true; path: string }
+  | { ok: false; cancelled?: boolean; error?: string }
+> {
+  const picked = await pickSaveFilePath({
+    defaultName: params.defaultName,
+    startingFolder: params.startingFolder,
+    prompt: params.prompt,
+  });
+  if (!picked.ok) return picked;
+  try {
+    await Bun.write(picked.path, params.content ?? "");
+    return { ok: true, path: picked.path };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { ok: false, error: message };
+  }
+}
+
 const DEV_SERVER_URL = "http://localhost:5173";
 
 async function resolveMainViewUrl(): Promise<string> {
@@ -249,6 +345,14 @@ const terminalRPC = BrowserView.defineRPC<TerminalRPC>({
       },
       pickFolder: async (params) => {
         return pickFolderDialog(params?.startingFolder);
+      },
+      saveTextFile: async (params) => {
+        return saveTextFileDialog({
+          content: params.content,
+          defaultName: params.defaultName,
+          startingFolder: params.startingFolder,
+          prompt: params.prompt,
+        });
       },
       listRecentProjects: async () => {
         return { projects: manager.listRecentProjects() };

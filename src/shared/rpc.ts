@@ -446,6 +446,22 @@ export type TerminalRPC = {
           | { ok: true; path: string }
           | { ok: false; cancelled?: boolean; error?: string };
       };
+      /**
+       * Native Save As dialog, then write text to the chosen path.
+       * Desktop only (remote clients get an error).
+       */
+      saveTextFile: {
+        params: {
+          content: string;
+          defaultName: string;
+          startingFolder?: string;
+          /** Dialog title / prompt when supported. */
+          prompt?: string;
+        };
+        response:
+          | { ok: true; path: string }
+          | { ok: false; cancelled?: boolean; error?: string };
+      };
       listRecentProjects: {
         params: void;
         response: { projects: RecentProject[] };

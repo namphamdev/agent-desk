@@ -674,6 +674,12 @@ export class RemoteAccessServer {
           error:
             "Folder picker is only available on the desktop app. Paste the project path instead.",
         };
+      case "saveTextFile":
+        return {
+          ok: false as const,
+          error:
+            "Save dialog is only available on the desktop app.",
+        };
       case "listRecentProjects":
         return h.listRecentProjects();
       case "removeRecentProject":

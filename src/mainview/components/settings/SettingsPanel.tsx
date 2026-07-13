@@ -9,6 +9,7 @@ import {
   formatSymlinkPathsText,
   parseSymlinkPathsText,
 } from "../../../shared/worktree-paths";
+import { getRpc } from "../../rpc";
 import { RemoteAccessControls } from "../RemoteAccessPanel";
 import { AlertsTab } from "./AlertsTab";
 import { BASE_TABS, newProviderLocal } from "./constants";
@@ -137,20 +138,32 @@ export function SettingsPanel({
     });
   };
 
-  const exportProviders = () => {
+  const exportProviders = async () => {
     const json = serializeProvidersExport({
       providers: draft.providers ?? [],
       activeProviderId: draft.activeProviderId ?? null,
       activeModelAlias: draft.activeModelAlias ?? "sonnet",
     });
-    const blob = new Blob([json], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "terminal-react-providers.json";
-    a.click();
-    URL.revokeObjectURL(url);
     setProvidersImportMessage(null);
+    try {
+      const res = await getRpc().request.saveTextFile({
+        content: json,
+        defaultName: "terminal-react-providers.json",
+        prompt: "Export providers",
+      });
+      if (res.ok) {
+        setProvidersImportMessage(`Exported to ${res.path}`);
+        return;
+      }
+      if (res.cancelled) {
+        setProvidersImportMessage(null);
+        return;
+      }
+      setProvidersImportMessage(res.error ?? "Export failed");
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setProvidersImportMessage(message || "Export failed");
+    }
   };
 
   const importProviders = (fileText: string) => {

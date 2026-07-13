@@ -16,7 +16,7 @@ type Props = {
   onUpdate: (id: string, patch: Partial<ProviderConfig>) => void;
   onSetActive: (id: string | null) => void;
   onSetAlias: (alias: ClaudeModelAlias) => void;
-  onExport: () => void;
+  onExport: () => void | Promise<void>;
   onImport: (fileText: string) => void;
   importMessage?: string | null;
 };
@@ -51,7 +51,7 @@ export function ProvidersTab({
       <div className="flex flex-wrap items-center gap-2">
         <button
           type="button"
-          onClick={onExport}
+          onClick={() => void onExport()}
           disabled={providers.length === 0}
           className="rounded-md border border-[#333] px-2.5 py-1 text-xs text-gray-300 hover:bg-[#2a2a2a] disabled:opacity-40"
         >
@@ -83,7 +83,8 @@ export function ProvidersTab({
       {importMessage && (
         <p
           className={`text-[11px] ${
-            importMessage.startsWith("Imported")
+            importMessage.startsWith("Imported") ||
+            importMessage.startsWith("Exported")
               ? "text-emerald-500"
               : "text-red-400"
           }`}

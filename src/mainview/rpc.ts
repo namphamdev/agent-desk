@@ -111,6 +111,15 @@ type RpcClient = {
       | { ok: true; path: string }
       | { ok: false; cancelled?: boolean; error?: string }
     >;
+    saveTextFile: (p: {
+      content: string;
+      defaultName: string;
+      startingFolder?: string;
+      prompt?: string;
+    }) => Promise<
+      | { ok: true; path: string }
+      | { ok: false; cancelled?: boolean; error?: string }
+    >;
     listRecentProjects: () => Promise<{ projects: RecentProject[] }>;
     removeRecentProject: (p: {
       cwd: string;
@@ -531,6 +540,8 @@ function createRemoteWsClient(code: string): RpcClient {
         request("connectAgent", (p ?? {}) as Record<string, unknown>),
       pickFolder: (p) =>
         request("pickFolder", (p ?? {}) as Record<string, unknown>),
+      saveTextFile: (p) =>
+        request("saveTextFile", p as Record<string, unknown>),
       listRecentProjects: () => request("listRecentProjects"),
       removeRecentProject: (p) =>
         request("removeRecentProject", p as Record<string, unknown>),
@@ -792,6 +803,27 @@ function createBrowserMock(): RpcClient {
         );
         if (!path?.trim()) return { ok: false as const, cancelled: true };
         return { ok: true as const, path: path.trim() };
+      },
+      async saveTextFile(params: {
+        content: string;
+        defaultName: string;
+        startingFolder?: string;
+        prompt?: string;
+      }) {
+        // Browser mock: trigger a download (no native Save As in pure web).
+        const blob = new Blob([params.content ?? ""], {
+          type: "application/json",
+        });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = params.defaultName || "export.json";
+        a.click();
+        URL.revokeObjectURL(url);
+        return {
+          ok: true as const,
+          path: params.defaultName || "export.json",
+        };
       },
       async listRecentProjects() {
         const seen = new Set<string>();
