@@ -22,3 +22,8 @@
 - Symptom: always-loaded memory becomes huge
 - Cause: one-file memory pattern
 - Fix: use sharded `docs/memory/` (INDEX + topics + journal) — ADR 0002
+
+### Windows resize click-through after enlarge (2026-07)
+- Symptom: after growing the window on Windows, clicks in the new area pass through to windows behind
+- Cause: Electrobun `transparent: true` uses layered windows; expanded client area stays non-hittable until/while WebView2 bounds lag
+- Fix / avoid: keep `transparent: false` on `win32` (`src/bun/index.ts`); macOS can stay transparent for rounded corners. Prefer `titleBarStyle: "hiddenInset"` on Windows so the frame stays resizable.

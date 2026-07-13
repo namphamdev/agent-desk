@@ -410,7 +410,9 @@ export class AcpClient {
     const pending = this.pendingPrompt;
     this.pendingPrompt = null;
     if (pending) {
-      pending.reject(new Error("session disposed"));
+      // Session was switched/offloaded/disposed while a prompt was open.
+      // Resolve as cancelled so callers don't surface a fake connection error.
+      pending.resolve({ stopReason: "cancelled" });
     }
   }
 

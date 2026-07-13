@@ -168,6 +168,8 @@ vi.mock("./acp-client", () => {
       const sessionId = `mock-${++mockSessionSeq}-${Date.now()}`;
       const h = this.handlers;
       let cancelled = false;
+      /** Mirrors AcpClient: dispose while prompting ends the turn as cancelled. */
+      let pendingReject: ((err: unknown) => void) | null = null;
       const configOptions = mockConfigOptions.map((o) =>
         o.type === "select"
           ? { ...o, options: o.options.map((opt) => ({ ...opt })) }
@@ -185,17 +187,34 @@ vi.mock("./acp-client", () => {
             sessionUpdate: "user_message_chunk",
             content: { type: "text", text },
           });
-          for (const update of demoUpdates) {
-            if (cancelled) {
-              h.onTurnEnd?.(sessionId, "cancelled");
+          try {
+            for (const update of demoUpdates) {
+              if (cancelled) {
+                h.onTurnEnd?.(sessionId, "cancelled");
+                return { stopReason: "cancelled" };
+              }
+              if (update.sessionUpdate === "user_message_chunk") continue;
+              h.onUpdate(sessionId, update);
+              await new Promise<void>((resolve, reject) => {
+                pendingReject = reject;
+                setTimeout(() => {
+                  pendingReject = null;
+                  resolve();
+                }, 5);
+              });
+            }
+            h.onTurnEnd?.(sessionId, "end_turn");
+            return { stopReason: "end_turn" };
+          } catch (err) {
+            // dispose() may reject with "session disposed" (legacy) or resolve
+            // via cancelled flag — both must not become connection errors.
+            if (err instanceof Error && /session disposed/i.test(err.message)) {
               return { stopReason: "cancelled" };
             }
-            if (update.sessionUpdate === "user_message_chunk") continue;
-            h.onUpdate(sessionId, update);
-            await Bun.sleep(5);
+            throw err;
+          } finally {
+            pendingReject = null;
           }
-          h.onTurnEnd?.(sessionId, "end_turn");
-          return { stopReason: "end_turn" };
         },
         async cancel() {
           cancelled = true;
@@ -214,6 +233,11 @@ vi.mock("./acp-client", () => {
         },
         dispose() {
           cancelled = true;
+          // Match prior AcpClient stopUpdatePump rejection so the catch path
+          // for lifecycle races is exercised by offload/switch tests.
+          const reject = pendingReject;
+          pendingReject = null;
+          reject?.(new Error("session disposed"));
         },
       };
     }

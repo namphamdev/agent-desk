@@ -603,12 +603,45 @@ export class SessionManager {
     // Don't await the full turn — stream via events. But we should catch errors.
     void live.handle
       .prompt(promptText)
-      .then(() => {
+      .then((result) => {
         live.prompting = false;
+        // If the session was disposed mid-prompt, stopUpdatePump resolves with
+        // cancelled and onTurnEnd may not run — restore a non-error state.
+        if (
+          result.stopReason === "cancelled" &&
+          this.activeSessionId === id &&
+          this.conn.connectionState.status === "prompting"
+        ) {
+          this.conn.setConnection({
+            status: this.conn.client ? "ready" : "idle",
+            agentName: this.conn.connectionState.agentName,
+            sessionId: id,
+          });
+        }
       })
       .catch((err) => {
         live.prompting = false;
         const message = err instanceof Error ? err.message : String(err);
+        // Benign lifecycle races (switch/offload/dispose while prompting).
+        // Do not paint the connection banner as if the agent binary is broken.
+        if (
+          /session disposed|session is not active|a prompt is already in progress/i.test(
+            message,
+          )
+        ) {
+          console.warn("[session-manager] prompt interrupted:", message);
+          if (
+            this.activeSessionId === id &&
+            this.conn.connectionState.status === "prompting"
+          ) {
+            this.conn.setConnection({
+              status: this.conn.client ? "ready" : "idle",
+              agentName: this.conn.connectionState.agentName,
+              sessionId: id,
+            });
+          }
+          return;
+        }
         console.error("[session-manager] prompt failed:", message);
         this.conn.setConnection({
           status: "error",

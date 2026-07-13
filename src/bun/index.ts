@@ -799,11 +799,25 @@ installApplicationMenu();
 const url = await resolveMainViewUrl();
 
 // Custom chrome: hide system titlebar; Sidebar traffic lights control the window.
-// Transparent so CSS can round the window corners.
 //
 // On Windows, Electrobun maps titleBarStyle "hidden" to WS_POPUP with no
 // WS_THICKFRAME, so the window cannot be resized. "hiddenInset" keeps
 // CAPTION|THICKFRAME (and DWM shadow) while still removing the caption bar.
+//
+// Also disable transparent windows on Windows: layered/transparent HWNDs leave
+// newly enlarged client areas click-through (hits fall through to the window
+// behind) when WebView2 bounds lag the frame. Opaque windows still receive
+// mouse input. macOS keeps transparent for CSS-rounded corners.
+// Custom chrome: hide system titlebar; Sidebar traffic lights control the window.
+//
+// On Windows, Electrobun maps titleBarStyle "hidden" to WS_POPUP with no
+// WS_THICKFRAME, so the window cannot be resized. "hiddenInset" keeps
+// CAPTION|THICKFRAME (and DWM shadow) while still removing the caption bar.
+//
+// Also disable transparent windows on Windows: layered/transparent HWNDs leave
+// newly enlarged client areas click-through (hits fall through to the window
+// behind) when WebView2 bounds lag the frame. Opaque windows still receive
+// mouse input. macOS keeps transparent for CSS-rounded corners.
 const isWindows = process.platform === "win32";
 
 mainWindow = new BrowserWindow({
@@ -811,7 +825,7 @@ mainWindow = new BrowserWindow({
   url,
   rpc: terminalRPC,
   titleBarStyle: isWindows ? "hiddenInset" : "hidden",
-  transparent: true,
+  transparent: !isWindows,
   frame: {
     width: 1280,
     height: 840,
