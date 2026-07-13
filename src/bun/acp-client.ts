@@ -676,9 +676,29 @@ export class AcpClient {
  * Sum RSS for `rootPid` and its descendant processes (KB from `ps` → bytes).
  * Caps the walk so a pathological process tree can't hang the poll loop.
  */
-async function sampleProcessTreeRssBytes(rootPid: number): Promise<number | null> {
+export async function sampleProcessTreeRssBytes(rootPid: number): Promise<number | null> {
   const pids = await collectDescendantPids(rootPid, 64);
   if (pids.length === 0) return null;
+
+  if (process.platform === "win32") {
+    // Get-Process emits WorkingSet64 (bytes). SilentlyContinue so a pid that
+    // exited between the tree walk and this sample doesn't fail the whole call.
+    const proc = spawn({
+      cmd: [
+        "powershell",
+        "-NoProfile",
+        "-Command",
+        `Get-Process -Id ${pids.join(",")} -ErrorAction SilentlyContinue | Measure-Object -Property WorkingSet64 -Sum | Select-Object -ExpandProperty Sum`,
+      ],
+      stdout: "pipe",
+      stderr: "ignore",
+      stdin: "ignore",
+    });
+    const out = await new Response(proc.stdout).text();
+    await proc.exited;
+    const bytes = Number.parseInt(out.trim(), 10);
+    return Number.isFinite(bytes) && bytes > 0 ? bytes : null;
+  }
 
   // `ps -o rss=` prints one RSS (kilobytes) per pid, space/newline separated.
   const proc = spawn({
@@ -702,23 +722,36 @@ async function sampleProcessTreeRssBytes(rootPid: number): Promise<number | null
   return sawAny ? totalKb * 1024 : null;
 }
 
-async function collectDescendantPids(
+export async function collectDescendantPids(
   rootPid: number,
   maxPids: number,
 ): Promise<number[]> {
   const result: number[] = [rootPid];
-  const queue = [rootPid];
+  const queue: number[] = [rootPid];
   const seen = new Set<number>([rootPid]);
+  const onWindows = process.platform === "win32";
 
   while (queue.length > 0 && result.length < maxPids) {
     const parent = queue.shift()!;
-    // Prefer pgrep -P (children of parent). Available on macOS + most Linux.
-    const proc = spawn({
-      cmd: ["pgrep", "-P", String(parent)],
-      stdout: "pipe",
-      stderr: "ignore",
-      stdin: "ignore",
-    });
+    // Windows has no pgrep/ps; use CIM via PowerShell. macOS/Linux use pgrep -P.
+    const proc = onWindows
+      ? spawn({
+          cmd: [
+            "powershell",
+            "-NoProfile",
+            "-Command",
+            `Get-CimInstance Win32_Process -Filter 'ParentProcessId=${parent}' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty ProcessId`,
+          ],
+          stdout: "pipe",
+          stderr: "ignore",
+          stdin: "ignore",
+        })
+      : spawn({
+          cmd: ["pgrep", "-P", String(parent)],
+          stdout: "pipe",
+          stderr: "ignore",
+          stdin: "ignore",
+        });
     const out = await new Response(proc.stdout).text();
     await proc.exited;
     for (const token of out.trim().split(/\s+/)) {
