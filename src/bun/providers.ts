@@ -251,3 +251,144 @@ export function providerConnectionKey(
     alias,
   ].join("|");
 }
+
+/** Portable JSON schema for export/import of provider configs. */
+export type ProvidersExportFile = {
+  version: 1;
+  providers: ProviderConfig[];
+  activeProviderId?: string | null;
+  activeModelAlias?: ClaudeModelAlias;
+};
+
+/**
+ * Build a versioned export payload (includes API keys — treat the file as secret).
+ */
+export function buildProvidersExport(
+  settings: Pick<
+    AppSettings,
+    "providers" | "activeProviderId" | "activeModelAlias"
+  >,
+): ProvidersExportFile {
+  const providers = normalizeProviders(settings.providers);
+  let activeProviderId =
+    typeof settings.activeProviderId === "string"
+      ? settings.activeProviderId
+      : settings.activeProviderId === null
+        ? null
+        : null;
+  if (
+    activeProviderId &&
+    !providers.some((p) => p.id === activeProviderId)
+  ) {
+    activeProviderId = providers[0]?.id ?? null;
+  }
+  if (providers.length === 0) activeProviderId = null;
+
+  return {
+    version: 1,
+    providers,
+    activeProviderId,
+    activeModelAlias: normalizeModelAlias(
+      settings.activeModelAlias,
+      "sonnet",
+    ),
+  };
+}
+
+export function serializeProvidersExport(
+  settings: Pick<
+    AppSettings,
+    "providers" | "activeProviderId" | "activeModelAlias"
+  >,
+): string {
+  return `${JSON.stringify(buildProvidersExport(settings), null, 2)}\n`;
+}
+
+export type ProvidersImportResult =
+  | {
+      ok: true;
+      providers: ProviderConfig[];
+      activeProviderId: string | null;
+      activeModelAlias: ClaudeModelAlias;
+    }
+  | { ok: false; error: string };
+
+/**
+ * Parse a providers export file or a bare provider array.
+ * Accepts missing ids (assigns new ones) so partial hand-edited JSON still works.
+ */
+export function parseProvidersImport(raw: unknown): ProvidersImportResult {
+  let list: unknown;
+  let activeProviderId: string | null | undefined;
+  let activeModelAlias: unknown;
+
+  if (Array.isArray(raw)) {
+    list = raw;
+  } else if (raw && typeof raw === "object") {
+    const obj = raw as Record<string, unknown>;
+    if (!Array.isArray(obj.providers)) {
+      return {
+        ok: false,
+        error: "Invalid file: expected { providers: [...] } or a provider array",
+      };
+    }
+    if (
+      obj.version !== undefined &&
+      obj.version !== 1 &&
+      obj.version !== "1"
+    ) {
+      return { ok: false, error: `Unsupported export version: ${String(obj.version)}` };
+    }
+    list = obj.providers;
+    if (typeof obj.activeProviderId === "string") {
+      activeProviderId = obj.activeProviderId;
+    } else if (obj.activeProviderId === null) {
+      activeProviderId = null;
+    }
+    activeModelAlias = obj.activeModelAlias;
+  } else {
+    return { ok: false, error: "Invalid file: not JSON object or array" };
+  }
+
+  // Assign ids before normalizeProviders (which drops entries without id).
+  const withIds = (Array.isArray(list) ? list : []).map((item) => {
+    if (!item || typeof item !== "object") return item;
+    const p = item as Partial<ProviderConfig>;
+    if (typeof p.id === "string" && p.id.trim()) return item;
+    return { ...p, id: newProviderId() };
+  });
+
+  const providers = normalizeProviders(withIds);
+  if (providers.length === 0) {
+    return { ok: false, error: "No valid providers found in file" };
+  }
+
+  let resolvedActive: string | null =
+    activeProviderId === undefined ? providers[0]?.id ?? null : activeProviderId;
+  if (
+    resolvedActive &&
+    !providers.some((p) => p.id === resolvedActive)
+  ) {
+    resolvedActive = providers[0]?.id ?? null;
+  }
+
+  return {
+    ok: true,
+    providers,
+    activeProviderId: resolvedActive,
+    activeModelAlias: normalizeModelAlias(activeModelAlias, "sonnet"),
+  };
+}
+
+/**
+ * Parse JSON text from an import file.
+ */
+export function parseProvidersImportText(text: string): ProvidersImportResult {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(text) as unknown;
+  } catch {
+    return { ok: false, error: "Invalid JSON" };
+  }
+  return parseProvidersImport(raw);
+}

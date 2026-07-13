@@ -1,5 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { RiCloseLine } from "react-icons/ri";
+import {
+  parseProvidersImportText,
+  serializeProvidersExport,
+} from "../../../bun/providers";
 import type { AppSettings, ProviderConfig } from "../../../shared/rpc";
 import {
   formatSymlinkPathsText,
@@ -42,6 +46,9 @@ export function SettingsPanel({
     () =>
       settings.activeProviderId ?? settings.providers?.[0]?.id ?? null,
   );
+  const [providersImportMessage, setProvidersImportMessage] = useState<
+    string | null
+  >(null);
 
   const tabs = useMemo(
     () =>
@@ -130,6 +137,52 @@ export function SettingsPanel({
     });
   };
 
+  const exportProviders = () => {
+    const json = serializeProvidersExport({
+      providers: draft.providers ?? [],
+      activeProviderId: draft.activeProviderId ?? null,
+      activeModelAlias: draft.activeModelAlias ?? "sonnet",
+    });
+    const blob = new Blob([json], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "terminal-react-providers.json";
+    a.click();
+    URL.revokeObjectURL(url);
+    setProvidersImportMessage(null);
+  };
+
+  const importProviders = (fileText: string) => {
+    const result = parseProvidersImportText(fileText);
+    if (!result.ok) {
+      setProvidersImportMessage(result.error);
+      return;
+    }
+    const existing = draft.providers ?? [];
+    if (existing.length > 0) {
+      const ok = window.confirm(
+        `Replace ${existing.length} provider(s) with ${result.providers.length} from the file? Unsaved draft changes will be overwritten. Click Save afterward to persist.`,
+      );
+      if (!ok) {
+        setProvidersImportMessage(null);
+        return;
+      }
+    }
+    setDraft((d) => ({
+      ...d,
+      providers: result.providers,
+      activeProviderId: result.activeProviderId,
+      activeModelAlias: result.activeModelAlias,
+    }));
+    setSelectedProviderId(
+      result.activeProviderId ?? result.providers[0]?.id ?? null,
+    );
+    setProvidersImportMessage(
+      `Imported ${result.providers.length} provider(s). Click Save to persist.`,
+    );
+  };
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-6"
@@ -210,6 +263,9 @@ export function SettingsPanel({
                 onSetAlias={(activeModelAlias) =>
                   setDraft((d) => ({ ...d, activeModelAlias }))
                 }
+                onExport={exportProviders}
+                onImport={importProviders}
+                importMessage={providersImportMessage}
               />
             )}
 

@@ -1,3 +1,4 @@
+import { useRef } from "react";
 import type { ClaudeModelAlias, ProviderConfig } from "../../../shared/rpc";
 import { Select } from "../Select";
 import { MODEL_ALIAS_OPTIONS } from "./constants";
@@ -15,6 +16,9 @@ type Props = {
   onUpdate: (id: string, patch: Partial<ProviderConfig>) => void;
   onSetActive: (id: string | null) => void;
   onSetAlias: (alias: ClaudeModelAlias) => void;
+  onExport: () => void;
+  onImport: (fileText: string) => void;
+  importMessage?: string | null;
 };
 
 export function ProvidersTab({
@@ -29,7 +33,12 @@ export function ProvidersTab({
   onUpdate,
   onSetActive,
   onSetAlias,
+  onExport,
+  onImport,
+  importMessage = null,
 }: Props) {
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
   return (
     <div className="flex h-full min-h-[320px] flex-col gap-3">
       <p className="text-[11px] leading-relaxed text-gray-500">
@@ -38,6 +47,51 @@ export function ProvidersTab({
         <code className="text-gray-400">ANTHROPIC_*</code> env vars when the agent
         spawns. Select a provider and model in the chat bar to switch.
       </p>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          onClick={onExport}
+          disabled={providers.length === 0}
+          className="rounded-md border border-[#333] px-2.5 py-1 text-xs text-gray-300 hover:bg-[#2a2a2a] disabled:opacity-40"
+        >
+          Export…
+        </button>
+        <button
+          type="button"
+          onClick={() => fileInputRef.current?.click()}
+          className="rounded-md border border-[#333] px-2.5 py-1 text-xs text-gray-300 hover:bg-[#2a2a2a]"
+        >
+          Import…
+        </button>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="application/json,.json"
+          className="hidden"
+          onChange={(e) => {
+            const file = e.target.files?.[0];
+            e.target.value = "";
+            if (!file) return;
+            void file.text().then(onImport);
+          }}
+        />
+        <span className="text-[11px] text-gray-600">
+          Export includes API keys — keep the file private.
+        </span>
+      </div>
+      {importMessage && (
+        <p
+          className={`text-[11px] ${
+            importMessage.startsWith("Imported")
+              ? "text-emerald-500"
+              : "text-red-400"
+          }`}
+          role="status"
+        >
+          {importMessage}
+        </p>
+      )}
 
       <div className="flex min-h-0 flex-1 gap-3">
         <div className="flex w-44 shrink-0 flex-col rounded-lg border border-[#2e2e2e] bg-[#121212]">

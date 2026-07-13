@@ -694,13 +694,19 @@ installApplicationMenu();
 
 const url = await resolveMainViewUrl();
 
+// Custom chrome: hide system titlebar; Sidebar traffic lights control the window.
+// Transparent so CSS can round the window corners.
+//
+// On Windows, Electrobun maps titleBarStyle "hidden" to WS_POPUP with no
+// WS_THICKFRAME, so the window cannot be resized. "hiddenInset" keeps
+// CAPTION|THICKFRAME (and DWM shadow) while still removing the caption bar.
+const isWindows = process.platform === "win32";
+
 mainWindow = new BrowserWindow({
   title: "Terminal React",
   url,
   rpc: terminalRPC,
-  // Custom chrome: hide system titlebar; Sidebar traffic lights control the window.
-  // Transparent so CSS can round the window corners (16px shell).
-  titleBarStyle: "hidden",
+  titleBarStyle: isWindows ? "hiddenInset" : "hidden",
   transparent: true,
   frame: {
     width: 1280,

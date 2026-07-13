@@ -2,12 +2,16 @@ import { describe, expect, it } from "vitest";
 import {
   buildClaudeCodeSessionMeta,
   buildProviderEnv,
+  buildProvidersExport,
   createEmptyProvider,
   normalizeModelAlias,
   normalizeProviders,
+  parseProvidersImport,
+  parseProvidersImportText,
   providerConnectionKey,
   resolveActiveProvider,
   resolveProviderModel,
+  serializeProvidersExport,
 } from "./providers";
 import type { ProviderConfig } from "../shared/rpc";
 
@@ -180,6 +184,56 @@ describe("providers", () => {
     expect(a).not.toBe(c);
     expect(providerConnectionKey({ providers: [], activeProviderId: null })).toBe(
       "none:sonnet",
+    );
+  });
+
+  it("buildProvidersExport / serialize round-trips with parseProvidersImport", () => {
+    const settings = {
+      providers: [sample],
+      activeProviderId: "p1",
+      activeModelAlias: "opus" as const,
+    };
+    const exported = buildProvidersExport(settings);
+    expect(exported).toEqual({
+      version: 1,
+      providers: [sample],
+      activeProviderId: "p1",
+      activeModelAlias: "opus",
+    });
+    const text = serializeProvidersExport(settings);
+    const parsed = parseProvidersImportText(text);
+    expect(parsed).toEqual({
+      ok: true,
+      providers: [sample],
+      activeProviderId: "p1",
+      activeModelAlias: "opus",
+    });
+  });
+
+  it("parseProvidersImport accepts bare array and assigns missing ids", () => {
+    const parsed = parseProvidersImport([
+      {
+        name: "No id",
+        baseUrl: "https://x.example",
+        apiKey: "k",
+        models: { haiku: "", sonnet: "s", opus: "" },
+      },
+    ]);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.providers).toHaveLength(1);
+    expect(parsed.providers[0]?.id).toMatch(/^prov-/);
+    expect(parsed.providers[0]?.name).toBe("No id");
+    expect(parsed.activeProviderId).toBe(parsed.providers[0]?.id);
+    expect(parsed.activeModelAlias).toBe("sonnet");
+  });
+
+  it("parseProvidersImport rejects empty / invalid payloads", () => {
+    expect(parseProvidersImportText("not json").ok).toBe(false);
+    expect(parseProvidersImport({ version: 1, providers: [] }).ok).toBe(false);
+    expect(parseProvidersImport({ foo: 1 }).ok).toBe(false);
+    expect(parseProvidersImport({ version: 99, providers: [sample] }).ok).toBe(
+      false,
     );
   });
 });
