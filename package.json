@@ -7,6 +7,7 @@
     "dev": "vite build --mode development && electrobun dev",
     "dev:hmr": "concurrently \"vite --port 5173\" \"vite build --mode development && electrobun dev\"",
     "dev:web": "vite --port 5173",
+    "embed:win-icon": "node scripts/embed-win-icon.mjs",
     "build": "vite build && electrobun build",
     "build:canary": "vite build && electrobun build --env=canary",
     "build:stable": "vite build && electrobun build --env=stable",

@@ -18,6 +18,12 @@ export default {
     description:
       "Desktop app that renders coding-agent output as rich React UI via ACP",
   },
+  // Electrobun's packaged CLI fails to resolve rcedit (baked CI path), so
+  // build.win.icon never embeds. postBuild/postPackage re-apply assets/icon.ico.
+  scripts: {
+    postBuild: "scripts/embed-win-icon.mjs",
+    postPackage: "scripts/embed-win-icon.mjs",
+  },
   build: {
     // Vite builds to dist/, Electrobun copies that into the bundle as the webview.
     copy: {

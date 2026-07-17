@@ -32,3 +32,14 @@
 - Symptom: `[acp] memory sample failed: ... ENOENT "pgrep"` every poll interval on Windows; memory meter dead
 - Cause: `collectDescendantPids` / `sampleProcessTreeRssBytes` (`src/bun/acp-client.ts`) shelled out to `pgrep`/`ps`, absent on win32
 - Fix / avoid: branch on `process.platform === "win32"`. Windows uses PowerShell — `Get-CimInstance Win32_Process -Filter 'ParentProcessId=<pid>'` for children, `Get-Process -Id <pids> | Measure-Object WorkingSet64 -Sum` for RSS. Any spawn of a Unix tool needs a Windows branch.
+
+### Windows GUI PATH missing node for npm shims (2026-07)
+- Symptom: `[agent:claude-code] '"node"' is not recognized…` then `ACP connection closed` when connecting from packaged/dev desktop build
+- Cause: GUI process PATH had `%APPDATA%\npm` (so `claude-agent-acp.cmd` resolved) but not `C:\Program Files\nodejs`, and npm global shims invoke bare `node`
+- Fix / avoid: `commonUserBinDirs` on win32 includes official Node install + common version managers; `buildAugmentedPath` case-insensitive dedupe on Windows
+
+### Windows app shows Bun logo (2026-07)
+- Symptom: taskbar/exe icon is Bun’s logo instead of AgentDesk
+- Cause: Electrobun CLI embeds icons via `require.resolve("rcedit/...")` baked to CI path `D:\a\electrobun\...`; rcedit fails, EXEs keep Bun resources. `build.win.icon` is otherwise correct (`assets/icon.ico`).
+- Fix / avoid: `scripts/embed-win-icon.mjs` via electrobun `scripts.postBuild` + `postPackage` in `electrobun.config.ts`. Runtime process is `bun.exe`; launcher also needs embed. Windows icon cache may need rebuild/restart after fixing.
+

@@ -71,7 +71,7 @@ export default function App() {
   return (
     <div
       className="app-shell flex h-full min-h-0 w-full overflow-hidden"
-      data-theme={app.settings?.theme ?? "dark"}
+      data-theme={app.settings?.theme ?? "light"}
       data-remote={remoteClient ? "true" : undefined}
     >
       {app.showSidebar && (

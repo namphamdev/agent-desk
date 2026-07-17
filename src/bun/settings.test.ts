@@ -29,7 +29,7 @@ describe("settings", () => {
   }
 
   it("exposes sensible defaults", () => {
-    expect(DEFAULT_SETTINGS.theme).toBe("dark");
+    expect(DEFAULT_SETTINGS.theme).toBe("light");
     expect(DEFAULT_SETTINGS.enableFsCapabilities).toBe(false);
     expect(DEFAULT_SETTINGS.enableBrowserMcp).toBe(true);
     expect(DEFAULT_SETTINGS.enableNotifications).toBe(true);

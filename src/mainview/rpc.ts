@@ -787,7 +787,7 @@ function createBrowserMock(): RpcClient {
       async getSettings() {
         return {
           editorCommand: "code",
-          theme: "dark" as const,
+          theme: "light" as const,
           defaultAgentId: null,
           enableFsCapabilities: false,
           enableBrowserMcp: true,
@@ -798,7 +798,7 @@ function createBrowserMock(): RpcClient {
       async saveSettings(patch) {
         return {
           editorCommand: "code",
-          theme: "dark" as const,
+          theme: "light" as const,
           defaultAgentId: null,
           enableFsCapabilities: false,
           enableBrowserMcp: true,

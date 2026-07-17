@@ -146,7 +146,15 @@ export function Sidebar({
       className={`flex flex-shrink-0 flex-col ${width == null ? "w-64" : ""}`}
       style={width != null ? { width } : undefined}
     >
-      <div className="electrobun-webkit-app-region-drag flex h-12 items-center gap-2 px-3 sm:h-14 sm:px-4">
+      <div
+        className="electrobun-webkit-app-region-drag flex h-12 items-center gap-2 px-3 sm:h-14 sm:px-4"
+        onDoubleClick={(e) => {
+          if (!onWindowControl) return;
+          const target = e.target as HTMLElement | null;
+          if (target?.closest(".electrobun-webkit-app-region-no-drag")) return;
+          onWindowControl("maximize");
+        }}
+      >
         {onWindowControl && (
           <div className="electrobun-webkit-app-region-no-drag flex shrink-0 space-x-1.5">
             <button

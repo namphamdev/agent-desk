@@ -22,8 +22,12 @@ describe("path-env", () => {
         process.env.APPDATA ?? join(home, "AppData", "Roaming");
       const localAppData =
         process.env.LOCALAPPDATA ?? join(home, "AppData", "Local");
+      const programFiles =
+        process.env.ProgramFiles ?? "C:\\Program Files";
       expect(dirs).toContain(join(appData, "npm"));
       expect(dirs).toContain(join(localAppData, "pnpm"));
+      // npm .cmd shims need `node` on PATH in GUI launches
+      expect(dirs).toContain(join(programFiles, "nodejs"));
     }
   });
 

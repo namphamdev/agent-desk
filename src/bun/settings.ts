@@ -15,7 +15,7 @@ import { normalizeWorkflowList } from "../session/workflows";
 
 export const DEFAULT_SETTINGS: AppSettings = {
   editorCommand: process.env.EDITOR || process.env.VISUAL || "code",
-  theme: "dark",
+  theme: "light",
   defaultAgentId: null,
   enableFsCapabilities: false,
   enableBrowserMcp: true,

@@ -107,6 +107,12 @@ export function Header({
       className={`electrobun-webkit-app-region-drag flex shrink-0 items-center justify-between gap-2 border-b border-[#2e2e2e] ${
         compact ? "h-12 px-3" : "h-14 px-4 sm:px-6"
       }`}
+      onDoubleClick={(e) => {
+        if (!onWindowControl || compact) return;
+        const target = e.target as HTMLElement | null;
+        if (target?.closest(".electrobun-webkit-app-region-no-drag")) return;
+        onWindowControl("maximize");
+      }}
     >
       <div className="flex min-w-0 flex-1 items-center gap-2 sm:gap-3">
         {showLights && (
