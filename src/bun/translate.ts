@@ -398,3 +398,241 @@ export function withModeCurrentValue(
   });
   return changed ? next : configOptions;
 }
+
+
+/**
+ * Grok Build (and similar) often omit `modes` / configOptions for permission.
+ * They still honor session/set_mode + spawn --always-approve for YOLO.
+ * Synthesize a Permission select so the host UI can show a dropdown.
+ */
+
+/** Grok `_meta["x.ai/sessionConfig"].options` entries. */
+export type GrokSessionConfigOption = {
+  id?: string;
+  category?: string;
+  label?: string;
+  selected?: boolean;
+};
+
+export const GROK_EFFORT_VALUES = [
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+] as const;
+
+export type GrokEffortValue = (typeof GROK_EFFORT_VALUES)[number];
+
+export function isGrokEffortValue(value: string): boolean {
+  const v = value.trim().toLowerCase();
+  return (GROK_EFFORT_VALUES as readonly string[]).includes(v);
+}
+
+/**
+ * Map Grok session meta options into host configOptions.
+ * Grok mislabels reasoning effort as category `mode` (minimal…xhigh) and
+ * models as category `model`. Permission modes are separate synthetic options.
+ */
+export function translateGrokSessionConfig(
+  options: readonly GrokSessionConfigOption[] | null | undefined,
+  preferredEffort?: string,
+): SessionConfigOption[] {
+  if (!options?.length) return [];
+
+  const models = options.filter((o) => o?.category === "model" && o.id);
+  const efforts = options.filter(
+    (o) => o?.category === "mode" && o.id && isGrokEffortValue(String(o.id)),
+  );
+
+  const out: SessionConfigOption[] = [];
+
+  if (models.length > 0) {
+    const selected = models.find((o) => o.selected)?.id;
+    out.push({
+      id: "model",
+      name: "Model",
+      category: "model",
+      type: "select",
+      currentValue: String(selected ?? models[0]!.id),
+      options: models.map((o) => ({
+        value: String(o.id),
+        name: o.label?.trim() || String(o.id),
+      })),
+    });
+  }
+
+  if (efforts.length > 0) {
+    const preferred = preferredEffort?.trim().toLowerCase();
+    const selected =
+      (preferred && efforts.some((o) => String(o.id).toLowerCase() === preferred)
+        ? preferred
+        : null) ??
+      efforts.find((o) => o.selected)?.id ??
+      "high";
+    out.push({
+      id: "thought_level",
+      name: "Effort",
+      category: "thought_level",
+      type: "select",
+      currentValue: String(selected),
+      options: efforts.map((o) => ({
+        value: String(o.id),
+        name: o.label?.trim() || String(o.id),
+        description: grokEffortDescription(String(o.id)),
+      })),
+    });
+  }
+
+  return out;
+}
+
+function grokEffortDescription(id: string): string | undefined {
+  switch (id.toLowerCase()) {
+    case "minimal":
+      return "Fastest, least reasoning";
+    case "low":
+      return "Some reasoning; latency-sensitive agentic work";
+    case "medium":
+      return "More thinking for complex analysis";
+    case "high":
+      return "Deeper reasoning (default)";
+    case "xhigh":
+      return "Maximum reasoning for hard multi-step tasks";
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * When Grok meta is missing effort options, still expose low/medium/high
+ * so the Effort dropdown is available (values apply via set_mode / --effort).
+ */
+export function withFallbackGrokEffort(
+  configOptions: SessionConfigOption[],
+  currentEffort = "high",
+): SessionConfigOption[] {
+  const hasEffort = configOptions.some(
+    (o) =>
+      o.type === "select" &&
+      (o.category === "thought_level" ||
+        o.id === "thought_level" ||
+        o.id === "effort"),
+  );
+  if (hasEffort) return configOptions;
+
+  const current = isGrokEffortValue(currentEffort)
+    ? currentEffort.trim().toLowerCase()
+    : "high";
+
+  return [
+    ...configOptions,
+    {
+      id: "thought_level",
+      name: "Effort",
+      category: "thought_level",
+      type: "select",
+      currentValue: current,
+      options: [
+        {
+          value: "low",
+          name: "Low",
+          description: "Some reasoning; latency-sensitive agentic work",
+        },
+        {
+          value: "medium",
+          name: "Medium",
+          description: "More thinking for complex analysis",
+        },
+        {
+          value: "high",
+          name: "High",
+          description: "Deeper reasoning (default)",
+        },
+        {
+          value: "xhigh",
+          name: "X-High",
+          description: "Maximum reasoning for hard multi-step tasks",
+        },
+      ],
+    },
+  ];
+}
+
+export function withEffortCurrentValue(
+  configOptions: SessionConfigOption[],
+  effortId: string,
+): SessionConfigOption[] {
+  let changed = false;
+  const next = configOptions.map((o) => {
+    if (
+      o.type === "select" &&
+      (o.category === "thought_level" ||
+        o.id === "thought_level" ||
+        o.id === "effort") &&
+      o.currentValue !== effortId
+    ) {
+      changed = true;
+      return { ...o, currentValue: effortId };
+    }
+    return o;
+  });
+  return changed ? next : configOptions;
+}
+
+export function withFallbackPermissionMode(
+  configOptions: SessionConfigOption[],
+  currentModeId = "default",
+): SessionConfigOption[] {
+  const hasMode = configOptions.some(
+    (o) =>
+      o.type === "select" &&
+      (o.category === "mode" || o.id === "mode"),
+  );
+  if (hasMode) return configOptions;
+
+  const current = currentModeId.trim() || "default";
+  const options = [
+    {
+      value: "default",
+      name: "Default",
+      description: "Ask before tools / edits",
+    },
+    {
+      value: "plan",
+      name: "Plan",
+      description: "Plan mode (write tools blocked until approved)",
+    },
+    {
+      value: "acceptEdits",
+      name: "Accept edits",
+      description: "Auto-approve file edits when supported",
+    },
+    {
+      value: "bypassPermissions",
+      name: "Always approve",
+      description: "Auto-approve all tool executions (Grok --always-approve)",
+    },
+  ];
+  // Keep unknown current values visible in the select.
+  if (!options.some((o) => o.value === current)) {
+    options.unshift({
+      value: current,
+      name: current,
+      description: "Current mode from agent",
+    });
+  }
+
+  return [
+    ...configOptions,
+    {
+      id: "mode",
+      name: "Permission",
+      category: "mode",
+      type: "select",
+      currentValue: current,
+      options,
+    },
+  ];
+}
+

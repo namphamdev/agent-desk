@@ -43,6 +43,7 @@ describe("settings", () => {
     expect(DEFAULT_SETTINGS.activeProviderId).toBeNull();
     expect(DEFAULT_SETTINGS.activeModelAlias).toBe("sonnet");
     expect(DEFAULT_SETTINGS.worktreeSymlinkPaths).toEqual(["node_modules"]);
+    expect(DEFAULT_SETTINGS.workflows).toEqual([]);
   });
 
   it("normalizes worktree symlink paths on save", () => {

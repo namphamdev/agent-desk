@@ -33,3 +33,5 @@ bunx vite build
 
 - Configure ACP agents in `~/.terminal-react/agents.json`
 - Claude Code is not ACP-native; use `claude-agent-acp`
+- Grok Build is ACP-native: `grok agent stdio` (binary in `~/.grok/bin`, which is on the augmented PATH)
+- Auth: Claude via app Providers / `ANTHROPIC_*`; Grok via `grok login` or `XAI_API_KEY`

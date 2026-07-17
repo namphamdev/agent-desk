@@ -112,6 +112,12 @@ function mockHandlers() {
       appliedCount: 0,
     }),
     applyProjectHarness: () => ({ ok: false as const, error: "n/a" }),
+    getProjectWorkflows: () => ({
+      path: "",
+      exists: false,
+      workflows: null,
+    }),
+    saveProjectWorkflows: () => ({ ok: false as const, error: "n/a" }),
     getAgentSetup: async () => ({
       configPath: "/tmp/agents.json",
       configExists: false,
@@ -123,6 +129,9 @@ function mockHandlers() {
       claudeCliOk: false,
       claudeCliPath: null,
       installCommand: "npm i -g @agentclientprotocol/claude-agent-acp",
+      grokOk: false,
+      grokPath: null,
+      grokInstallCommand: "irm https://x.ai/cli/install.ps1 | iex",
     }),
     ensureAgentSetup: async () => ({
       configPath: "/tmp/agents.json",
@@ -135,6 +144,9 @@ function mockHandlers() {
       claudeCliOk: false,
       claudeCliPath: null,
       installCommand: "npm i -g @agentclientprotocol/claude-agent-acp",
+      grokOk: false,
+      grokPath: null,
+      grokInstallCommand: "irm https://x.ai/cli/install.ps1 | iex",
     }),
   };
 }

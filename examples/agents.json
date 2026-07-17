@@ -6,6 +6,12 @@
       "name": "Claude Code (ACP)",
       "command": "claude-agent-acp",
       "args": []
+    },
+    {
+      "id": "grok-build",
+      "name": "Grok Build (ACP)",
+      "command": "grok",
+      "args": ["agent", "stdio"]
     }
   ]
 }

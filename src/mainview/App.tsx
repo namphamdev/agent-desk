@@ -241,6 +241,12 @@ export default function App() {
               onRemoteStop={() => void app.stopRemoteAccess()}
               onRemoteRegenerate={() => void app.regenerateRemoteAccess()}
               onRemoteRefresh={() => void app.refreshRemoteAccess()}
+              projectCwd={
+                app.activeSession?.cwd ||
+                app.settings?.lastProjectCwd ||
+                null
+              }
+              projectName={app.activeSession?.project ?? null}
             />
           )}
           {app.showSkills && (
@@ -311,6 +317,10 @@ export default function App() {
               }
               lockProject={Boolean(app.newSessionDefaultCwd)}
               recentProjects={app.recentProjects}
+              workflows={app.resolvedWorkflows}
+              onProjectCwdChange={(cwd) => {
+                void app.loadResolvedWorkflows(cwd);
+              }}
               onPickFolder={app.handlePickFolder}
               onRemoveRecent={app.handleRemoveRecentProject}
               onCancel={() => app.setShowNewSession(false)}

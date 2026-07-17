@@ -10,7 +10,7 @@ import type {
   SessionConfigOption,
 } from "../../shared/rpc";
 import type { SessionUpdate } from "../../session/types";
-import { ensureAgentsConfig, loadAgents } from "../agents";
+import { ensureAgentsConfig, ensureGrokAgentEntry, loadAgents } from "../agents";
 import { getGitBranch } from "../git-branch";
 import { loadSettings, saveSettings } from "../settings";
 import { SessionStore } from "../store";
@@ -83,6 +83,7 @@ export class SessionManager {
 
   async init() {
     await ensureAgentsConfig();
+    await ensureGrokAgentEntry();
     const { agents, defaultAgentId } = await loadAgents();
     this.agents = agents;
     this.defaultAgentId =

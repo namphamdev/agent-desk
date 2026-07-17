@@ -5,12 +5,21 @@ import { tmpdir } from "node:os";
 import {
   agentsConfigDir,
   agentsConfigPath,
+  DEFAULT_AGENTS,
   ensureAgentsConfig,
   getAgentSetupStatus,
   loadAgents,
 } from "./agents";
 
 describe("agents", () => {
+  it("DEFAULT_AGENTS includes Claude and Grok Build entries", () => {
+    const ids = DEFAULT_AGENTS.map((a) => a.id);
+    expect(ids).toContain("claude-code");
+    expect(ids).toContain("grok-build");
+    const grok = DEFAULT_AGENTS.find((a) => a.id === "grok-build")!;
+    expect(grok.command).toBe("grok");
+    expect(grok.args).toEqual(["agent", "stdio"]);
+  });
   it("exposes config path under the home data dir", () => {
     expect(agentsConfigPath()).toBe(join(agentsConfigDir(), "agents.json"));
     expect(agentsConfigDir()).toContain(".terminal-react");
@@ -44,6 +53,7 @@ describe("agents", () => {
     expect(status.configPath).toBe(agentsConfigPath());
     expect(status.configExists).toBe(true);
     expect(status.installCommand).toContain("claude-agent-acp");
+    expect(status.grokInstallCommand.length).toBeGreaterThan(0);
     expect(Array.isArray(status.agents)).toBe(true);
     // Each entry has ok + resolvedPath fields (may or may not resolve on CI).
     for (const a of status.agents) {
@@ -54,6 +64,7 @@ describe("agents", () => {
       else expect(a.resolvedPath).toBeNull();
     }
     expect(typeof status.claudeAcpOk).toBe("boolean");
+    expect(typeof status.grokOk).toBe("boolean");
     expect(typeof status.ready).toBe("boolean");
   });
 });

@@ -1,28 +1,93 @@
 import { describe, expect, it } from "vitest";
 import {
+  BUILTIN_WORKFLOWS,
+  BUILTIN_WORKFLOW_IDS,
   WORKFLOW_HARNESS_PREAMBLE,
-  WORKFLOWS,
   buildWorkflowPrompt,
   getWorkflow,
+  normalizeWorkflowList,
+  resolveWorkflows,
   workflowSessionTitle,
-  type WorkflowId,
+  type WorkflowDefinition,
 } from "./workflows";
 
-const ALL_IDS: WorkflowId[] = [
-  "new_feature",
-  "bug_fix",
-  "review_pr",
-  "explore_feature",
-];
-
-describe("WORKFLOWS", () => {
+describe("BUILTIN_WORKFLOWS", () => {
   it("defines the four task workflows", () => {
-    expect(WORKFLOWS.map((w) => w.id)).toEqual(ALL_IDS);
+    expect(BUILTIN_WORKFLOWS.map((w) => w.id)).toEqual([...BUILTIN_WORKFLOW_IDS]);
   });
 
   it("marks review_pr as needing a PR ref field", () => {
     expect(getWorkflow("review_pr").needsPrRef).toBe(true);
     expect(getWorkflow("new_feature").needsPrRef).toBeUndefined();
+  });
+
+  it("includes prompt templates for every built-in", () => {
+    for (const w of BUILTIN_WORKFLOWS) {
+      expect(w.promptTemplate.trim().length).toBeGreaterThan(20);
+      expect(w.promptTemplate).toContain("{{task}}");
+    }
+    expect(getWorkflow("review_pr").promptTemplate).toContain("{{prRef}}");
+  });
+});
+
+describe("normalizeWorkflowList", () => {
+  it("drops invalid rows and de-dupes ids", () => {
+    const list = normalizeWorkflowList([
+      { label: "A", promptTemplate: "hi {{task}}" },
+      { id: "a", label: "B", promptTemplate: "bye {{task}}" },
+      { label: "", promptTemplate: "x" },
+      null,
+    ]);
+    expect(list).toHaveLength(2);
+    expect(list[0]?.id).toBe("a");
+    expect(list[1]?.id).toBe("a_2");
+  });
+});
+
+describe("resolveWorkflows", () => {
+  it("uses project list when non-empty (replaces global)", () => {
+    const project: WorkflowDefinition[] = [
+      {
+        id: "only_proj",
+        label: "Project only",
+        description: "",
+        taskPlaceholder: "x",
+        promptTemplate: "P {{task}}",
+      },
+    ];
+    const global: WorkflowDefinition[] = [
+      {
+        id: "global",
+        label: "Global",
+        description: "",
+        taskPlaceholder: "x",
+        promptTemplate: "G {{task}}",
+      },
+    ];
+    const r = resolveWorkflows({ project, global });
+    expect(r.source).toBe("project");
+    expect(r.workflows.map((w) => w.id)).toEqual(["only_proj"]);
+  });
+
+  it("uses global when project empty", () => {
+    const global: WorkflowDefinition[] = [
+      {
+        id: "g1",
+        label: "G",
+        description: "",
+        taskPlaceholder: "t",
+        promptTemplate: "{{task}}",
+      },
+    ];
+    const r = resolveWorkflows({ project: [], global });
+    expect(r.source).toBe("global");
+    expect(r.workflows[0]?.id).toBe("g1");
+  });
+
+  it("falls back to built-ins", () => {
+    const r = resolveWorkflows({});
+    expect(r.source).toBe("builtin");
+    expect(r.workflows.map((w) => w.id)).toEqual([...BUILTIN_WORKFLOW_IDS]);
   });
 });
 
@@ -51,16 +116,16 @@ describe("workflowSessionTitle", () => {
 });
 
 describe("buildWorkflowPrompt", () => {
-  it("includes harness preamble and task for every workflow", () => {
-    for (const id of ALL_IDS) {
-      const prompt = buildWorkflowPrompt(id, {
+  it("includes harness preamble and task for every built-in", () => {
+    for (const w of BUILTIN_WORKFLOWS) {
+      const prompt = buildWorkflowPrompt(w.id, {
         task: "Ship dark mode",
-        prRef: id === "review_pr" ? "#99" : undefined,
+        prRef: w.id === "review_pr" ? "#99" : undefined,
       });
       expect(prompt).toContain(WORKFLOW_HARNESS_PREAMBLE.slice(0, 40));
       expect(prompt).toContain("docs/memory/INDEX.md");
       expect(prompt).toContain("AGENTS.md");
-      if (id === "review_pr") {
+      if (w.id === "review_pr") {
         expect(prompt).toContain("#99");
       } else {
         expect(prompt).toContain("Ship dark mode");
@@ -105,5 +170,30 @@ describe("buildWorkflowPrompt", () => {
   it("handles empty task without crashing", () => {
     const p = buildWorkflowPrompt("new_feature", { task: "" });
     expect(p).toContain("No extra task notes");
+  });
+
+  it("skips preamble when disabled", () => {
+    const w: WorkflowDefinition = {
+      id: "plain",
+      label: "Plain",
+      description: "",
+      taskPlaceholder: "t",
+      includeHarnessPreamble: false,
+      promptTemplate: "Only {{task}}",
+    };
+    const p = buildWorkflowPrompt(w, { task: "x" });
+    expect(p).toBe("Only x");
+    expect(p).not.toContain("docs/memory/INDEX.md");
+  });
+
+  it("builds from a custom definition without list lookup", () => {
+    const w: WorkflowDefinition = {
+      id: "ship",
+      label: "Ship",
+      description: "",
+      taskPlaceholder: "t",
+      promptTemplate: "Ship it: {{task}}",
+    };
+    expect(buildWorkflowPrompt(w, { task: "v1" })).toContain("Ship it: v1");
   });
 });

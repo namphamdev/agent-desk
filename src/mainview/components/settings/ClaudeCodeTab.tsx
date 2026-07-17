@@ -1,3 +1,7 @@
+/**
+ * Settings → Claude Code / Agents: diagnose ACP agent binaries
+ * (claude-agent-acp + Grok Build) and agents.json.
+ */
 import { useCallback, useEffect, useState } from "react";
 import type { AgentSetupStatus } from "../../../shared/rpc";
 import { getRpc } from "../../rpc";
@@ -8,7 +12,9 @@ export function ClaudeCodeTab() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [copiedInstall, setCopiedInstall] = useState(false);
+  const [copiedInstall, setCopiedInstall] = useState<"claude" | "grok" | null>(
+    null,
+  );
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -53,13 +59,14 @@ export function ClaudeCodeTab() {
     }
   };
 
-  const copyInstall = async () => {
-    const cmd = status?.installCommand;
+  const copyInstall = async (kind: "claude" | "grok") => {
+    const cmd =
+      kind === "claude" ? status?.installCommand : status?.grokInstallCommand;
     if (!cmd) return;
     try {
       await navigator.clipboard?.writeText(cmd);
-      setCopiedInstall(true);
-      setTimeout(() => setCopiedInstall(false), 1500);
+      setCopiedInstall(kind);
+      setTimeout(() => setCopiedInstall(null), 1500);
     } catch {
       /* ignore */
     }
@@ -68,12 +75,12 @@ export function ClaudeCodeTab() {
   return (
     <div className="space-y-4">
       <p className="text-[11px] leading-relaxed text-gray-500">
-        Claude Code is not ACP-native. This app talks to it through the official
-        adapter{" "}
-        <code className="text-gray-400">claude-agent-acp</code>. Check that the
-        binary is on PATH and that{" "}
-        <code className="text-gray-400">~/.terminal-react/agents.json</code>{" "}
-        points at it.
+        This app is an ACP host. Configure agents in{" "}
+        <code className="text-gray-400">~/.terminal-react/agents.json</code>.
+        Claude Code uses the adapter{" "}
+        <code className="text-gray-400">claude-agent-acp</code>; Grok Build speaks
+        ACP natively via{" "}
+        <code className="text-gray-400">grok agent stdio</code>.
       </p>
 
       {error && (
@@ -140,6 +147,21 @@ export function ClaudeCodeTab() {
               </li>
               <li className="flex flex-col gap-0.5">
                 <StatusDot
+                  ok={status.grokOk}
+                  label={
+                    status.grokOk
+                      ? "grok found"
+                      : "grok not found on PATH (~/.grok/bin)"
+                  }
+                />
+                {status.grokPath && (
+                  <code className="ml-3.5 break-all font-mono text-[10px] text-gray-500">
+                    {status.grokPath}
+                  </code>
+                )}
+              </li>
+              <li className="flex flex-col gap-0.5">
+                <StatusDot
                   ok={status.configExists}
                   label={
                     status.configExists
@@ -156,7 +178,7 @@ export function ClaudeCodeTab() {
 
           <div className="space-y-2">
             <span className="block text-xs font-medium uppercase tracking-wider text-gray-500">
-              Install adapter
+              Install Claude Code adapter
             </span>
             <div className="flex items-stretch gap-2">
               <code className="min-w-0 flex-1 break-all rounded-md border border-[#333] bg-[#121212] px-2.5 py-2 font-mono text-[11px] text-gray-200">
@@ -164,15 +186,35 @@ export function ClaudeCodeTab() {
               </code>
               <button
                 type="button"
-                onClick={() => void copyInstall()}
+                onClick={() => void copyInstall("claude")}
                 className="shrink-0 rounded-md border border-[#333] bg-[#222] px-3 text-xs text-gray-200 hover:bg-[#2a2a2a]"
               >
-                {copiedInstall ? "Copied" : "Copy"}
+                {copiedInstall === "claude" ? "Copied" : "Copy"}
+              </button>
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <span className="block text-xs font-medium uppercase tracking-wider text-gray-500">
+              Install Grok Build
+            </span>
+            <div className="flex items-stretch gap-2">
+              <code className="min-w-0 flex-1 break-all rounded-md border border-[#333] bg-[#121212] px-2.5 py-2 font-mono text-[11px] text-gray-200">
+                {status.grokInstallCommand}
+              </code>
+              <button
+                type="button"
+                onClick={() => void copyInstall("grok")}
+                className="shrink-0 rounded-md border border-[#333] bg-[#222] px-3 text-xs text-gray-200 hover:bg-[#2a2a2a]"
+              >
+                {copiedInstall === "grok" ? "Copied" : "Copy"}
               </button>
             </div>
             <p className="text-[11px] text-gray-500">
-              Run in a terminal, then Re-check. GUI apps may not see shell PATH —
-              Homebrew, npm, and bun bins are auto-added.
+              Then run <code className="text-gray-400">grok login</code> (or set{" "}
+              <code className="text-gray-400">XAI_API_KEY</code>). ACP command:{" "}
+              <code className="text-gray-400">grok agent stdio</code>. GUI apps may
+              not see shell PATH — ~/.grok/bin is auto-added.
             </p>
           </div>
 
@@ -188,13 +230,25 @@ export function ClaudeCodeTab() {
               </button>
             )}
             {status.configExists && (
-              <button
-                type="button"
-                onClick={() => void openConfig()}
-                className="rounded-md border border-[#333] px-3 py-1.5 text-xs text-gray-300 hover:bg-[#2a2a2a]"
-              >
-                Open agents.json
-              </button>
+              <>
+                <button
+                  type="button"
+                  onClick={() => void openConfig()}
+                  className="rounded-md border border-[#333] px-3 py-1.5 text-xs text-gray-300 hover:bg-[#2a2a2a]"
+                >
+                  Open agents.json
+                </button>
+                {!status.agents.some((a) => a.id === "grok-build") && (
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => void ensureConfig()}
+                    className="rounded-md border border-[#333] px-3 py-1.5 text-xs text-gray-300 hover:bg-[#2a2a2a] disabled:opacity-50"
+                  >
+                    {busy ? "Updating…" : "Add Grok Build to agents.json"}
+                  </button>
+                )}
+              </>
             )}
           </div>
 

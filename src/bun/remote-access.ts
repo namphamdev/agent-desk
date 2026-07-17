@@ -135,6 +135,21 @@ export type RemoteAccessHandlers = {
         written: string[];
       }
     | { ok: false; error: string };
+  getProjectWorkflows: (cwd: string) => {
+    path: string;
+    exists: boolean;
+    workflows: import("../session/workflows").WorkflowDefinition[] | null;
+  };
+  saveProjectWorkflows: (
+    cwd: string,
+    workflows: import("../session/workflows").WorkflowDefinition[],
+  ) =>
+    | {
+        ok: true;
+        path: string;
+        workflows: import("../session/workflows").WorkflowDefinition[] | null;
+      }
+    | { ok: false; error: string };
   getAgentSetup: () => Promise<AgentSetupStatus>;
   ensureAgentSetup: () => Promise<AgentSetupStatus>;
 };
@@ -723,6 +738,13 @@ export class RemoteAccessServer {
           String(params.cwd ?? ""),
           String(params.optimizationId ?? ""),
           params.project != null ? String(params.project) : undefined,
+        );
+      case "getProjectWorkflows":
+        return h.getProjectWorkflows(String(params.cwd ?? ""));
+      case "saveProjectWorkflows":
+        return h.saveProjectWorkflows(
+          String(params.cwd ?? ""),
+          Array.isArray(params.workflows) ? params.workflows : [],
         );
       case "getAgentSetup":
         return h.getAgentSetup();

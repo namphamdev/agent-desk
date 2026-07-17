@@ -8,6 +8,7 @@ export const THEME_OPTIONS = [
 ] as const;
 
 /** Common ACP thought_level / effort values (Claude Code and similar agents). */
+/** Reasoning effort (Claude thought_level / Grok --effort). */
 export const EFFORT_OPTIONS = [
   { value: "low", label: "Low" },
   { value: "medium", label: "Medium" },
@@ -21,7 +22,7 @@ export const PERMISSION_MODE_OPTIONS = [
   { value: "default", label: "Default" },
   { value: "acceptEdits", label: "Accept edits" },
   { value: "plan", label: "Plan" },
-  { value: "bypassPermissions", label: "Bypass permissions" },
+  { value: "bypassPermissions", label: "Always approve (bypass)" },
 ] as const;
 
 export const MODEL_ALIAS_OPTIONS: {
@@ -36,7 +37,8 @@ export const MODEL_ALIAS_OPTIONS: {
 export const BASE_TABS: { id: SettingsTab; label: string }[] = [
   { id: "general", label: "General" },
   { id: "providers", label: "Providers" },
-  { id: "claude", label: "Claude Code" },
+  { id: "claude", label: "Agents" },
+  { id: "workflows", label: "Workflows" },
   { id: "remote", label: "Remote Control" },
   { id: "alerts", label: "Alerts" },
 ];

@@ -9,7 +9,8 @@ export type SettingsTab =
   | "providers"
   | "claude"
   | "remote"
-  | "alerts";
+  | "alerts"
+  | "workflows";
 
 export type SettingsPanelProps = {
   settings: AppSettings;
@@ -26,4 +27,7 @@ export type SettingsPanelProps = {
   onRemoteRegenerate?: () => void | Promise<void>;
   /** Load status without auto-starting (settings tab open). */
   onRemoteRefresh?: () => void | Promise<void>;
+  /** Active/last project folder for project-scoped workflow edits. */
+  projectCwd?: string | null;
+  projectName?: string | null;
 };

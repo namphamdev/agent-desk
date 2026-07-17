@@ -11,6 +11,7 @@ import {
   DEFAULT_WORKTREE_SYMLINK_PATHS,
   normalizeSymlinkPaths,
 } from "../shared/worktree-paths";
+import { normalizeWorkflowList } from "../session/workflows";
 
 export const DEFAULT_SETTINGS: AppSettings = {
   editorCommand: process.env.EDITOR || process.env.VISUAL || "code",
@@ -32,6 +33,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   activeProviderId: null,
   activeModelAlias: "sonnet",
   worktreeSymlinkPaths: [...DEFAULT_WORKTREE_SYMLINK_PATHS],
+  /** Empty = built-in New-task workflows. */
+  workflows: [],
 };
 
 const SETTINGS_KEY = "app_settings";
@@ -85,6 +88,7 @@ function normalizeSettings(parsed: Partial<AppSettings>): AppSettings {
     worktreeSymlinkPaths: normalizeSymlinkPaths(
       parsed.worktreeSymlinkPaths ?? DEFAULT_SETTINGS.worktreeSymlinkPaths,
     ),
+    workflows: normalizeWorkflowList(parsed.workflows ?? []),
   };
 }
 

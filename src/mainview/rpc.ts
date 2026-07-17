@@ -22,6 +22,7 @@ import type {
   CommandRunSummary,
   TerminalRPC,
   TurnEndPayload,
+  WorkflowDefinition,
 } from "../shared/rpc";
 import type { SessionUpdate } from "../session/types";
 import type {
@@ -231,6 +232,24 @@ type RpcClient = {
           run: CommandRunSummary;
           log: string;
           truncated: boolean;
+        }
+      | { ok: false; error: string }
+    >;
+    getProjectWorkflows: (p: {
+      cwd: string;
+    }) => Promise<{
+      path: string;
+      exists: boolean;
+      workflows: WorkflowDefinition[] | null;
+    }>;
+    saveProjectWorkflows: (p: {
+      cwd: string;
+      workflows: WorkflowDefinition[];
+    }) => Promise<
+      | {
+          ok: true;
+          path: string;
+          workflows: WorkflowDefinition[] | null;
         }
       | { ok: false; error: string }
     >;
@@ -593,6 +612,10 @@ function createRemoteWsClient(code: string): RpcClient {
         request("listUserCommandRuns", p as Record<string, unknown>),
       getUserCommandRunLog: (p) =>
         request("getUserCommandRunLog", p as Record<string, unknown>),
+      getProjectWorkflows: (p) =>
+        request("getProjectWorkflows", p as Record<string, unknown>),
+      saveProjectWorkflows: (p) =>
+        request("saveProjectWorkflows", p as Record<string, unknown>),
     },
   };
 }
@@ -600,6 +623,8 @@ function createRemoteWsClient(code: string): RpcClient {
 export function getRpc(): RpcClient {
   return client ?? initRpc();
 }
+
+const mockProjectWorkflows: Record<string, WorkflowDefinition[]> = {};
 
 function createBrowserMock(): RpcClient {
   let status: ConnectionStatePayload = {
@@ -974,6 +999,9 @@ async getGitBranch() {
           claudeCliOk: false,
           claudeCliPath: null,
           installCommand: "npm i -g @agentclientprotocol/claude-agent-acp",
+          grokOk: false,
+          grokPath: null,
+          grokInstallCommand: "curl -fsSL https://x.ai/cli/install.sh | bash",
         };
       },
       async ensureAgentSetup() {
@@ -1032,6 +1060,36 @@ async getGitBranch() {
             "CLAUDE.md",
             ".agents/skills/karpathy-guidelines/SKILL.md",
           ],
+        };
+      },
+      async getProjectWorkflows({ cwd }) {
+        const key = (cwd || "").trim() || "/mock/project";
+        const list = mockProjectWorkflows[key] ?? null;
+        return {
+          path: `${key}/.terminal-react/workflows.json`,
+          exists: list != null,
+          workflows: list,
+        };
+      },
+      async saveProjectWorkflows({ cwd, workflows }) {
+        const key = (cwd || "").trim();
+        if (!key) {
+          return { ok: false as const, error: "Project folder is required" };
+        }
+        const list = Array.isArray(workflows) ? workflows : [];
+        if (list.length === 0) {
+          delete mockProjectWorkflows[key];
+          return {
+            ok: true as const,
+            path: `${key}/.terminal-react/workflows.json`,
+            workflows: null,
+          };
+        }
+        mockProjectWorkflows[key] = list;
+        return {
+          ok: true as const,
+          path: `${key}/.terminal-react/workflows.json`,
+          workflows: list,
         };
       },
       async listUserCommands({ projectCwd }) {

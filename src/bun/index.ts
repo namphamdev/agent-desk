@@ -21,6 +21,10 @@ import {
   getProjectHarness,
 } from "./project-harness";
 import {
+  loadProjectWorkflows,
+  saveProjectWorkflows,
+} from "./project-workflows";
+import {
   appSkillsPaths,
   installSkill,
   listSkills,
@@ -474,6 +478,17 @@ const terminalRPC = BrowserView.defineRPC<TerminalRPC>({
       applyProjectHarness: async ({ cwd, optimizationId, project }) => {
         return applyProjectHarness(cwd, optimizationId, project);
       },
+      getProjectWorkflows: async ({ cwd }) => {
+        const r = loadProjectWorkflows(cwd ?? "");
+        return {
+          path: r.path,
+          exists: r.exists,
+          workflows: r.workflows,
+        };
+      },
+      saveProjectWorkflows: async ({ cwd, workflows }) => {
+        return saveProjectWorkflows(cwd ?? "", workflows ?? []);
+      },
       listUserCommands: async ({ projectCwd }) => {
         if (!projectCwd?.trim()) {
           return { commands: [] };
@@ -787,6 +802,16 @@ remoteAccess = new RemoteAccessServer({
   getProjectHarness: (cwd, project) => getProjectHarness(cwd, project),
   applyProjectHarness: (cwd, optimizationId, project) =>
     applyProjectHarness(cwd, optimizationId, project),
+  getProjectWorkflows: (cwd) => {
+    const r = loadProjectWorkflows(cwd ?? "");
+    return {
+      path: r.path,
+      exists: r.exists,
+      workflows: r.workflows,
+    };
+  },
+  saveProjectWorkflows: (cwd, workflows) =>
+    saveProjectWorkflows(cwd ?? "", workflows ?? []),
   getAgentSetup: () => getAgentSetupStatus(),
   ensureAgentSetup: () => ensureAgentSetup(),
 });

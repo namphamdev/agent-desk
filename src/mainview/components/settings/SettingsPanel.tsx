@@ -12,6 +12,7 @@ import {
 import { getRpc } from "../../rpc";
 import { RemoteAccessControls } from "../RemoteAccessPanel";
 import { AlertsTab } from "./AlertsTab";
+import { WorkflowsTab } from "./WorkflowsTab";
 import { BASE_TABS, newProviderLocal } from "./constants";
 import { ClaudeCodeTab } from "./ClaudeCodeTab";
 import { GeneralTab } from "./GeneralTab";
@@ -33,10 +34,13 @@ export function SettingsPanel({
   onRemoteStop,
   onRemoteRegenerate,
   onRemoteRefresh,
+  projectCwd = null,
+  projectName = null,
 }: SettingsPanelProps) {
   const [draft, setDraft] = useState<AppSettings>(() => ({
     ...settings,
     providers: settings.providers ? [...settings.providers] : [],
+    workflows: settings.workflows ? settings.workflows.map((w) => ({ ...w })) : [],
   }));
   const [worktreePathsText, setWorktreePathsText] = useState(() =>
     formatSymlinkPathsText(settings.worktreeSymlinkPaths ?? ["node_modules"]),
@@ -90,6 +94,7 @@ export function SettingsPanel({
         activeProviderId,
         providers: draft.providers ?? [],
         worktreeSymlinkPaths: parseSymlinkPathsText(worktreePathsText),
+        workflows: draft.workflows ?? [],
       });
       onClose();
     } finally {
@@ -292,6 +297,15 @@ export function SettingsPanel({
                 onStart={onRemoteStart ?? (async () => {})}
                 onStop={onRemoteStop ?? (async () => {})}
                 onRegenerate={onRemoteRegenerate ?? (async () => {})}
+              />
+            )}
+
+            {tab === "workflows" && (
+              <WorkflowsTab
+                draft={draft}
+                setDraft={setDraft}
+                projectCwd={projectCwd}
+                projectName={projectName}
               />
             )}
 

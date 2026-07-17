@@ -42,13 +42,25 @@ bunx vite build
 ## Configure agents
 
 On first launch the app writes `~/.terminal-react/agents.json`. Edit it to
-point at your ACP-capable agent binary.
+point at your ACP-capable agent binaries.
 
 **Claude Code is not ACP-native.** Use the official adapter:
 
 ```bash
 npm i -g @agentclientprotocol/claude-agent-acp
 # binary: claude-agent-acp  (also installs a deprecated alias claude-code-acp)
+```
+
+**Grok Build is ACP-native** (`grok agent stdio`). Install from
+[x.ai/cli](https://x.ai/cli) / [grok-build](https://github.com/xai-org/grok-build),
+then authenticate with `grok login` or `XAI_API_KEY`.
+
+```bash
+# macOS / Linux / Git Bash
+curl -fsSL https://x.ai/cli/install.sh | bash
+
+# Windows PowerShell
+irm https://x.ai/cli/install.ps1 | iex
 ```
 
 ```json
@@ -60,6 +72,12 @@ npm i -g @agentclientprotocol/claude-agent-acp
       "name": "Claude Code (ACP)",
       "command": "claude-agent-acp",
       "args": []
+    },
+    {
+      "id": "grok-build",
+      "name": "Grok Build (ACP)",
+      "command": "grok",
+      "args": ["agent", "stdio"]
     }
   ]
 }

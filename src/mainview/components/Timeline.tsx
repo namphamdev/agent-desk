@@ -72,10 +72,10 @@ function entriesScrollSignature(entries: Entry[]): string {
  * pixel sizes; if measure fails we fall back to a plain scroll list so messages
  * always show.
  *
- * Stick-to-bottom: LegendList's maintainScrollAtEnd helps, but streaming updates
- * the *same* row in place and late layout (markdown, header "Working"→"Ready")
- * can leave the viewport short of the real end after a turn finishes. We track
- * stick state ourselves and re-pin after content + layout settle.
+ * Stick-to-bottom: LegendList's maintainScrollAtEnd covers data + item layout.
+ * We only add a single coalesced re-pin when the trailing entry streams more
+ * content (same id, growing text). Multiple staggered scrollToEnd calls and
+ * deps on unstable header elements caused jitter during agent processing.
  */
 export function Timeline({
   entries,
@@ -97,6 +97,9 @@ export function Timeline({
   const stickToBottomRef = useRef(true);
   /** Ignore onScroll while we pin — intermediate offsets can clear stick state. */
   const pinningRef = useRef(false);
+  const pinRafRef = useRef(0);
+  const unpinTimerRef = useRef(0);
+  const lastEntryIdRef = useRef<string | null>(null);
   const [viewport, setViewport] = useState({ height: 0, width: 0 });
 
   useLayoutEffect(() => {
@@ -131,17 +134,31 @@ export function Timeline({
     stickToBottomRef.current = true;
   }, [sessionKey]);
 
-  const scrollToEndIfStuck = useCallback(() => {
+  useEffect(() => {
+    return () => {
+      if (pinRafRef.current) cancelAnimationFrame(pinRafRef.current);
+      if (unpinTimerRef.current) window.clearTimeout(unpinTimerRef.current);
+    };
+  }, []);
+
+  /** One pin per animation frame — avoids multi-shot scroll fighting layout. */
+  const scheduleScrollToEndIfStuck = useCallback(() => {
     if (!stickToBottomRef.current) return;
-    const list = listRef.current;
-    if (!list) return;
-    pinningRef.current = true;
-    void Promise.resolve(list.scrollToEnd({ animated: false })).finally(() => {
+    if (pinRafRef.current) return;
+    pinRafRef.current = requestAnimationFrame(() => {
+      pinRafRef.current = 0;
+      if (!stickToBottomRef.current) return;
+      const list = listRef.current;
+      if (!list) return;
+      pinningRef.current = true;
+      list.scrollToEnd({ animated: false });
       stickToBottomRef.current = true;
-      // Next frame: allow user scroll tracking again after pin settles.
-      requestAnimationFrame(() => {
+      if (unpinTimerRef.current) window.clearTimeout(unpinTimerRef.current);
+      // Hold pin long enough to ignore intermediate scroll events from layout.
+      unpinTimerRef.current = window.setTimeout(() => {
+        unpinTimerRef.current = 0;
         pinningRef.current = false;
-      });
+      }, 32);
     });
   }, []);
 
@@ -166,10 +183,8 @@ export function Timeline({
   const onLoad = useCallback(() => {
     stickToBottomRef.current = true;
     if (entries.length === 0) return;
-    requestAnimationFrame(() => {
-      scrollToEndIfStuck();
-    });
-  }, [entries.length, scrollToEndIfStuck]);
+    scheduleScrollToEndIfStuck();
+  }, [entries.length, scheduleScrollToEndIfStuck]);
 
   const onScroll = useCallback(
     (e: NativeSyntheticEvent<NativeScrollEvent>) => {
@@ -182,8 +197,18 @@ export function Timeline({
     [],
   );
 
+  const onItemSizeChanged = useCallback(
+    (info: { itemKey: string }) => {
+      if (!stickToBottomRef.current) return;
+      if (info.itemKey !== lastEntryIdRef.current) return;
+      scheduleScrollToEndIfStuck();
+    },
+    [scheduleScrollToEndIfStuck],
+  );
+
   // User sends a prompt → re-attach follow mode (chat apps always jump to the send).
   const lastEntry = entries[entries.length - 1];
+  lastEntryIdRef.current = lastEntry?.id ?? null;
   const lastIsUser =
     lastEntry?.type === "message" && lastEntry.role === "user";
   useLayoutEffect(() => {
@@ -191,27 +216,11 @@ export function Timeline({
   }, [entries.length, lastIsUser]);
 
   const scrollSig = entriesScrollSignature(entries);
-  // Re-pin when data grows or the trailing row streams more content. Deferred
-  // passes cover item remeasure after markdown/header layout (turn end).
+  // Re-pin only when timeline content grows (not header/elapsed re-renders).
   useLayoutEffect(() => {
     if (entries.length === 0) return;
-    if (!stickToBottomRef.current) return;
-
-    scrollToEndIfStuck();
-    let raf2 = 0;
-    const raf1 = requestAnimationFrame(() => {
-      scrollToEndIfStuck();
-      raf2 = requestAnimationFrame(scrollToEndIfStuck);
-    });
-    const t1 = window.setTimeout(scrollToEndIfStuck, 50);
-    const t2 = window.setTimeout(scrollToEndIfStuck, 200);
-    return () => {
-      cancelAnimationFrame(raf1);
-      cancelAnimationFrame(raf2);
-      window.clearTimeout(t1);
-      window.clearTimeout(t2);
-    };
-  }, [scrollSig, header, scrollToEndIfStuck, entries.length]);
+    scheduleScrollToEndIfStuck();
+  }, [scrollSig, scheduleScrollToEndIfStuck, entries.length]);
 
   const ready = viewport.height >= 32 && viewport.width >= 32;
 
@@ -234,10 +243,18 @@ export function Timeline({
           estimatedListSize={viewport}
           drawDistance={Math.max(250, viewport.height)}
           initialScrollAtEnd
-          maintainScrollAtEnd
+          maintainScrollAtEnd={{
+            animated: false,
+            on: {
+              dataChange: true,
+              itemLayout: true,
+              layout: true,
+            },
+          }}
           maintainScrollAtEndThreshold={0.25}
           onLoad={onLoad}
           onScroll={onScroll}
+          onItemSizeChanged={onItemSizeChanged}
           style={{
             height: viewport.height,
             width: viewport.width,
@@ -300,7 +317,7 @@ function PlainTimeline({
     if (!stickToBottomRef.current) return;
     const el = scrollerRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [scrollSig, header]);
+  }, [scrollSig]);
 
   const onScroll = useCallback((e: UIEvent<HTMLDivElement>) => {
     const el = e.currentTarget;

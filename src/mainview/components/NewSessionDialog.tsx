@@ -2,7 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import { RiCloseLine, RiDeleteBinLine } from "react-icons/ri";
 import type { AgentInfo, RecentProject } from "../../shared/rpc";
 import {
-  WORKFLOWS,
+  BUILTIN_WORKFLOWS,
+  type WorkflowDefinition,
   type WorkflowId,
   workflowSessionTitle,
 } from "../../session/workflows";
@@ -42,6 +43,10 @@ type Props = {
    * and recent projects — cwd is already fixed.
    */
   lockProject?: boolean;
+  /** Resolved workflows for the selected project (project → global → built-in). */
+  workflows?: readonly WorkflowDefinition[];
+  /** Notify parent when project folder changes so workflows can re-resolve. */
+  onProjectCwdChange?: (cwd: string) => void;
   onPickFolder: (startingFolder?: string) => Promise<string | null>;
   onRemoveRecent: (cwd: string) => void | Promise<void>;
   onCancel: () => void;
@@ -60,11 +65,14 @@ export function NewSessionDialog({
   defaultCwd,
   recentProjects,
   lockProject = false,
+  workflows: workflowsProp,
+  onProjectCwdChange,
   onPickFolder,
   onRemoveRecent,
   onCancel,
   onCreate,
 }: Props) {
+  const workflows = workflowsProp?.length ? workflowsProp : BUILTIN_WORKFLOWS;
   const [cwd, setCwd] = useState(defaultCwd);
   const [title, setTitle] = useState("");
   const [agentId, setAgentId] = useState(
@@ -93,9 +101,19 @@ export function NewSessionDialog({
 
   const project = useMemo(() => projectNameFromPath(cwd.trim()), [cwd]);
   const selectedWorkflow = useMemo(
-    () => (workflowId ? WORKFLOWS.find((w) => w.id === workflowId) : null),
-    [workflowId],
+    () => (workflowId ? workflows.find((w) => w.id === workflowId) : null),
+    [workflowId, workflows],
   );
+
+  useEffect(() => {
+    if (workflowId && !workflows.some((w) => w.id === workflowId)) {
+      setWorkflowId(null);
+    }
+  }, [workflows, workflowId]);
+
+  useEffect(() => {
+    onProjectCwdChange?.(cwd.trim());
+  }, [cwd, onProjectCwdChange]);
 
   const browse = async () => {
     setPicking(true);
@@ -130,7 +148,8 @@ export function NewSessionDialog({
       return;
     }
     if (workflowId) {
-      if (workflowId === "review_pr") {
+      const wf = workflows.find((w) => w.id === workflowId);
+      if (wf?.needsPrRef) {
         if (!prRef.trim() && !task.trim()) {
           setError("Enter a PR URL/number or review notes to continue.");
           return;
@@ -155,7 +174,12 @@ export function NewSessionDialog({
       const sessionTitle =
         title.trim() ||
         (workflow
-          ? workflowSessionTitle(workflow.id, workflow.task, workflow.prRef)
+          ? workflowSessionTitle(
+              workflows.find((w) => w.id === workflow.id) ?? workflow.id,
+              workflow.task,
+              workflow.prRef,
+              workflows,
+            )
           : undefined);
 
       await onCreate({
@@ -332,7 +356,7 @@ export function NewSessionDialog({
                   Empty session — type your own prompt
                 </span>
               </button>
-              {WORKFLOWS.map((w) => {
+              {workflows.map((w) => {
                 const active = workflowId === w.id;
                 return (
                   <button
@@ -430,9 +454,10 @@ export function NewSessionDialog({
               placeholder={
                 selectedWorkflow
                   ? workflowSessionTitle(
-                      selectedWorkflow.id,
+                      selectedWorkflow,
                       task,
                       prRef || undefined,
+                      workflows,
                     )
                   : "New session"
               }

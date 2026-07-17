@@ -14,6 +14,8 @@ export function commonUserBinDirs(home = homedir()): string[] {
     join(home, ".local", "bin"),
     join(home, ".npm-global", "bin"),
     join(home, "Library", "pnpm"),
+    // Grok Build (xAI) installs here: `irm https://x.ai/cli/install.ps1 | iex`
+    join(home, ".grok", "bin"),
     // Homebrew
     "/opt/homebrew/bin",
     "/opt/homebrew/sbin",
@@ -29,6 +31,7 @@ export function commonUserBinDirs(home = homedir()): string[] {
       join(appData, "npm"),
       join(localAppData, "pnpm"),
       join(home, ".bun", "bin"),
+      join(home, ".grok", "bin"),
     );
   }
 

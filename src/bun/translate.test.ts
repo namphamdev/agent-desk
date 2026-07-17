@@ -5,6 +5,9 @@ import {
   translateConfigOptions,
   translateSessionUpdate,
   translateUsageUpdate,
+  translateGrokSessionConfig,
+  withFallbackGrokEffort,
+  withFallbackPermissionMode,
   withModeCurrentValue,
 } from "./translate";
 import type { SessionConfigOption } from "../shared/rpc";
@@ -461,3 +464,91 @@ describe("translateUsageUpdate", () => {
     ).toBeNull();
   });
 });
+
+describe("withFallbackPermissionMode", () => {
+  it("adds a Permission select when agent omits modes", () => {
+    const next = withFallbackPermissionMode([], "default");
+    const mode = next.find((o) => o.id === "mode" && o.type === "select");
+    expect(mode?.type).toBe("select");
+    if (mode?.type !== "select") return;
+    expect(mode.category).toBe("mode");
+    expect(mode.currentValue).toBe("default");
+    expect(mode.options.map((o) => o.value)).toEqual(
+      expect.arrayContaining([
+        "default",
+        "plan",
+        "acceptEdits",
+        "bypassPermissions",
+      ]),
+    );
+    const yolo = mode.options.find((o) => o.value === "bypassPermissions");
+    expect(yolo?.name.toLowerCase()).toContain("always");
+  });
+
+  it("does not replace an existing mode select", () => {
+    const existing: SessionConfigOption[] = [
+      {
+        id: "mode",
+        name: "Permission",
+        category: "mode",
+        type: "select",
+        currentValue: "plan",
+        options: [{ value: "plan", name: "Plan" }],
+      },
+    ];
+    expect(withFallbackPermissionMode(existing, "default")).toBe(existing);
+  });
+});
+
+describe("translateGrokSessionConfig", () => {
+  it("maps model + effort (category mode) into host select options", () => {
+    const next = translateGrokSessionConfig(
+      [
+        {
+          id: "grok-build",
+          category: "model",
+          label: "Grok Build",
+          selected: true,
+        },
+        { id: "low", category: "mode", label: "Low", selected: false },
+        { id: "medium", category: "mode", label: "Medium", selected: false },
+        { id: "high", category: "mode", label: "High", selected: true },
+      ],
+      "medium",
+    );
+    const model = next.find((o) => o.id === "model" && o.type === "select");
+    const effort = next.find(
+      (o) => o.id === "thought_level" && o.type === "select",
+    );
+    expect(model?.type).toBe("select");
+    expect(effort?.type).toBe("select");
+    if (model?.type === "select") {
+      expect(model.currentValue).toBe("grok-build");
+    }
+    if (effort?.type === "select") {
+      // preferredEffort wins over selected meta flag
+      expect(effort.currentValue).toBe("medium");
+      expect(effort.options.map((o) => o.value)).toEqual(
+        expect.arrayContaining(["low", "medium", "high"]),
+      );
+    }
+  });
+});
+
+describe("withFallbackGrokEffort", () => {
+  it("adds thought_level when missing", () => {
+    const next = withFallbackGrokEffort([], "high");
+    const e = next.find((o) => o.id === "thought_level");
+    expect(e?.type).toBe("select");
+    if (e?.type === "select") {
+      expect(e.currentValue).toBe("high");
+      expect(e.options.map((o) => o.value)).toEqual([
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+      ]);
+    }
+  });
+});
+

@@ -24,6 +24,11 @@ import {
   translateConfigOptions,
   translateSessionUpdate,
   translateUsageUpdate,
+  isGrokEffortValue,
+  translateGrokSessionConfig,
+  withEffortCurrentValue,
+  withFallbackGrokEffort,
+  withFallbackPermissionMode,
   withModeCurrentValue,
 } from "./translate";
 import type { SessionUpdate } from "../session/types";
@@ -72,6 +77,21 @@ export type AcpClientOptions = {
    * credentials survive past ~/.claude/settings.json loading.
    */
   sessionMeta?: Record<string, unknown>;
+  /**
+   * Extra argv inserted after the resolved command, before `agent.args`.
+   * Used for Grok flags like `--always-approve` on `grok agent … stdio`.
+   */
+  spawnExtraArgs?: string[];
+  /**
+   * When the agent omits ACP modes/configOptions for permission (Grok),
+   * synthesize a Permission dropdown. Prefer host settings default.
+   */
+  fallbackPermissionMode?: string;
+  /**
+   * Preferred reasoning effort for Grok (`--effort` / sessionConfig mode).
+   * Used when synthesizing the Effort dropdown.
+   */
+  fallbackEffort?: string;
 };
 
 export type AcpSessionHandle = {
@@ -108,6 +128,11 @@ export class AcpClient {
    * session/new `modes` (must use session/set_mode, not set_config_option).
    */
   private modeViaSetMode = false;
+  /**
+   * True when Effort (thought_level) is Grok-style and must use
+   * session/set_mode rather than set_config_option.
+   */
+  private effortViaSetMode = false;
   /** Latest config options for the active session (keeps mode UI in sync). */
   private activeConfigOptions: SessionConfigOption[] = [];
   /** Bumped to cancel the background `nextUpdate` pump. */
@@ -182,8 +207,9 @@ export class AcpClient {
       console.log(`[acp] resolved "${this.agent.command}" → ${resolved}`);
     }
 
+    const extra = this.options.spawnExtraArgs ?? [];
     this.proc = spawn({
-      cmd: [resolved, ...this.agent.args],
+      cmd: [resolved, ...extra, ...this.agent.args],
       stdin: "pipe",
       stdout: "pipe",
       stderr: "pipe",
@@ -291,9 +317,52 @@ export class AcpClient {
       },
     });
 
+    await this.authenticateIfNeeded(initResult);
+
     console.log(
       `[acp] connected to ${this.agent.name} (protocol v${initResult.protocolVersion})`,
     );
+  }
+
+  /**
+   * Grok Build and similar agents advertise `authMethods` and require
+   * `authenticate` before session/new. Claude agent-acp typically does not.
+   * Prefer cached_token / API-key style methods for headless desktop use.
+   */
+  private async authenticateIfNeeded(
+    initResult: {
+      authMethods?: Array<{ id?: string } | null> | null;
+      _meta?: Record<string, unknown> | null;
+    },
+  ): Promise<void> {
+    if (!this.ctx) return;
+    const methods = (initResult.authMethods ?? []).filter(
+      (m): m is { id: string } => !!m && typeof m.id === "string" && !!m.id,
+    );
+    if (methods.length === 0) return;
+
+    const meta = initResult._meta ?? undefined;
+    const preferred =
+      (typeof meta?.defaultAuthMethodId === "string" &&
+        meta.defaultAuthMethodId) ||
+      null;
+    const ids = new Set(methods.map((m) => m.id));
+    const order = [
+      preferred,
+      "cached_token",
+      "xai.api_key",
+      "api_key",
+      ...methods.map((m) => m.id),
+    ].filter((id): id is string => typeof id === "string" && ids.has(id));
+
+    const methodId = order[0];
+    if (!methodId) return;
+
+    console.log(`[acp] authenticate methodId=${methodId}`);
+    await this.ctx.request(acp.methods.agent.authenticate, {
+      methodId,
+      _meta: { headless: true },
+    });
   }
 
   async openSession(
@@ -362,9 +431,65 @@ export class AcpClient {
         o.type === "select" &&
         (o.category === "mode" || o.id === "mode"),
     );
-    const configOptions = mergeSessionModesIntoConfigOptions(fromConfig, modes);
-    // Claude Code ACP often only exposes permission modes via SessionModeState.
-    this.modeViaSetMode = !hadModeInConfig && !!modes?.availableModes?.length;
+    let configOptions = mergeSessionModesIntoConfigOptions(fromConfig, modes);
+
+    // Grok: models + effort live under `_meta["x.ai/sessionConfig"]` (effort is
+    // category "mode" with values minimal|low|medium|high|xhigh — not permission).
+    const newMeta = (session.newSessionResponse as { _meta?: Record<string, unknown> })
+      ._meta;
+    const grokSessionConfig = newMeta?.["x.ai/sessionConfig"] as
+      | { options?: Array<{ id?: string; category?: string; label?: string; selected?: boolean }> }
+      | undefined;
+    const fromGrok = translateGrokSessionConfig(
+      grokSessionConfig?.options,
+      this.options.fallbackEffort,
+    );
+    if (fromGrok.length > 0) {
+      const ids = new Set(configOptions.map((o) => o.id));
+      for (const opt of fromGrok) {
+        if (!ids.has(opt.id)) configOptions.push(opt);
+      }
+    }
+
+    const hasEffort = configOptions.some(
+      (o) =>
+        o.type === "select" &&
+        (o.category === "thought_level" ||
+          o.id === "thought_level" ||
+          o.id === "effort"),
+    );
+    if (!hasEffort && this.options.fallbackEffort != null) {
+      configOptions = withFallbackGrokEffort(
+        configOptions,
+        this.options.fallbackEffort || "high",
+      );
+    }
+    this.effortViaSetMode = configOptions.some(
+      (o) =>
+        o.type === "select" &&
+        (o.category === "thought_level" || o.id === "thought_level") &&
+        o.options.some((x) => isGrokEffortValue(x.value)),
+    );
+
+    const hadModeAfterMerge = configOptions.some(
+      (o) =>
+        o.type === "select" &&
+        (o.category === "mode" || o.id === "mode"),
+    );
+    // Grok omits ACP permission modes; synthesize Permission for session/set_mode.
+    if (!hadModeAfterMerge) {
+      const fallback =
+        this.options.fallbackPermissionMode?.trim() || "default";
+      configOptions = withFallbackPermissionMode(configOptions, fallback);
+    }
+    // Use session/set_mode when mode select was synthesized (agent or fallback).
+    this.modeViaSetMode =
+      !hadModeInConfig &&
+      configOptions.some(
+        (o) =>
+          o.type === "select" &&
+          (o.category === "mode" || o.id === "mode"),
+      );
     this.activeConfigOptions = configOptions;
 
     let updatesStarted = false;
@@ -390,6 +515,7 @@ export class AcpClient {
         }
         if (this.active === session) this.active = null;
         this.modeViaSetMode = false;
+        this.effortViaSetMode = false;
         this.activeConfigOptions = [];
       },
     };
@@ -476,6 +602,29 @@ export class AcpClient {
       );
       this.activeConfigOptions = configOptions;
       this.handlers.onMode?.(sessionId, value);
+      this.handlers.onConfigOptions?.(sessionId, configOptions);
+      return configOptions;
+    }
+
+    // Grok reasoning effort is set via session/set_mode (values low|medium|high|…).
+    // set_config_option is not implemented on Grok.
+    if (
+      this.effortViaSetMode &&
+      typeof value === "string" &&
+      (configId === "thought_level" ||
+        configId === "effort" ||
+        configId === "reasoning_effort") &&
+      isGrokEffortValue(value)
+    ) {
+      await this.ctx.request(acp.methods.agent.session.setMode, {
+        sessionId,
+        modeId: value,
+      });
+      const configOptions = withEffortCurrentValue(
+        this.activeConfigOptions,
+        value,
+      );
+      this.activeConfigOptions = configOptions;
       this.handlers.onConfigOptions?.(sessionId, configOptions);
       return configOptions;
     }

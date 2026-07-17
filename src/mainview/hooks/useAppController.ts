@@ -7,7 +7,11 @@ import {
   reviewSessionTitle,
   summarizeSessionChanges,
 } from "../../session/session-summary";
-import { buildWorkflowPrompt } from "../../session/workflows";
+import {
+  buildWorkflowPrompt,
+  resolveWorkflows,
+  type WorkflowDefinition,
+} from "../../session/workflows";
 import type {
   AgentInfo,
   AppSettings,
@@ -69,6 +73,9 @@ export function useAppController() {
   const [configOptions, setConfigOptions] = useState<SessionConfigOption[]>([]);
   const [usage, setUsage] = useState<SessionUsage | null>(null);
   const [settings, setSettings] = useState<AppSettings | null>(null);
+  const [resolvedWorkflows, setResolvedWorkflows] = useState<
+    WorkflowDefinition[]
+  >([]);
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [showSettings, setShowSettings] = useState(false);
   const [showSkills, setShowSkills] = useState(false);
@@ -268,6 +275,44 @@ export function useAppController() {
     setShowNewSession(true);
   }, [refreshRecentProjects]);
 
+  const loadResolvedWorkflows = useCallback(
+    async (cwd: string, globalList?: WorkflowDefinition[] | null) => {
+      const folder = cwd.trim();
+      const global = globalList ?? settings?.workflows ?? [];
+      if (!folder) {
+        const r = resolveWorkflows({ global, project: null });
+        setResolvedWorkflows(r.workflows);
+        return r.workflows;
+      }
+      try {
+        const res = await getRpc().request.getProjectWorkflows({ cwd: folder });
+        const r = resolveWorkflows({
+          global,
+          project: res.workflows,
+        });
+        setResolvedWorkflows(r.workflows);
+        return r.workflows;
+      } catch {
+        const r = resolveWorkflows({ global, project: null });
+        setResolvedWorkflows(r.workflows);
+        return r.workflows;
+      }
+    },
+    [settings?.workflows],
+  );
+
+
+  useEffect(() => {
+    if (!showNewSession) return;
+    void loadResolvedWorkflows(newSessionDefaultCwd || settings?.lastProjectCwd || "");
+  }, [
+    showNewSession,
+    newSessionDefaultCwd,
+    settings?.lastProjectCwd,
+    settings?.workflows,
+    loadResolvedWorkflows,
+  ]);
+
   const handleCreateSession = useCallback(
     async (opts: NewSessionOptions) => {
       // Clear prior session UI before create. Do not clear again after the RPC
@@ -296,10 +341,17 @@ export function useAppController() {
         // Workflow sessions: auto-send harness-aware first prompt (same pattern
         // as review-in-new-session).
         if (opts.workflow) {
-          const prompt = buildWorkflowPrompt(opts.workflow.id, {
-            task: opts.workflow.task,
-            prRef: opts.workflow.prRef,
-          });
+          const def =
+            resolvedWorkflows.find((w) => w.id === opts.workflow!.id) ??
+            opts.workflow.id;
+          const prompt = buildWorkflowPrompt(
+            def,
+            {
+              task: opts.workflow.task,
+              prRef: opts.workflow.prRef,
+            },
+            resolvedWorkflows,
+          );
           await dispatchPrompt(prompt, res.session.id);
         }
       } else {
@@ -307,7 +359,7 @@ export function useAppController() {
         throw new Error(res.error);
       }
     },
-    [dispatchPrompt, refreshRecentProjects],
+    [dispatchPrompt, refreshRecentProjects, resolvedWorkflows],
   );
 
   const handlePrompt = useCallback(
@@ -1282,6 +1334,8 @@ export function useAppController() {
     remoteAccessError,
     showNewSession,
     newSessionDefaultCwd,
+    resolvedWorkflows,
+    loadResolvedWorkflows,
     pendingDelete,
     recentProjects,
     showSidebar,

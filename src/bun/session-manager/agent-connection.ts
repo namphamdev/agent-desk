@@ -21,6 +21,11 @@ import {
   resolveActiveProvider,
   withBrowserMcpAlwaysLoaded,
 } from "../providers";
+import {
+  buildGrokProviderEnv,
+  ensureGrokConfigForProvider,
+  isGrokStyleAgent,
+} from "../grok-config";
 import type { SessionStore } from "../store";
 import type {
   RequestPermissionRequest,
@@ -28,6 +33,115 @@ import type {
 } from "@agentclientprotocol/sdk";
 import { applyPreferredConfigDefaults } from "./config-options";
 import type { LiveSession, SessionManagerEvents } from "./types";
+
+/** Claude Code ACP adapter (and aliases). Other agents skip Anthropic provider env/meta. */
+function isClaudeStyleAgent(agent: Pick<AgentInfo, "id" | "command" | "name">): boolean {
+  const id = agent.id.toLowerCase();
+  if (id === "claude-code" || id === "claude" || id.startsWith("claude-")) {
+    return true;
+  }
+  const cmd = agent.command.replace(/\\/g, "/").split("/").pop() ?? agent.command;
+  const base = cmd.replace(/\.exe$/i, "").toLowerCase();
+  return (
+    base === "claude-agent-acp" ||
+    base === "claude-code-acp" ||
+    base === "claude"
+  );
+}
+
+
+
+
+function isGrokYoloMode(defaultPermissionMode: string | undefined): boolean {
+  const mode = (defaultPermissionMode ?? "").trim().toLowerCase();
+  return (
+    mode === "bypasspermissions" ||
+    mode === "always-approve" ||
+    mode === "always_approve" ||
+    mode === "yolo" ||
+    mode === "auto"
+  );
+}
+
+/**
+ * Grok CLI takes `--always-approve` on `grok agent` (before `stdio`):
+ * `grok agent --always-approve stdio`.
+ */
+/**
+ * Insert CLI flags after `agent` for Grok Build ACP spawn:
+ * `grok agent [--always-approve] [--effort LEVEL] stdio`
+ */
+export function withGrokAgentSpawnArgs(
+  agent: AgentInfo,
+  opts: {
+    defaultPermissionMode?: string;
+    defaultEffort?: string;
+  },
+): AgentInfo {
+  if (!isGrokStyleAgent(agent)) return agent;
+  const args = [...(agent.args ?? [])];
+  const agentIdx = args.findIndex((a) => a === "agent");
+  const insertAt = agentIdx >= 0 ? agentIdx + 1 : 0;
+
+  // Build flags to insert (order: always-approve then effort).
+  const flags: string[] = [];
+  if (
+    isGrokYoloMode(opts.defaultPermissionMode) &&
+    !args.includes("--always-approve")
+  ) {
+    flags.push("--always-approve");
+  }
+
+  const effort = normalizeGrokEffort(opts.defaultEffort);
+  const hasEffortFlag =
+    args.includes("--effort") || args.includes("--reasoning-effort");
+  if (effort && !hasEffortFlag) {
+    flags.push("--effort", effort);
+  }
+
+  if (flags.length === 0) return agent;
+  args.splice(insertAt, 0, ...flags);
+  return { ...agent, args };
+}
+
+/** @deprecated Use {@link withGrokAgentSpawnArgs}. */
+export function withGrokAlwaysApproveArgs(
+  agent: AgentInfo,
+  defaultPermissionMode: string | undefined,
+): AgentInfo {
+  return withGrokAgentSpawnArgs(agent, { defaultPermissionMode });
+}
+
+function normalizeGrokEffort(raw: string | undefined): string | null {
+  if (!raw?.trim()) return null;
+  const v = raw.trim().toLowerCase();
+  if (v === "max") return "xhigh";
+  if (v === "extra high" || v === "extra-high") return "xhigh";
+  if (
+    v === "minimal" ||
+    v === "low" ||
+    v === "medium" ||
+    v === "high" ||
+    v === "xhigh"
+  ) {
+    return v;
+  }
+  // Claude-style defaults often store "High" — still map known effort words.
+  return null;
+}
+
+/** Mode id for Grok session/set_mode / synthetic Permission dropdown. */
+function grokInitialModeId(
+  defaultPermissionMode: string | undefined,
+): string {
+  const raw = (defaultPermissionMode ?? "default").trim() || "default";
+  const lower = raw.toLowerCase();
+  if (isGrokYoloMode(raw)) return "bypassPermissions";
+  if (lower === "acceptedits" || lower === "accept_edits") return "acceptEdits";
+  if (lower === "plan") return "plan";
+  if (lower === "default") return "default";
+  return raw;
+}
 
 export type AgentConnectionHost = {
   settings: AppSettings;
@@ -190,10 +304,41 @@ export class AgentConnection {
         this.host.settings.activeModelAlias,
         "sonnet",
       );
-      const providerEnv = buildProviderEnv(provider, modelAlias);
-      // Always attach meta: browser MCP system append + ToolSearch disabled.
-      const sessionMeta = buildClaudeCodeSessionMeta(provider, modelAlias);
-      if (provider) {
+      // Anthropic-style providers + Claude session _meta only apply to Claude ACP.
+      // Grok Build reads ~/.grok/config.toml (+ env_key) — materialize that for BYOK.
+      const usesClaudeProvider = isClaudeStyleAgent(agent);
+      const usesGrokProvider = isGrokStyleAgent(agent);
+      const providerEnv = usesClaudeProvider
+        ? buildProviderEnv(provider, modelAlias)
+        : usesGrokProvider
+          ? buildGrokProviderEnv(provider)
+          : null;
+
+      if (usesGrokProvider) {
+        const grokCfg = await ensureGrokConfigForProvider(this.host.settings);
+        if (!grokCfg.ok) {
+          console.warn("[acp] failed to write Grok config.toml:", grokCfg.error);
+        } else if (grokCfg.wrote) {
+          console.log(
+            `[acp] wrote Grok config.toml at ${grokCfg.path}` +
+              (provider
+                ? ` provider="${provider.name}" model=${modelAlias}` +
+                  (provider.baseUrl ? ` base=${provider.baseUrl}` : "")
+                : ""),
+          );
+        } else {
+          console.log(
+            `[acp] Grok config.toml not rewritten (${grokCfg.reason}) — using existing ~/.grok setup`,
+          );
+        }
+      }
+
+      // Always attach Claude meta for Claude agents (browser MCP append + ToolSearch off).
+      // Other agents get no claudeCode session _meta (still may register MCP servers).
+      const sessionMeta = usesClaudeProvider
+        ? buildClaudeCodeSessionMeta(provider, modelAlias)
+        : undefined;
+      if (usesClaudeProvider && provider) {
         console.log(
           `[acp] spawning with provider "${provider.name}" (${provider.id})` +
             ` model=${modelAlias}` +
@@ -204,9 +349,17 @@ export class AgentConnection {
               ? ` base=${providerEnv.ANTHROPIC_BASE_URL}`
               : ""),
         );
-      } else {
+      } else if (usesClaudeProvider) {
         console.log(
           "[acp] spawning without app provider (browser MCP still registered per session)",
+        );
+      } else if (usesGrokProvider) {
+        console.log(
+          `[acp] spawning agent "${agent.name}" (Grok; config.toml / env_key for provider)`,
+        );
+      } else {
+        console.log(
+          `[acp] spawning agent "${agent.name}" (non-Claude; app Anthropic provider env skipped)`,
         );
       }
 
@@ -216,8 +369,14 @@ export class AgentConnection {
           "[acp] browser control plane unavailable — in-app browser MCP will not register",
         );
       }
+      const spawnAgent = usesGrokProvider
+        ? withGrokAgentSpawnArgs(agent, {
+            defaultPermissionMode: this.host.settings.defaultPermissionMode,
+            defaultEffort: this.host.settings.defaultEffort,
+          })
+        : agent;
       const client = new AcpClient(
-        agent,
+        spawnAgent,
         {
           enableFs: this.host.settings.enableFsCapabilities,
           enableBrowserMcp:
@@ -295,9 +454,26 @@ export class AgentConnection {
           },
         },
         {
-          // Always surface browser MCP tools (disable deferred tool search).
-          env: withBrowserMcpAlwaysLoaded(providerEnv ?? {}),
-          sessionMeta,
+          ...(usesClaudeProvider
+            ? {
+                // Always surface browser MCP tools (disable deferred tool search).
+                env: withBrowserMcpAlwaysLoaded(providerEnv ?? {}),
+                sessionMeta,
+              }
+            : usesGrokProvider && providerEnv
+              ? { env: providerEnv }
+              : {}),
+          // Grok: synthetic Permission dropdown (session/set_mode / --always-approve via spawn).
+          ...(usesGrokProvider
+            ? {
+                fallbackPermissionMode: grokInitialModeId(
+                  this.host.settings.defaultPermissionMode,
+                ),
+                fallbackEffort:
+                  normalizeGrokEffort(this.host.settings.defaultEffort) ??
+                  "high",
+              }
+            : {}),
         },
       );
 

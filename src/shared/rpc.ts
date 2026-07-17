@@ -5,6 +5,9 @@ import type {
   ToolCall,
   ToolKind,
 } from "../session/types";
+import type { WorkflowDefinition } from "../session/workflows";
+
+export type { WorkflowDefinition };
 import type {
   BrowserControlRequest,
   BrowserControlResponse,
@@ -177,6 +180,12 @@ export type AppSettings = {
    * (e.g. node_modules) so large installs are not duplicated per worktree.
    */
   worktreeSymlinkPaths?: string[];
+  /**
+   * Global overrides for New-task workflows. Empty / missing = use built-ins.
+   * Project file `.terminal-react/workflows.json` fully replaces this list
+   * when present and non-empty.
+   */
+  workflows?: WorkflowDefinition[];
 };
 
 /** Options for opening a new session inside a git worktree. */
@@ -263,8 +272,8 @@ export type AgentSetupEntry = {
 };
 
 /**
- * Claude Code / ACP agent setup diagnostics for Settings → Claude Code.
- * Claude Code is not ACP-native; this app uses `claude-agent-acp`.
+ * ACP agent setup diagnostics for Settings → Agents / Claude Code.
+ * Claude Code uses `claude-agent-acp`; Grok Build uses native `grok agent stdio`.
  */
 export type AgentSetupStatus = {
   configPath: string;
@@ -279,7 +288,13 @@ export type AgentSetupStatus = {
   /** Optional: Claude Code CLI (`claude`) if present. */
   claudeCliOk: boolean;
   claudeCliPath: string | null;
+  /** Install command for Claude ACP adapter. */
   installCommand: string;
+  /** `grok` binary (or agents.json entry for Grok Build ACP) resolves. */
+  grokOk: boolean;
+  grokPath: string | null;
+  /** Platform install command for Grok Build. */
+  grokInstallCommand: string;
 };
 
 /** An installed agent skill (SKILL.md package under ~/.agents/skills). */
@@ -615,6 +630,32 @@ export type TerminalRPC = {
         params: { projectCwd: string; commandId: string };
         response:
           | { ok: true; commands: SavedCommand[] }
+          | { ok: false; error: string };
+      };
+      /**
+       * Load project workflow overrides from
+       * `<cwd>/.terminal-react/workflows.json`.
+       */
+      getProjectWorkflows: {
+        params: { cwd: string };
+        response: {
+          path: string;
+          exists: boolean;
+          workflows: WorkflowDefinition[] | null;
+        };
+      };
+      /**
+       * Save (or clear) project workflows. Empty list deletes the file so
+       * global/built-in workflows are used again.
+       */
+      saveProjectWorkflows: {
+        params: { cwd: string; workflows: WorkflowDefinition[] };
+        response:
+          | {
+              ok: true;
+              path: string;
+              workflows: WorkflowDefinition[] | null;
+            }
           | { ok: false; error: string };
       };
       /** Spawn a project's saved command in that project folder. */
