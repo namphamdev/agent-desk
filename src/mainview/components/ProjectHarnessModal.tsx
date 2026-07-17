@@ -1,6 +1,13 @@
-import { useCallback, useEffect, useState } from "react";
-import { RiCloseLine } from "react-icons/ri";
+import { useCallback, useState } from "react";
 import type { ProjectHarness } from "../../shared/rpc";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { cn } from "@/lib/utils";
 
 type Props = {
   harness: ProjectHarness | null;
@@ -24,14 +31,6 @@ export function ProjectHarnessModal({
   const [localError, setLocalError] = useState<string | null>(null);
   const [flash, setFlash] = useState<string | null>(null);
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !busyId) onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [busyId, onClose]);
-
   const handleApply = useCallback(
     async (id: string) => {
       setLocalError(null);
@@ -54,25 +53,28 @@ export function ProjectHarnessModal({
   const total = harness?.optimizations.length ?? 0;
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-6"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="harness-title"
-      onClick={(e) => {
-        if (e.target === e.currentTarget && !busyId) onClose();
+    <Dialog
+      open
+      onOpenChange={(open) => {
+        if (!open && !busyId) onClose();
       }}
     >
-      <div className="flex h-[min(640px,90vh)] w-full max-w-xl flex-col overflow-hidden rounded-2xl border border-[#333] bg-[#1a1a1a] shadow-2xl">
-        <div className="flex shrink-0 items-center justify-between border-b border-[#2e2e2e] px-5 py-3">
+      <DialogContent
+        showCloseButton={true}
+        className="flex h-[min(640px,90vh)] w-full max-w-xl flex-col gap-0 overflow-hidden p-0 sm:max-w-xl"
+        onInteractOutside={(e) => {
+          if (busyId) e.preventDefault();
+        }}
+        onEscapeKeyDown={(e) => {
+          if (busyId) e.preventDefault();
+        }}
+      >
+        <DialogHeader className="flex shrink-0 flex-row items-center justify-between space-y-0 border-b border-border px-5 py-3 pr-12">
           <div className="min-w-0">
-            <h2
-              id="harness-title"
-              className="truncate text-sm font-semibold text-gray-100"
-            >
+            <DialogTitle id="harness-title" className="truncate">
               {title}
-            </h2>
-            <p className="mt-0.5 truncate text-xs text-gray-500">
+            </DialogTitle>
+            <p className="mt-0.5 truncate text-xs text-muted-foreground">
               {harness?.cwd ? (
                 <span title={harness.cwd}>{harness.cwd}</span>
               ) : (
@@ -80,54 +82,47 @@ export function ProjectHarnessModal({
               )}
             </p>
           </div>
-          <div className="flex shrink-0 items-center gap-2">
-            <button
-              type="button"
-              onClick={() => void onRefresh()}
-              disabled={loading || !!busyId}
-              className="rounded px-2 py-1 text-xs text-gray-400 hover:bg-[#2a2a2a] hover:text-gray-200 disabled:opacity-40"
-              title="Refresh"
-            >
-              Refresh
-            </button>
-            <button
-              type="button"
-              onClick={onClose}
-              className="rounded p-1 text-gray-500 hover:bg-[#2a2a2a] hover:text-gray-200"
-              aria-label="Close harness"
-            >
-              <RiCloseLine className="h-4 w-4" aria-hidden />
-            </button>
-          </div>
-        </div>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={() => void onRefresh()}
+            disabled={loading || !!busyId}
+            title="Refresh"
+          >
+            Refresh
+          </Button>
+        </DialogHeader>
 
-        <div className="shrink-0 border-b border-[#2e2e2e] px-5 py-3">
-          <div className="flex items-center gap-3 text-xs text-gray-400">
+        <div className="shrink-0 border-b border-border px-5 py-3">
+          <div className="flex items-center gap-3 text-xs text-muted-foreground">
             <span
-              className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 ${
+              className={cn(
+                "inline-flex items-center gap-1.5 rounded-full px-2 py-0.5",
                 applied > 0
                   ? "bg-emerald-950/60 text-emerald-400"
-                  : "bg-[#252525] text-gray-500"
-              }`}
+                  : "bg-muted text-muted-foreground",
+              )}
             >
               <span
-                className={`h-1.5 w-1.5 rounded-full ${
-                  applied > 0 ? "bg-emerald-400" : "bg-gray-600"
-                }`}
+                className={cn(
+                  "h-1.5 w-1.5 rounded-full",
+                  applied > 0 ? "bg-emerald-400" : "bg-muted-foreground",
+                )}
               />
               {applied}/{total} applied
             </span>
             {harness?.hasAgentsMd && (
-              <span className="text-gray-600">AGENTS.md present</span>
+              <span className="text-muted-foreground">AGENTS.md present</span>
             )}
             {harness?.hasClaudeMd && (
-              <span className="text-gray-600">CLAUDE.md present</span>
+              <span className="text-muted-foreground">CLAUDE.md present</span>
             )}
             {harness?.optimizations.some(
               (o) => o.id === "project-memory" && o.applied,
-            ) && <span className="text-gray-600">docs/memory</span>}
+            ) && <span className="text-muted-foreground">docs/memory</span>}
           </div>
-          <p className="mt-2 text-xs leading-relaxed text-gray-500">
+          <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
             The harness installs project-level agent setup: coding guidelines,
             sharded team memory + arc42 docs, Claude commands, and skills so
             agents (and teammates via git) share the same project knowledge.
@@ -136,13 +131,13 @@ export function ProjectHarnessModal({
 
         <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
           {loading && !harness && (
-            <div className="py-10 text-center text-sm text-gray-500">
+            <div className="py-10 text-center text-sm text-muted-foreground">
               Loading harness…
             </div>
           )}
 
           {displayError && (
-            <div className="mb-3 rounded-lg border border-red-900/50 bg-red-950/40 px-3 py-2 text-xs text-red-300">
+            <div className="mb-3 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
               {displayError}
             </div>
           )}
@@ -165,12 +160,12 @@ export function ProjectHarnessModal({
               return (
                 <li
                   key={opt.id}
-                  className="rounded-xl border border-[#2e2e2e] bg-[#141414] p-4"
+                  className="rounded-xl border border-border bg-card p-4"
                 >
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center gap-2">
-                        <h3 className="text-sm font-medium text-gray-100">
+                        <h3 className="text-sm font-medium text-foreground">
                           {opt.name}
                         </h3>
                         {opt.applied ? (
@@ -178,16 +173,16 @@ export function ProjectHarnessModal({
                             Applied
                           </span>
                         ) : (
-                          <span className="rounded bg-[#2a2a2a] px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-gray-500">
+                          <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
                             Not applied
                           </span>
                         )}
                       </div>
-                      <p className="mt-1.5 text-xs leading-relaxed text-gray-400">
+                      <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground">
                         {opt.description}
                       </p>
                       {opt.details && (
-                        <p className="mt-2 font-mono text-[11px] text-gray-600">
+                        <p className="mt-2 font-mono text-[11px] text-muted-foreground">
                           {opt.details}
                         </p>
                       )}
@@ -200,26 +195,24 @@ export function ProjectHarnessModal({
                         {opt.sourceLabel} ↗
                       </a>
                     </div>
-                    <button
+                    <Button
                       type="button"
+                      size="sm"
                       disabled={!!busyId || !harness?.ok}
                       onClick={() => void handleApply(opt.id)}
-                      className={`shrink-0 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
-                        opt.applied
-                          ? "border border-[#333] bg-transparent text-gray-300 hover:bg-[#252525]"
-                          : "bg-blue-600 text-white hover:bg-blue-500"
-                      }`}
+                      variant={opt.applied ? "outline" : "default"}
+                      className="shrink-0"
                     >
                       {busy
                         ? "Applying…"
                         : opt.applied
                           ? "Re-apply"
                           : "Apply"}
-                    </button>
+                    </Button>
                   </div>
 
                   {opt.id === "karpathy-guidelines" && (
-                    <div className="mt-3 grid grid-cols-2 gap-2 border-t border-[#2a2a2a] pt-3">
+                    <div className="mt-3 grid grid-cols-2 gap-2 border-t border-border pt-3">
                       {[
                         ["Think first", "Surface assumptions & tradeoffs"],
                         ["Simplicity", "Minimum code, no speculation"],
@@ -228,12 +221,12 @@ export function ProjectHarnessModal({
                       ].map(([label, hint]) => (
                         <div
                           key={label}
-                          className="rounded-md bg-[#1a1a1a] px-2.5 py-2"
+                          className="rounded-md bg-background px-2.5 py-2"
                         >
-                          <div className="text-[11px] font-medium text-gray-300">
+                          <div className="text-[11px] font-medium text-foreground/80">
                             {label}
                           </div>
-                          <div className="mt-0.5 text-[10px] text-gray-600">
+                          <div className="mt-0.5 text-[10px] text-muted-foreground">
                             {hint}
                           </div>
                         </div>
@@ -242,7 +235,7 @@ export function ProjectHarnessModal({
                   )}
 
                   {opt.id === "project-memory" && (
-                    <div className="mt-3 grid grid-cols-2 gap-2 border-t border-[#2a2a2a] pt-3">
+                    <div className="mt-3 grid grid-cols-2 gap-2 border-t border-border pt-3">
                       {[
                         ["INDEX.md", "Always-on catalog (keep small)"],
                         ["topics/", "Sharded durable team facts"],
@@ -251,12 +244,12 @@ export function ProjectHarnessModal({
                       ].map(([label, hint]) => (
                         <div
                           key={label}
-                          className="rounded-md bg-[#1a1a1a] px-2.5 py-2"
+                          className="rounded-md bg-background px-2.5 py-2"
                         >
-                          <div className="text-[11px] font-medium text-gray-300">
+                          <div className="text-[11px] font-medium text-foreground/80">
                             {label}
                           </div>
-                          <div className="mt-0.5 text-[10px] text-gray-600">
+                          <div className="mt-0.5 text-[10px] text-muted-foreground">
                             {hint}
                           </div>
                         </div>
@@ -269,11 +262,11 @@ export function ProjectHarnessModal({
           </ul>
         </div>
 
-        <div className="shrink-0 border-t border-[#2e2e2e] px-5 py-3 text-[11px] text-gray-600">
+        <div className="shrink-0 border-t border-border px-5 py-3 text-[11px] text-muted-foreground">
           Applies to new agent sessions in this folder. Existing open sessions
           keep their current system context until restarted.
         </div>
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 }

@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { Field as UiField, FieldLabel } from "@/components/ui/field";
 
 export function Field({
   label,
@@ -8,11 +9,11 @@ export function Field({
   children: ReactNode;
 }) {
   return (
-    <div className="block">
-      <span className="mb-1 block text-xs font-medium uppercase tracking-wider text-gray-500">
+    <UiField>
+      <FieldLabel className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
         {label}
-      </span>
+      </FieldLabel>
       {children}
-    </div>
+    </UiField>
   );
 }

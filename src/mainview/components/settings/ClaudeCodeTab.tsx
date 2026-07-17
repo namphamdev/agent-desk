@@ -5,6 +5,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type { AgentSetupStatus } from "../../../shared/rpc";
 import { getRpc } from "../../rpc";
+import { Button } from "@/components/ui/button";
 import { StatusDot } from "./StatusDot";
 
 export function ClaudeCodeTab() {
@@ -74,47 +75,49 @@ export function ClaudeCodeTab() {
 
   return (
     <div className="space-y-4">
-      <p className="text-[11px] leading-relaxed text-gray-500">
+      <p className="text-[11px] leading-relaxed text-muted-foreground">
         This app is an ACP host. Configure agents in{" "}
-        <code className="text-gray-400">~/.terminal-react/agents.json</code>.
+        <code className="text-muted-foreground">~/.terminal-react/agents.json</code>.
         Claude Code uses the adapter{" "}
-        <code className="text-gray-400">claude-agent-acp</code>; Grok Build speaks
+        <code className="text-muted-foreground">claude-agent-acp</code>; Grok Build speaks
         ACP natively via{" "}
-        <code className="text-gray-400">grok agent stdio</code>.
+        <code className="text-muted-foreground">grok agent stdio</code>.
       </p>
 
       {error && (
-        <div className="rounded-md border border-red-900/60 bg-red-950/40 px-3 py-2 text-xs text-red-300">
+        <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
           {error}
         </div>
       )}
 
       {loading && !status ? (
-        <div className="py-8 text-center text-xs text-gray-500">
+        <div className="py-8 text-center text-xs text-muted-foreground">
           Checking setup…
         </div>
       ) : status ? (
         <>
-          <div className="flex flex-wrap items-center gap-3 rounded-lg border border-[#2e2e2e] bg-[#121212] px-3 py-2.5">
+          <div className="flex flex-wrap items-center gap-3 rounded-lg border border-border bg-background px-3 py-2.5">
             <StatusDot
               ok={status.ready}
               label={status.ready ? "Ready to connect" : "Setup incomplete"}
             />
-            <button
+            <Button
               type="button"
+              variant="outline"
+              size="sm"
               disabled={loading || busy}
               onClick={() => void refresh()}
-              className="ml-auto rounded-md border border-[#333] px-2.5 py-1 text-xs text-gray-300 hover:bg-[#2a2a2a] disabled:opacity-50"
+              className="ml-auto"
             >
               {loading ? "Checking…" : "Re-check"}
-            </button>
+            </Button>
           </div>
 
           <div className="space-y-2">
-            <span className="block text-xs font-medium uppercase tracking-wider text-gray-500">
+            <span className="block text-xs font-medium uppercase tracking-wider text-muted-foreground">
               Prerequisites
             </span>
-            <ul className="space-y-2 rounded-lg border border-[#2e2e2e] bg-[#121212] p-3 text-xs">
+            <ul className="space-y-2 rounded-lg border border-border bg-background p-3 text-xs">
               <li className="flex flex-col gap-0.5">
                 <StatusDot
                   ok={status.claudeAcpOk}
@@ -125,7 +128,7 @@ export function ClaudeCodeTab() {
                   }
                 />
                 {status.claudeAcpPath && (
-                  <code className="ml-3.5 break-all font-mono text-[10px] text-gray-500">
+                  <code className="ml-3.5 break-all font-mono text-[10px] text-muted-foreground">
                     {status.claudeAcpPath}
                   </code>
                 )}
@@ -140,7 +143,7 @@ export function ClaudeCodeTab() {
                   }
                 />
                 {status.claudeCliPath && (
-                  <code className="ml-3.5 break-all font-mono text-[10px] text-gray-500">
+                  <code className="ml-3.5 break-all font-mono text-[10px] text-muted-foreground">
                     {status.claudeCliPath}
                   </code>
                 )}
@@ -155,7 +158,7 @@ export function ClaudeCodeTab() {
                   }
                 />
                 {status.grokPath && (
-                  <code className="ml-3.5 break-all font-mono text-[10px] text-gray-500">
+                  <code className="ml-3.5 break-all font-mono text-[10px] text-muted-foreground">
                     {status.grokPath}
                   </code>
                 )}
@@ -169,7 +172,7 @@ export function ClaudeCodeTab() {
                       : "agents.json missing"
                   }
                 />
-                <code className="ml-3.5 break-all font-mono text-[10px] text-gray-500">
+                <code className="ml-3.5 break-all font-mono text-[10px] text-muted-foreground">
                   {status.configPath}
                 </code>
               </li>
@@ -177,87 +180,93 @@ export function ClaudeCodeTab() {
           </div>
 
           <div className="space-y-2">
-            <span className="block text-xs font-medium uppercase tracking-wider text-gray-500">
+            <span className="block text-xs font-medium uppercase tracking-wider text-muted-foreground">
               Install Claude Code adapter
             </span>
             <div className="flex items-stretch gap-2">
-              <code className="min-w-0 flex-1 break-all rounded-md border border-[#333] bg-[#121212] px-2.5 py-2 font-mono text-[11px] text-gray-200">
+              <code className="min-w-0 flex-1 break-all rounded-md border border-border bg-background px-2.5 py-2 font-mono text-[11px] text-foreground">
                 {status.installCommand}
               </code>
-              <button
+              <Button
                 type="button"
+                variant="outline"
+                size="sm"
                 onClick={() => void copyInstall("claude")}
-                className="shrink-0 rounded-md border border-[#333] bg-[#222] px-3 text-xs text-gray-200 hover:bg-[#2a2a2a]"
+                className="shrink-0"
               >
                 {copiedInstall === "claude" ? "Copied" : "Copy"}
-              </button>
+              </Button>
             </div>
           </div>
 
           <div className="space-y-2">
-            <span className="block text-xs font-medium uppercase tracking-wider text-gray-500">
+            <span className="block text-xs font-medium uppercase tracking-wider text-muted-foreground">
               Install Grok Build
             </span>
             <div className="flex items-stretch gap-2">
-              <code className="min-w-0 flex-1 break-all rounded-md border border-[#333] bg-[#121212] px-2.5 py-2 font-mono text-[11px] text-gray-200">
+              <code className="min-w-0 flex-1 break-all rounded-md border border-border bg-background px-2.5 py-2 font-mono text-[11px] text-foreground">
                 {status.grokInstallCommand}
               </code>
-              <button
+              <Button
                 type="button"
+                variant="outline"
+                size="sm"
                 onClick={() => void copyInstall("grok")}
-                className="shrink-0 rounded-md border border-[#333] bg-[#222] px-3 text-xs text-gray-200 hover:bg-[#2a2a2a]"
+                className="shrink-0"
               >
                 {copiedInstall === "grok" ? "Copied" : "Copy"}
-              </button>
+              </Button>
             </div>
-            <p className="text-[11px] text-gray-500">
-              Then run <code className="text-gray-400">grok login</code> (or set{" "}
-              <code className="text-gray-400">XAI_API_KEY</code>). ACP command:{" "}
-              <code className="text-gray-400">grok agent stdio</code>. GUI apps may
+            <p className="text-[11px] text-muted-foreground">
+              Then run <code className="text-muted-foreground">grok login</code> (or set{" "}
+              <code className="text-muted-foreground">XAI_API_KEY</code>). ACP command:{" "}
+              <code className="text-muted-foreground">grok agent stdio</code>. GUI apps may
               not see shell PATH — ~/.grok/bin is auto-added.
             </p>
           </div>
 
           <div className="flex flex-wrap gap-2">
             {!status.configExists && (
-              <button
+              <Button
                 type="button"
+                size="sm"
                 disabled={busy}
                 onClick={() => void ensureConfig()}
-                className="rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-500 disabled:opacity-50"
               >
                 {busy ? "Writing…" : "Write default agents.json"}
-              </button>
+              </Button>
             )}
             {status.configExists && (
               <>
-                <button
+                <Button
                   type="button"
+                  variant="outline"
+                  size="sm"
                   onClick={() => void openConfig()}
-                  className="rounded-md border border-[#333] px-3 py-1.5 text-xs text-gray-300 hover:bg-[#2a2a2a]"
                 >
                   Open agents.json
-                </button>
+                </Button>
                 {!status.agents.some((a) => a.id === "grok-build") && (
-                  <button
+                  <Button
                     type="button"
+                    variant="outline"
+                    size="sm"
                     disabled={busy}
                     onClick={() => void ensureConfig()}
-                    className="rounded-md border border-[#333] px-3 py-1.5 text-xs text-gray-300 hover:bg-[#2a2a2a] disabled:opacity-50"
                   >
                     {busy ? "Updating…" : "Add Grok Build to agents.json"}
-                  </button>
+                  </Button>
                 )}
               </>
             )}
           </div>
 
           <div className="space-y-2">
-            <span className="block text-xs font-medium uppercase tracking-wider text-gray-500">
+            <span className="block text-xs font-medium uppercase tracking-wider text-muted-foreground">
               Configured agents
             </span>
             {status.agents.length === 0 ? (
-              <p className="rounded-lg border border-dashed border-[#333] px-3 py-4 text-center text-[11px] text-gray-600">
+              <p className="rounded-lg border border-dashed border-border px-3 py-4 text-center text-[11px] text-muted-foreground">
                 No agents in config. Write the default file or edit agents.json.
               </p>
             ) : (
@@ -265,24 +274,24 @@ export function ClaudeCodeTab() {
                 {status.agents.map((a) => (
                   <li
                     key={a.id}
-                    className="rounded-lg border border-[#2e2e2e] bg-[#121212] px-3 py-2"
+                    className="rounded-lg border border-border bg-background px-3 py-2"
                   >
                     <div className="flex items-start justify-between gap-2">
                       <div className="min-w-0">
-                        <div className="flex items-center gap-2 text-xs text-gray-200">
+                        <div className="flex items-center gap-2 text-xs text-foreground">
                           <span className="font-medium">{a.name}</span>
                           {a.id === status.defaultAgentId && (
-                            <span className="rounded bg-[#2a2a2a] px-1.5 py-0.5 text-[10px] text-gray-400">
+                            <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
                               default
                             </span>
                           )}
                         </div>
-                        <code className="mt-0.5 block truncate font-mono text-[10px] text-gray-500">
+                        <code className="mt-0.5 block truncate font-mono text-[10px] text-muted-foreground">
                           {a.command}
                           {a.args.length > 0 ? ` ${a.args.join(" ")}` : ""}
                         </code>
                         {a.resolvedPath && (
-                          <code className="mt-0.5 block break-all font-mono text-[10px] text-gray-600">
+                          <code className="mt-0.5 block break-all font-mono text-[10px] text-muted-foreground">
                             → {a.resolvedPath}
                           </code>
                         )}

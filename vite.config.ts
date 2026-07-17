@@ -1,3 +1,4 @@
+import path from "path";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
@@ -12,6 +13,7 @@ export default defineConfig({
   // Resolve shared + session modules from project root (App imports ../session, ../shared).
   resolve: {
     alias: {
+      "@": path.resolve(__dirname, "./src/mainview"),
       // electrobun/view only exists in the desktop app; browser builds still typecheck.
     },
   },

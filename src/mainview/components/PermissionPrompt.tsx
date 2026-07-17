@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import type { PermissionRequest } from "../../shared/rpc";
+import { Button } from "@/components/ui/button";
 
 type Props = {
   request: PermissionRequest;
@@ -27,7 +28,7 @@ export function PermissionPrompt({ request, onRespond }: Props) {
       aria-labelledby="perm-title"
       aria-describedby="perm-desc"
     >
-      <div className="pointer-events-auto w-full max-w-4xl overflow-hidden rounded-2xl border border-amber-700/50 bg-[#1a1510] shadow-2xl">
+      <div className="pointer-events-auto w-full max-w-4xl overflow-hidden rounded-2xl border border-amber-700/50 bg-[#1a1510] shadow-2xl dark:bg-[#1a1510]">
         <div className="flex items-start gap-3 px-4 py-3">
           <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-amber-900/50 text-amber-300">
             ⚠
@@ -36,12 +37,13 @@ export function PermissionPrompt({ request, onRespond }: Props) {
             <h2 id="perm-title" className="text-sm font-semibold text-amber-100">
               Permission required
             </h2>
-            <p id="perm-desc" className="mt-0.5 text-sm text-gray-300">
-              Agent wants to run <span className="font-medium text-gray-100">{kindLabel}</span>
+            <p id="perm-desc" className="mt-0.5 text-sm text-muted-foreground">
+              Agent wants to run{" "}
+              <span className="font-medium text-foreground">{kindLabel}</span>
               : {request.toolCall.title}
             </p>
             {loc && (
-              <p className="mt-1 truncate font-mono text-[11px] text-gray-500">
+              <p className="mt-1 truncate font-mono text-[11px] text-muted-foreground">
                 {loc.path}
                 {loc.line ? `:${loc.line}` : ""}
               </p>
@@ -53,22 +55,24 @@ export function PermissionPrompt({ request, onRespond }: Props) {
             const isAllow = opt.kind.startsWith("allow");
             const isAlways = opt.kind.endsWith("always");
             return (
-              <button
+              <Button
                 key={opt.optionId}
                 ref={i === 0 ? firstBtn : undefined}
-                onClick={() => onRespond(opt.optionId)}
-                className={`rounded-md px-3 py-1.5 text-sm font-medium transition ${
+                size="sm"
+                variant={
+                  isAllow ? "default" : isAlways ? "destructive" : "secondary"
+                }
+                className={
                   isAllow
                     ? isAlways
                       ? "bg-emerald-700 text-emerald-50 hover:bg-emerald-600"
                       : "bg-emerald-900/70 text-emerald-100 hover:bg-emerald-800"
-                    : isAlways
-                      ? "bg-red-800 text-red-50 hover:bg-red-700"
-                      : "bg-[#2a2a2a] text-gray-300 hover:bg-[#333]"
-                }`}
+                    : undefined
+                }
+                onClick={() => onRespond(opt.optionId)}
               >
                 {opt.name}
-              </button>
+              </Button>
             );
           })}
         </div>

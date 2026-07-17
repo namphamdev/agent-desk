@@ -13,6 +13,7 @@ import type {
   SessionUsage,
 } from "../../shared/rpc";
 import type { QueuedPrompt } from "../promptQueue";
+import { Button } from "@/components/ui/button";
 
 const MODEL_ALIAS_LABELS: Record<ClaudeModelAlias, string> = {
   haiku: "Haiku",
@@ -266,23 +267,25 @@ export function PromptInput({
       <div className="input-bg pointer-events-auto flex w-full flex-col rounded-2xl border shadow-lg">
         {queue.length > 0 && (
           <div
-            className="border-b border-[#2e2e2e] px-3 py-2"
+            className="border-b border-border px-3 py-2"
             role="list"
             aria-label="Queued prompts"
           >
             <div className="mb-1.5 flex items-center justify-between gap-2">
-              <span className="text-[11px] font-medium uppercase tracking-wide text-gray-500">
+              <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
                 Queued · {queue.length}
                 {prompting ? " · sends when agent finishes" : ""}
               </span>
               {queue.length > 1 && onClearQueue && (
-                <button
+                <Button
                   type="button"
+                  variant="ghost"
+                  size="xs"
                   onClick={onClearQueue}
-                  className="text-[11px] text-gray-500 hover:text-gray-300"
+                  className="h-auto px-1.5 text-[11px] text-muted-foreground"
                 >
                   Clear all
-                </button>
+                </Button>
               )}
             </div>
             <ul className="max-h-28 space-y-1 overflow-y-auto">
@@ -290,26 +293,28 @@ export function PromptInput({
                 <li
                   key={item.id}
                   role="listitem"
-                  className="flex items-start gap-2 rounded-lg bg-[#252525] px-2 py-1.5"
+                  className="flex items-start gap-2 rounded-lg bg-muted px-2 py-1.5"
                 >
-                  <span className="mt-0.5 w-4 shrink-0 text-center text-[10px] tabular-nums text-gray-600">
+                  <span className="mt-0.5 w-4 shrink-0 text-center text-[10px] tabular-nums text-muted-foreground">
                     {index + 1}
                   </span>
                   <span
-                    className="min-w-0 flex-1 truncate text-xs text-gray-300"
+                    className="min-w-0 flex-1 truncate text-xs text-foreground/80"
                     title={item.text}
                   >
                     {item.text}
                   </span>
                   {onRemoveQueued && (
-                    <button
+                    <Button
                       type="button"
+                      variant="ghost"
+                      size="icon-xs"
                       onClick={() => onRemoveQueued(item.id)}
-                      className="shrink-0 rounded p-0.5 text-gray-500 hover:bg-[#333] hover:text-gray-200"
+                      className="shrink-0 text-muted-foreground"
                       aria-label={`Remove queued prompt ${index + 1}`}
                     >
-                      <RiCloseLine className="h-3.5 w-3.5" aria-hidden />
-                    </button>
+                      <RiCloseLine className="size-3.5" aria-hidden />
+                    </Button>
                   )}
                 </li>
               ))}
@@ -411,25 +416,25 @@ export function PromptInput({
             </div>
           )}
         </div>
-        <div className="flex items-center justify-between border-t border-[#2e2e2e] px-3 py-2">
+        <div className="flex items-center justify-between border-t border-border px-3 py-2">
           <div className="flex min-w-0 items-center space-x-3">
             {/* Fallback badge when agent only sends current_mode, not configOptions.mode */}
             {!modeOption && mode && mode !== "default" && (
-              <span className="rounded-full bg-[#2a2a2a] px-2 py-0.5 text-[11px] font-medium text-amber-400">
+              <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-amber-500">
                 {mode}
               </span>
             )}
             {hasProviders && activeProvider && onProviderModelChange && (
               <>
                 {!modeOption && mode && mode !== "default" && (
-                  <div className="h-4 w-px bg-[#333]" />
+                  <div className="h-4 w-px bg-border" />
                 )}
                 <GroupedSelector
                   value={providerModelValue}
                   displayValue={providerModelDisplay}
                   groups={providerModelGroups}
                   onChange={(v) => void changeProviderModel(v)}
-                  accent="text-[#d97706]"
+                  accent="text-amber-600"
                   disabled={disabled || settingConfig}
                 />
               </>
@@ -437,7 +442,7 @@ export function PromptInput({
             {!hasProviders && modelOption && modelLabel && (
               <>
                 {!modeOption && mode && mode !== "default" && (
-                  <div className="h-4 w-px bg-[#333]" />
+                  <div className="h-4 w-px bg-border" />
                 )}
                 <Selector
                   value={modelOption.currentValue}
@@ -447,7 +452,7 @@ export function PromptInput({
                     label: o.name,
                   }))}
                   onChange={(v) => void changeConfig(modelOption.id, v)}
-                  accent="text-[#d97706]"
+                  accent="text-amber-600"
                   disabled={disabled || settingConfig}
                 />
               </>
@@ -456,7 +461,7 @@ export function PromptInput({
             {modeOption && modeLabel && (
               <>
                 {(hasProviders || modelOption) && (
-                  <div className="h-4 w-px bg-[#333]" />
+                  <div className="h-4 w-px bg-border" />
                 )}
                 <Selector
                   value={modeOption.currentValue}
@@ -466,7 +471,7 @@ export function PromptInput({
                     label: o.name,
                   }))}
                   onChange={(v) => void changeConfig(modeOption.id, v)}
-                  accent="text-amber-400"
+                  accent="text-amber-500"
                   disabled={disabled || settingConfig}
                 />
               </>
@@ -487,26 +492,29 @@ export function PromptInput({
               />
             )}
             {prompting && (
-              <button
+              <Button
                 type="button"
+                variant="destructive"
+                size="sm"
                 onClick={() => void onCancel?.()}
-                className="flex items-center gap-1 rounded-md bg-red-900/60 px-2.5 py-1.5 text-xs font-medium text-red-200 hover:bg-red-800/60"
+                className="bg-red-900/60 text-red-200 hover:bg-red-800/60"
                 aria-label="Stop generation"
               >
-                <RiStopFill className="h-3.5 w-3.5" aria-hidden />
+                <RiStopFill className="size-3.5" aria-hidden />
                 Stop
-              </button>
+              </Button>
             )}
-            <button
+            <Button
               type="button"
+              variant="secondary"
+              size="icon-sm"
               onClick={() => void submit()}
               disabled={!canSend}
-              className="rounded-md bg-gray-600 p-1.5 text-gray-200 hover:bg-gray-500 disabled:opacity-40"
               aria-label={prompting ? "Queue prompt" : "Send prompt"}
               title={prompting ? "Queue follow-up (sends when agent finishes)" : "Send"}
             >
-              <RiArrowUpLine className="h-4 w-4" aria-hidden />
-            </button>
+              <RiArrowUpLine className="size-4" aria-hidden />
+            </Button>
           </div>
         </div>
       </div>
@@ -570,7 +578,7 @@ function ContextUsageRing({ usage }: { usage: SessionUsage }) {
     >
       <button
         type="button"
-        className="flex h-7 w-7 items-center justify-center rounded-full hover:bg-[#2a2a2a]"
+        className="flex h-7 w-7 items-center justify-center rounded-full hover:bg-muted"
         aria-label={`Context usage: ${label}`}
         title={label}
         onClick={() => setOpen((o) => !o)}
@@ -581,7 +589,7 @@ function ContextUsageRing({ usage }: { usage: SessionUsage }) {
             cy="9"
             r={r}
             fill="none"
-            stroke="#3a3a3a"
+            stroke="var(--border)"
             strokeWidth="2.5"
           />
           <circle
@@ -599,7 +607,7 @@ function ContextUsageRing({ usage }: { usage: SessionUsage }) {
         </svg>
       </button>
       {open && (
-        <div className="absolute bottom-full left-1/2 z-50 mb-2 w-52 -translate-x-1/2 rounded-lg border border-[#3a3a3a] bg-[#1e1e1e] px-3 py-2.5 shadow-xl">
+        <div className="absolute bottom-full left-1/2 z-50 mb-2 w-52 -translate-x-1/2 rounded-lg border border-border bg-popover px-3 py-2.5 text-popover-foreground shadow-xl">
           <div className="mb-2 flex items-center gap-2">
             <svg width="22" height="22" viewBox="0 0 18 18" className="shrink-0">
               <circle
@@ -607,7 +615,7 @@ function ContextUsageRing({ usage }: { usage: SessionUsage }) {
                 cy="9"
                 r={r}
                 fill="none"
-                stroke="#3a3a3a"
+                stroke="var(--border)"
                 strokeWidth="2.5"
               />
               <circle
@@ -623,24 +631,24 @@ function ContextUsageRing({ usage }: { usage: SessionUsage }) {
               />
             </svg>
             <div className="min-w-0">
-              <div className="text-sm font-medium text-gray-200">
+              <div className="text-sm font-medium text-foreground">
                 {Math.round(pct)}% context used
               </div>
-              <div className="text-xs text-gray-500">
+              <div className="text-xs text-muted-foreground">
                 {formatTokens(usage.used)} / {formatTokens(usage.size)} tokens
               </div>
             </div>
           </div>
-          <div className="space-y-1 border-t border-[#2e2e2e] pt-2 text-xs text-gray-400">
+          <div className="space-y-1 border-t border-border pt-2 text-xs text-muted-foreground">
             <div className="flex justify-between gap-3">
               <span>In context</span>
-              <span className="tabular-nums text-gray-300">
+              <span className="tabular-nums text-foreground/80">
                 {usage.used.toLocaleString()}
               </span>
             </div>
             <div className="flex justify-between gap-3">
               <span>Window size</span>
-              <span className="tabular-nums text-gray-300">
+              <span className="tabular-nums text-foreground/80">
                 {usage.size.toLocaleString()}
               </span>
             </div>
@@ -683,14 +691,14 @@ function Selector({
         type="button"
         disabled={disabled || options.length === 0}
         onClick={() => setOpen((o) => !o)}
-        className={`flex items-center space-x-1.5 rounded px-2 py-1 text-sm font-medium hover:bg-[#3a270a] disabled:opacity-50 ${accent ?? "text-gray-400 hover:text-gray-200"}`}
+        className={`flex items-center space-x-1.5 rounded px-2 py-1 text-sm font-medium hover:bg-accent disabled:opacity-50 ${accent ?? "text-muted-foreground hover:text-foreground"}`}
       >
         {prefix && <span>{prefix}</span>}
         <span className="max-w-[14rem] truncate">{displayValue ?? value}</span>
-        <RiArrowDownSLine className="h-3 w-3 shrink-0 text-gray-500" aria-hidden />
+        <RiArrowDownSLine className="h-3 w-3 shrink-0 text-muted-foreground" aria-hidden />
       </button>
       {open && (
-        <div className="absolute bottom-full left-0 z-50 mb-1 max-h-64 min-w-[10rem] overflow-y-auto rounded-lg border border-[#3a3a3a] bg-[#1e1e1e] py-1 shadow-xl">
+        <div className="absolute bottom-full left-0 z-50 mb-1 max-h-64 min-w-[10rem] overflow-y-auto rounded-lg border border-border bg-popover py-1 text-popover-foreground shadow-xl">
           {options.map((o) => (
             <button
               type="button"
@@ -699,8 +707,8 @@ function Selector({
                 onChange(o.value);
                 setOpen(false);
               }}
-              className={`block w-full px-3 py-1.5 text-left text-sm hover:bg-[#2a2a2a] ${
-                o.value === value ? "text-gray-200" : "text-gray-400"
+              className={`block w-full px-3 py-1.5 text-left text-sm hover:bg-accent ${
+                o.value === value ? "text-foreground" : "text-muted-foreground"
               }`}
             >
               {o.label}
@@ -763,22 +771,22 @@ function GroupedSelector({
         onClick={() => setOpen((o) => !o)}
         aria-haspopup="listbox"
         aria-expanded={open}
-        className={`flex max-w-[18rem] items-center space-x-1.5 rounded px-2 py-1 text-sm font-medium hover:bg-[#3a270a] disabled:opacity-50 ${accent ?? "text-gray-400 hover:text-gray-200"}`}
+        className={`flex max-w-[18rem] items-center space-x-1.5 rounded px-2 py-1 text-sm font-medium hover:bg-accent disabled:opacity-50 ${accent ?? "text-muted-foreground hover:text-foreground"}`}
       >
         <span className="min-w-0 truncate" title={displayValue ?? value}>
           {displayValue ?? value}
         </span>
-        <RiArrowDownSLine className="h-3 w-3 shrink-0 text-gray-500" aria-hidden />
+        <RiArrowDownSLine className="h-3 w-3 shrink-0 text-muted-foreground" aria-hidden />
       </button>
       {open && (
         <div
           role="listbox"
-          className="absolute bottom-full left-0 z-50 mb-1 max-h-72 min-w-[14rem] max-w-[20rem] overflow-y-auto rounded-lg border border-[#3a3a3a] bg-[#1e1e1e] py-1 shadow-xl"
+          className="absolute bottom-full left-0 z-50 mb-1 max-h-72 min-w-[14rem] max-w-[20rem] overflow-y-auto rounded-lg border border-border bg-popover py-1 text-popover-foreground shadow-xl"
         >
           {groups.map((group, gi) => (
             <div key={group.id} role="group" aria-label={group.label}>
-              {gi > 0 && <div className="my-1 border-t border-[#2e2e2e]" />}
-              <div className="px-3 pb-0.5 pt-1.5 text-[10px] font-semibold uppercase tracking-wider text-gray-500">
+              {gi > 0 && <div className="my-1 border-t border-border" />}
+              <div className="px-3 pb-0.5 pt-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
                 {group.label}
               </div>
               {group.options.map((o) => {
@@ -793,10 +801,10 @@ function GroupedSelector({
                       onChange(o.value);
                       setOpen(false);
                     }}
-                    className={`block w-full truncate px-3 py-1.5 text-left text-sm hover:bg-[#2a2a2a] ${
+                    className={`block w-full truncate px-3 py-1.5 text-left text-sm hover:bg-accent ${
                       selected
-                        ? "bg-[#252525] font-medium text-gray-100"
-                        : "text-gray-400"
+                        ? "bg-muted font-medium text-foreground"
+                        : "text-muted-foreground"
                     }`}
                     title={o.label}
                   >

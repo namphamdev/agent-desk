@@ -7,6 +7,11 @@ import {
 } from "../../../session/workflows";
 import type { AppSettings } from "../../../shared/rpc";
 import { getRpc } from "../../rpc";
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { cn } from "@/lib/utils";
 import { Field } from "./Field";
 
 type Scope = "global" | "project";
@@ -212,38 +217,43 @@ export function WorkflowsTab({
   return (
     <div className="space-y-4">
       <div>
-        <span className="mb-1 block text-xs font-medium uppercase tracking-wider text-gray-500">
+        <span className="mb-1 block text-xs font-medium uppercase tracking-wider text-muted-foreground">
           Workflows
         </span>
-        <p className="text-[11px] leading-snug text-gray-500">
+        <p className="text-[11px] leading-snug text-muted-foreground">
           Customize New-task modes and their first prompts. Placeholders:{" "}
-          <code className="text-gray-400">{"{{task}}"}</code>,{" "}
-          <code className="text-gray-400">{"{{prRef}}"}</code>. Project file
+          <code className="text-muted-foreground">{"{{task}}"}</code>,{" "}
+          <code className="text-muted-foreground">{"{{prRef}}"}</code>. Project file
           fully replaces global/built-ins when non-empty.
         </p>
       </div>
 
       <div
-        className="flex gap-1 rounded-lg border border-[#2a2a2a] bg-[#121212] p-0.5"
+        className="flex gap-1 rounded-lg border border-border bg-background p-0.5"
         role="tablist"
         aria-label="Workflow scope"
       >
-        <button
+        <Button
           type="button"
           role="tab"
+          variant="ghost"
+          size="sm"
           aria-selected={scope === "global"}
           onClick={() => setScope("global")}
-          className={`flex-1 rounded-md px-2 py-1.5 text-xs transition-colors ${
+          className={cn(
+            "flex-1",
             scope === "global"
-              ? "bg-[#2a2a2a] font-medium text-gray-100"
-              : "text-gray-400 hover:text-gray-200"
-          }`}
+              ? "bg-accent font-medium text-foreground"
+              : "text-muted-foreground hover:text-foreground",
+          )}
         >
           Global defaults
-        </button>
-        <button
+        </Button>
+        <Button
           type="button"
           role="tab"
+          variant="ghost"
+          size="sm"
           aria-selected={scope === "project"}
           disabled={!hasProject}
           onClick={() => hasProject && setScope("project")}
@@ -252,18 +262,19 @@ export function WorkflowsTab({
               ? projectName || projectCwd || "Project"
               : "Open or pick a project first"
           }
-          className={`flex-1 rounded-md px-2 py-1.5 text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+          className={cn(
+            "flex-1",
             scope === "project"
-              ? "bg-[#2a2a2a] font-medium text-gray-100"
-              : "text-gray-400 hover:text-gray-200"
-          }`}
+              ? "bg-accent font-medium text-foreground"
+              : "text-muted-foreground hover:text-foreground",
+          )}
         >
           This project
-        </button>
+        </Button>
       </div>
 
       {scope === "global" && (
-        <p className="text-[11px] text-gray-500">
+        <p className="text-[11px] text-muted-foreground">
           {globalWorkflows.length === 0
             ? "Using built-in workflows (no global overrides). Edit below and Save settings, or reset to built-ins as an explicit override list."
             : `${globalWorkflows.length} global override(s). Empty the list to restore built-ins.`}
@@ -272,24 +283,24 @@ export function WorkflowsTab({
 
       {scope === "project" && (
         <div className="space-y-1.5">
-          <p className="truncate text-[11px] text-gray-500" title={projectCwd ?? undefined}>
+          <p className="truncate text-[11px] text-muted-foreground" title={projectCwd ?? undefined}>
             {projectName ? (
               <>
-                Project: <span className="text-gray-300">{projectName}</span>
+                Project: <span className="text-foreground/80">{projectName}</span>
               </>
             ) : (
               "Project"
             )}{" "}
             ·{" "}
-            <span className="font-mono text-[10px] text-gray-600">
+            <span className="font-mono text-[10px] text-muted-foreground">
               {projectPath ?? ".terminal-react/workflows.json"}
             </span>
           </p>
           {projectLoading && (
-            <p className="text-[11px] text-gray-500">Loading…</p>
+            <p className="text-[11px] text-muted-foreground">Loading…</p>
           )}
           {!projectLoading && projectWorkflows.length === 0 && (
-            <p className="text-[11px] text-gray-500">
+            <p className="text-[11px] text-muted-foreground">
               {projectExists
                 ? "Project file is empty or invalid — New task uses global/built-ins."
                 : "No project workflows file — New task uses global/built-ins."}
@@ -302,65 +313,70 @@ export function WorkflowsTab({
       )}
 
       <div className="flex flex-wrap gap-1.5">
-        <button
+        <Button
           type="button"
+          variant="outline"
+          size="sm"
           onClick={addWorkflow}
-          className="rounded-md border border-[#333] bg-[#222] px-2.5 py-1 text-xs text-gray-200 hover:bg-[#2a2a2a]"
         >
           Add workflow
-        </button>
+        </Button>
         {scope === "global" && (
           <>
-            <button
+            <Button
               type="button"
+              variant="outline"
+              size="sm"
               onClick={resetGlobalToBuiltins}
-              className="rounded-md border border-[#333] px-2.5 py-1 text-xs text-gray-300 hover:bg-[#2a2a2a]"
             >
               Load built-ins
-            </button>
-            <button
+            </Button>
+            <Button
               type="button"
+              variant="outline"
+              size="sm"
               onClick={clearGlobalOverrides}
               disabled={globalWorkflows.length === 0}
-              className="rounded-md border border-[#333] px-2.5 py-1 text-xs text-gray-300 hover:bg-[#2a2a2a] disabled:opacity-40"
             >
               Use built-ins (clear)
-            </button>
+            </Button>
           </>
         )}
         {scope === "project" && (
           <>
-            <button
+            <Button
               type="button"
+              variant="outline"
+              size="sm"
               onClick={seedProjectFromEffective}
-              className="rounded-md border border-[#333] px-2.5 py-1 text-xs text-gray-300 hover:bg-[#2a2a2a]"
             >
               Copy from global/built-ins
-            </button>
-            <button
+            </Button>
+            <Button
               type="button"
+              size="sm"
               onClick={() => void saveProject()}
               disabled={projectSaving || !projectDirty}
-              className="rounded-md bg-gray-200 px-2.5 py-1 text-xs font-medium text-gray-900 hover:bg-white disabled:opacity-40"
             >
               {projectSaving ? "Saving…" : "Save project file"}
-            </button>
-            <button
+            </Button>
+            <Button
               type="button"
+              variant="outline"
+              size="sm"
               onClick={() => void clearProjectFile()}
               disabled={projectSaving || (!projectExists && projectWorkflows.length === 0)}
-              className="rounded-md border border-[#333] px-2.5 py-1 text-xs text-gray-300 hover:bg-[#2a2a2a] disabled:opacity-40"
             >
               Remove project file
-            </button>
+            </Button>
           </>
         )}
       </div>
 
       <div className="grid min-h-[280px] grid-cols-[140px_1fr] gap-3">
-        <div className="max-h-[360px] space-y-0.5 overflow-y-auto rounded-md border border-[#2a2a2a] bg-[#121212] p-1">
+        <div className="max-h-[360px] space-y-0.5 overflow-y-auto rounded-md border border-border bg-background p-1">
           {list.length === 0 && (
-            <p className="px-2 py-3 text-[11px] text-gray-600">No workflows</p>
+            <p className="px-2 py-3 text-[11px] text-muted-foreground">No workflows</p>
           )}
           {list.map((w) => {
             const active = w.id === selectedId;
@@ -369,16 +385,17 @@ export function WorkflowsTab({
                 key={w.id}
                 type="button"
                 onClick={() => setSelectedId(w.id)}
-                className={`w-full rounded px-2 py-1.5 text-left transition-colors ${
+                className={cn(
+                  "w-full rounded px-2 py-1.5 text-left transition-colors",
                   active
-                    ? "bg-[#2e2e2e] text-gray-100"
-                    : "text-gray-300 hover:bg-[#1e1e1e]"
-                }`}
+                    ? "bg-accent text-foreground"
+                    : "text-foreground/80 hover:bg-accent/50",
+                )}
               >
                 <span className="block truncate text-xs font-medium">
                   {w.label}
                 </span>
-                <span className="mt-0.5 block truncate text-[10px] text-gray-500">
+                <span className="mt-0.5 block truncate text-[10px] text-muted-foreground">
                   {workflowSummary(w)}
                 </span>
               </button>
@@ -388,39 +405,39 @@ export function WorkflowsTab({
 
         <div className="min-w-0 space-y-3">
           {!selected && (
-            <p className="text-xs text-gray-500">
+            <p className="text-xs text-muted-foreground">
               Select a workflow or add one to edit its prompt template.
             </p>
           )}
           {selected && (
             <>
               <Field label="Label">
-                <input
+                <Input
                   value={selected.label}
                   onChange={(e) => patchSelected({ label: e.target.value })}
-                  className="w-full rounded-md border border-[#333] bg-[#121212] px-2 py-1.5 text-xs text-gray-200 focus:outline-none focus:ring-1 focus:ring-gray-500"
+                  className="text-xs"
                 />
               </Field>
               <Field label="Description">
-                <input
+                <Input
                   value={selected.description}
                   onChange={(e) =>
                     patchSelected({ description: e.target.value })
                   }
-                  className="w-full rounded-md border border-[#333] bg-[#121212] px-2 py-1.5 text-xs text-gray-200 focus:outline-none focus:ring-1 focus:ring-gray-500"
+                  className="text-xs"
                 />
               </Field>
               <Field label="Task placeholder">
-                <input
+                <Input
                   value={selected.taskPlaceholder}
                   onChange={(e) =>
                     patchSelected({ taskPlaceholder: e.target.value })
                   }
-                  className="w-full rounded-md border border-[#333] bg-[#121212] px-2 py-1.5 text-xs text-gray-200 focus:outline-none focus:ring-1 focus:ring-gray-500"
+                  className="text-xs"
                 />
               </Field>
               <Field label="Id">
-                <input
+                <Input
                   value={selected.id}
                   onChange={(e) =>
                     patchSelected({
@@ -432,62 +449,60 @@ export function WorkflowsTab({
                     })
                   }
                   spellCheck={false}
-                  className="w-full rounded-md border border-[#333] bg-[#121212] px-2 py-1.5 font-mono text-xs text-gray-200 focus:outline-none focus:ring-1 focus:ring-gray-500"
+                  className="font-mono text-xs"
                 />
               </Field>
               <div className="flex flex-wrap gap-4">
-                <label className="flex items-center gap-2 text-xs text-gray-300">
-                  <input
-                    type="checkbox"
+                <label className="flex items-center gap-2 text-xs text-foreground/90">
+                  <Checkbox
                     checked={selected.needsPrRef === true}
-                    onChange={(e) =>
+                    onCheckedChange={(checked) =>
                       patchSelected({
-                        needsPrRef: e.target.checked ? true : undefined,
+                        needsPrRef: checked === true ? true : undefined,
                       })
                     }
-                    className="rounded border-[#444]"
                   />
                   Needs PR URL / number
                 </label>
-                <label className="flex items-center gap-2 text-xs text-gray-300">
-                  <input
-                    type="checkbox"
+                <label className="flex items-center gap-2 text-xs text-foreground/90">
+                  <Checkbox
                     checked={selected.includeHarnessPreamble !== false}
-                    onChange={(e) =>
+                    onCheckedChange={(checked) =>
                       patchSelected({
-                        includeHarnessPreamble: e.target.checked,
+                        includeHarnessPreamble: checked === true,
                       })
                     }
-                    className="rounded border-[#444]"
                   />
                   Include harness preamble
                 </label>
               </div>
               <Field label="Prompt template">
-                <textarea
+                <Textarea
                   value={selected.promptTemplate}
                   onChange={(e) =>
                     patchSelected({ promptTemplate: e.target.value })
                   }
                   rows={12}
                   spellCheck={false}
-                  className="w-full resize-y rounded-md border border-[#333] bg-[#121212] px-2 py-1.5 font-mono text-[11px] leading-relaxed text-gray-200 focus:outline-none focus:ring-1 focus:ring-gray-500"
+                  className="resize-y font-mono text-[11px] leading-relaxed"
                 />
               </Field>
-              <button
+              <Button
                 type="button"
+                variant="outline"
+                size="sm"
                 onClick={removeSelected}
-                className="rounded-md border border-red-900/50 px-2.5 py-1 text-xs text-red-300/90 hover:bg-red-950/40"
+                className="border-destructive/50 text-destructive hover:bg-destructive/10"
               >
                 Delete workflow
-              </button>
+              </Button>
             </>
           )}
         </div>
       </div>
 
       {scope === "global" && (
-        <p className="text-[11px] text-gray-600">
+        <p className="text-[11px] text-muted-foreground">
           Global changes apply when you click Save at the bottom of Settings.
         </p>
       )}

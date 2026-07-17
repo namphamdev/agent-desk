@@ -10,6 +10,15 @@ import {
   parseSymlinkPathsText,
 } from "../../../shared/worktree-paths";
 import { getRpc } from "../../rpc";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { cn } from "@/lib/utils";
 import { RemoteAccessControls } from "../RemoteAccessPanel";
 import { AlertsTab } from "./AlertsTab";
 import { WorkflowsTab } from "./WorkflowsTab";
@@ -202,53 +211,52 @@ export function SettingsPanel({
   };
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-6"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="settings-title"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
+    <Dialog
+      open
+      onOpenChange={(open) => {
+        if (!open) onClose();
       }}
     >
-      <div className="flex h-[min(640px,90vh)] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-[#333] bg-[#1a1a1a] shadow-2xl">
-        <div className="flex shrink-0 items-center justify-between border-b border-[#2e2e2e] px-5 py-3">
-          <h2
-            id="settings-title"
-            className="text-sm font-semibold text-gray-100"
-          >
-            Settings
-          </h2>
-          <button
+      <DialogContent
+        showCloseButton={false}
+        className="flex h-[min(640px,90vh)] w-full max-w-3xl flex-col gap-0 overflow-hidden p-0 sm:max-w-3xl"
+      >
+        <DialogHeader className="flex shrink-0 flex-row items-center justify-between space-y-0 border-b border-border px-5 py-3">
+          <DialogTitle id="settings-title">Settings</DialogTitle>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
             onClick={onClose}
-            className="rounded p-1 text-gray-500 hover:bg-[#2a2a2a] hover:text-gray-200"
             aria-label="Close settings"
           >
             <RiCloseLine className="h-4 w-4" aria-hidden />
-          </button>
-        </div>
+          </Button>
+        </DialogHeader>
 
         <div className="flex min-h-0 flex-1">
           <nav
-            className="flex w-40 shrink-0 flex-col gap-0.5 border-r border-[#2e2e2e] bg-[#161616] p-2"
+            className="flex w-40 shrink-0 flex-col gap-0.5 border-r border-border bg-muted/50 p-2"
             aria-label="Settings sections"
           >
             {tabs.map((t) => {
               const active = tab === t.id;
               return (
-                <button
+                <Button
                   key={t.id}
                   type="button"
+                  variant="ghost"
                   onClick={() => setTab(t.id)}
-                  className={`rounded-lg px-3 py-2 text-left text-sm transition-colors ${
+                  className={cn(
+                    "h-auto justify-start rounded-lg px-3 py-2 text-left text-sm font-normal",
                     active
-                      ? "bg-[#2a2a2a] font-medium text-gray-100"
-                      : "text-gray-400 hover:bg-[#222] hover:text-gray-200"
-                  }`}
+                      ? "bg-accent font-medium text-foreground"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
                   aria-current={active ? "page" : undefined}
                 >
                   {t.label}
-                </button>
+                </Button>
               );
             })}
           </nav>
@@ -315,22 +323,19 @@ export function SettingsPanel({
           </div>
         </div>
 
-        <div className="flex shrink-0 justify-end gap-2 border-t border-[#2e2e2e] px-5 py-3">
-          <button
-            onClick={onClose}
-            className="rounded-md px-3 py-1.5 text-sm text-gray-400 hover:bg-[#2a2a2a]"
-          >
+        <DialogFooter className="mx-0 mb-0 shrink-0 sm:justify-end">
+          <Button type="button" variant="ghost" onClick={onClose}>
             Cancel
-          </button>
-          <button
+          </Button>
+          <Button
+            type="button"
             onClick={() => void save()}
             disabled={saving}
-            className="rounded-md bg-gray-200 px-3 py-1.5 text-sm font-medium text-gray-900 hover:bg-white disabled:opacity-50"
           >
             {saving ? "Saving…" : "Save"}
-          </button>
-        </div>
-      </div>
-    </div>
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

@@ -38,6 +38,7 @@ import {
   type PromptQueues,
 } from "../promptQueue";
 import { getRpc, initRpc, isRemoteAccessClient, setRpcListeners } from "../rpc";
+import { applyDocumentTheme } from "../lib/theme";
 import { formatElapsed } from "../utils/formatElapsed";
 import {
   createAppRpcListeners,
@@ -798,13 +799,8 @@ export function useAppController() {
     async (patch: Partial<AppSettings>) => {
       const next = await getRpc().request.saveSettings(patch);
       setSettings(next);
-      // Apply theme immediately.
-      document.documentElement.dataset.theme =
-        next.theme === "system"
-          ? window.matchMedia("(prefers-color-scheme: light)").matches
-            ? "light"
-            : "dark"
-          : next.theme;
+      // Apply theme immediately (shadcn `.dark` + legacy data-theme tokens).
+      applyDocumentTheme(next.theme);
       // Native sample banner on first enable is handled in Bun saveSettings.
     },
     [],

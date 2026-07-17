@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   RiAddLine,
   RiArrowDownSLine,
@@ -14,6 +14,98 @@ import {
   RiTerminalLine,
 } from "react-icons/ri";
 import type { SessionSummary } from "../../shared/rpc";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+
+const MATRIX_TITLE = "Agent Desk";
+const MATRIX_GLYPHS =
+  "01ABCDEFGHIJKLMNOPQRSTUVWXYZアカサタナハマヤラワ#$%&@*+";
+
+/** Matrix-style glyph scramble that settles into "Agent Desk". */
+function MatrixTitle() {
+  const [chars, setChars] = useState(() =>
+    MATRIX_TITLE.split("").map((c) => (c === " " ? " " : "·")),
+  );
+
+  useEffect(() => {
+    let frame = 0;
+    let settleAt = 0;
+    let holdUntil = 0;
+    let phase: "scramble" | "hold" = "scramble";
+    let raf = 0;
+    let last = 0;
+
+    const tick = (now: number) => {
+      if (now - last < 40) {
+        raf = requestAnimationFrame(tick);
+        return;
+      }
+      last = now;
+
+      if (phase === "hold") {
+        if (now >= holdUntil) {
+          phase = "scramble";
+          frame = 0;
+          settleAt = 0;
+        }
+        raf = requestAnimationFrame(tick);
+        return;
+      }
+
+      frame += 1;
+      // Cascade settle left → right, matrix-style.
+      if (frame % 3 === 0) settleAt = Math.min(MATRIX_TITLE.length, settleAt + 1);
+
+      setChars(
+        MATRIX_TITLE.split("").map((target, i) => {
+          if (target === " ") return " ";
+          if (i < settleAt) return target;
+          return MATRIX_GLYPHS[(Math.random() * MATRIX_GLYPHS.length) | 0]!;
+        }),
+      );
+
+      if (settleAt >= MATRIX_TITLE.length) {
+        phase = "hold";
+        holdUntil = now + 2800;
+      }
+
+      raf = requestAnimationFrame(tick);
+    };
+
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, []);
+
+  return (
+    <span
+      aria-label="Agent Desk"
+      className="font-mono text-[11px] uppercase tracking-[0.18em] text-emerald-500 dark:text-emerald-400"
+      style={{
+        textShadow: "0 0 8px color-mix(in oklab, var(--color-emerald-400) 55%, transparent)",
+      }}
+    >
+      {chars.map((c, i) => (
+        <span
+          key={i}
+          className={
+            MATRIX_TITLE[i] === c || MATRIX_TITLE[i] === " "
+              ? "opacity-100"
+              : "opacity-55"
+          }
+        >
+          {c === " " ? "\u00a0" : c}
+        </span>
+      ))}
+    </span>
+  );
+}
 
 type WindowControlAction = "close" | "minimize" | "maximize";
 
@@ -82,26 +174,6 @@ export function Sidebar({
   const [projectOrder, setProjectOrder] = useState<string[]>([]);
   /** Which project's ⋮ menu is open (null = closed). */
   const [menuProject, setMenuProject] = useState<string | null>(null);
-  const menuRef = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    if (!menuProject) return;
-    const onPointerDown = (e: PointerEvent) => {
-      const el = menuRef.current;
-      if (el && !el.contains(e.target as Node)) {
-        setMenuProject(null);
-      }
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setMenuProject(null);
-    };
-    document.addEventListener("pointerdown", onPointerDown, true);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("pointerdown", onPointerDown, true);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [menuProject]);
 
   const grouped = useMemo(() => {
     const filtered = query
@@ -143,7 +215,7 @@ export function Sidebar({
 
   return (
     <aside
-      className={`flex flex-shrink-0 flex-col ${width == null ? "w-64" : ""}`}
+      className={`flex h-full min-h-0 flex-shrink-0 flex-col ${width == null ? "w-64" : ""}`}
       style={width != null ? { width } : undefined}
     >
       <div
@@ -186,7 +258,7 @@ export function Sidebar({
             </button>
           </div>
         )}
-        <div className="flex flex-1 items-center justify-between gap-2 text-gray-500">
+        <div className="flex flex-1 items-center justify-between gap-2 text-muted-foreground">
           <span className="flex min-w-0 items-center gap-2">
             <img
               src="./logo.png"
@@ -196,9 +268,7 @@ export function Sidebar({
               className="h-[18px] w-[18px] shrink-0 rounded-[4px] object-cover"
               draggable={false}
             />
-            <span className="text-[11px] uppercase tracking-wider">
-              sessions
-            </span>
+            <MatrixTitle />
           </span>
         </div>
       </div>
@@ -237,19 +307,19 @@ export function Sidebar({
 
       {searchOpen && (
         <div className="px-3 pb-2">
-          <input
+          <Input
             autoFocus
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Search sessions…"
-            className="w-full rounded-md border border-[#333] bg-[#161616] px-2 py-1.5 text-sm text-gray-200 placeholder-gray-600 focus:outline-none focus:ring-1 focus:ring-gray-500"
+            className="h-8 text-sm"
           />
         </div>
       )}
 
-      <div className="mt-2 flex-1 overflow-y-auto">
+      <div className="mt-2 min-h-0 flex-1 overflow-y-auto">
         {grouped.length === 0 && (
-          <div className="px-4 py-6 text-center text-xs text-gray-600">
+          <div className="px-4 py-6 text-center text-xs text-muted-foreground">
             No sessions yet. New task → choose a project folder.
           </div>
         )}
@@ -267,7 +337,7 @@ export function Sidebar({
             });
           return (
           <div key={project} className="mb-4">
-            <div className="group flex items-center justify-between px-4 py-1 text-xs font-semibold uppercase tracking-wider text-gray-500">
+            <div className="group flex items-center justify-between px-4 py-1 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
               <button
                 type="button"
                 onClick={toggleCollapse}
@@ -290,95 +360,77 @@ export function Sidebar({
                     ? "opacity-100"
                     : "opacity-0 group-hover:opacity-100 focus-within:opacity-100"
                 }`}
-                ref={menuOpen ? menuRef : undefined}
               >
-                <button
-                  type="button"
-                  aria-label="Project menu"
-                  aria-haspopup="menu"
-                  aria-expanded={menuOpen}
-                  title="Project options"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setMenuProject((cur) => (cur === project ? null : project));
-                  }}
-                  className={`rounded p-0.5 text-gray-500 hover:bg-[#2a2a2a] hover:text-gray-200 ${
-                    menuOpen ? "bg-[#2a2a2a] text-gray-200" : ""
-                  }`}
+                <DropdownMenu
+                  open={menuOpen}
+                  onOpenChange={(open) =>
+                    setMenuProject(open ? project : null)
+                  }
                 >
-                  <RiMore2Line className="h-3.5 w-3.5" aria-hidden />
-                </button>
-                {menuOpen && (
-                  <div
-                    role="menu"
-                    aria-label={`${project} options`}
-                    className="absolute right-0 top-full z-40 mt-1 min-w-[10.5rem] overflow-hidden rounded-lg border border-[#333] bg-[#1c1c1c] py-1 shadow-xl"
-                  >
-                    <button
+                  <DropdownMenuTrigger asChild>
+                    <Button
                       type="button"
-                      role="menuitem"
-                      className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs font-medium normal-case tracking-normal text-gray-200 hover:bg-[#2a2a2a]"
-                      onClick={() => {
-                        setMenuProject(null);
-                        onOpenHarness?.(project);
-                      }}
+                      variant="ghost"
+                      size="icon-xs"
+                      className={`text-muted-foreground ${
+                        menuOpen ? "bg-muted text-foreground" : ""
+                      }`}
+                      aria-label="Project menu"
+                      title="Project options"
                     >
-                      <RiSparklingLine className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                      <RiMore2Line className="size-3.5" aria-hidden />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" className="min-w-[10.5rem]">
+                    <DropdownMenuItem
+                      onClick={() => onOpenHarness?.(project)}
+                      className="text-xs"
+                    >
+                      <RiSparklingLine className="size-3.5" aria-hidden />
                       AI harness
-                    </button>
-                    <button
-                      type="button"
-                      role="menuitem"
-                      className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs font-medium normal-case tracking-normal text-gray-200 hover:bg-[#2a2a2a]"
-                      onClick={() => {
-                        setMenuProject(null);
-                        onNewInProject?.(project);
-                      }}
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onClick={() => onNewInProject?.(project)}
+                      className="text-xs"
                     >
-                      <RiAddLine className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                      <RiAddLine className="size-3.5" aria-hidden />
                       New task
-                    </button>
-                    <div className="my-1 border-t border-[#2e2e2e]" />
-                    <button
-                      type="button"
-                      role="menuitem"
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem
                       disabled={!canMoveUp}
-                      className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs font-medium normal-case tracking-normal text-gray-200 hover:bg-[#2a2a2a] disabled:cursor-not-allowed disabled:opacity-35 disabled:hover:bg-transparent"
-                      onClick={() => {
-                        moveProject(project, -1);
+                      onSelect={(e) => {
                         // Keep menu open so you can move multiple steps.
+                        e.preventDefault();
+                        moveProject(project, -1);
                       }}
+                      className="text-xs"
                     >
-                      <RiArrowUpSLine className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                      <RiArrowUpSLine className="size-3.5" aria-hidden />
                       Move up
-                    </button>
-                    <button
-                      type="button"
-                      role="menuitem"
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
                       disabled={!canMoveDown}
-                      className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs font-medium normal-case tracking-normal text-gray-200 hover:bg-[#2a2a2a] disabled:cursor-not-allowed disabled:opacity-35 disabled:hover:bg-transparent"
-                      onClick={() => {
+                      onSelect={(e) => {
+                        e.preventDefault();
                         moveProject(project, 1);
                       }}
+                      className="text-xs"
                     >
-                      <RiArrowDownSLine className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                      <RiArrowDownSLine className="size-3.5" aria-hidden />
                       Move down
-                    </button>
-                    <div className="my-1 border-t border-[#2e2e2e]" />
-                    <button
-                      type="button"
-                      role="menuitem"
-                      className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs font-medium normal-case tracking-normal text-red-400 hover:bg-[#2a2a2a]"
-                      onClick={() => {
-                        setMenuProject(null);
-                        onDeleteProject?.(project);
-                      }}
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem
+                      variant="destructive"
+                      onClick={() => onDeleteProject?.(project)}
+                      className="text-xs"
                     >
-                      <RiDeleteBinLine className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                      <RiDeleteBinLine className="size-3.5" aria-hidden />
                       Delete
-                    </button>
-                  </div>
-                )}
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
               </div>
             </div>
             {!isCollapsed && (() => {
@@ -398,15 +450,15 @@ export function Sidebar({
                     onClick={() => onSelect(t.id)}
                     className={`group flex w-full cursor-pointer items-center justify-between rounded-r-full px-6 py-1.5 pr-[8px] text-left text-sm ${
                       isActive
-                        ? "mr-2 bg-[#3a3a3a] text-gray-200"
-                        : "text-gray-400 hover:bg-[#2a2a2a] hover:text-gray-200"
+                        ? "mr-2 bg-muted text-foreground"
+                        : "text-muted-foreground hover:bg-accent hover:text-foreground"
                     }`}
                   >
                     <span className="truncate">{t.title}</span>
                     <span className="relative ml-2 flex shrink-0 items-center gap-1.5">
                       {/* Idle: show relative time (hidden on hover when actions appear). */}
                       {!activity && (
-                        <span className="text-xs text-gray-500 group-hover:opacity-0">
+                        <span className="text-xs text-muted-foreground group-hover:opacity-0">
                           {timeAgo(t.updatedAt)}
                         </span>
                       )}
@@ -416,7 +468,7 @@ export function Sidebar({
                           role="status"
                           aria-label="Agent processing"
                           title="Agent processing"
-                          className="inline-block h-3 w-3 animate-spin rounded-full border border-gray-400 border-t-transparent group-hover:opacity-0"
+                          className="inline-block h-3 w-3 animate-spin rounded-full border border-muted-foreground border-t-transparent group-hover:opacity-0"
                         />
                       )}
                       {activity === "done" && (
@@ -430,31 +482,35 @@ export function Sidebar({
                       {/* Hover actions always available (offload only when agent is live). */}
                       <span className="absolute right-0 flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
                         {t.agentRunning && (
-                          <button
+                          <Button
                             type="button"
+                            variant="ghost"
+                            size="icon-xs"
                             aria-label="Offload agent"
                             title="Offload agent (free memory)"
                             onClick={(e) => {
                               e.stopPropagation();
                               onOffloadSession?.(t.id);
                             }}
-                            className="text-gray-500 hover:text-amber-400"
+                            className="text-muted-foreground hover:text-amber-400"
                           >
-                            <RiDownloadLine className="h-3.5 w-3.5" aria-hidden />
-                          </button>
+                            <RiDownloadLine className="size-3.5" aria-hidden />
+                          </Button>
                         )}
-                        <button
+                        <Button
                           type="button"
+                          variant="ghost"
+                          size="icon-xs"
                           aria-label="Delete session"
                           title="Delete"
                           onClick={(e) => {
                             e.stopPropagation();
                             onDeleteSession?.(t.id);
                           }}
-                          className="text-gray-500 hover:text-red-400"
+                          className="text-muted-foreground hover:text-destructive"
                         >
-                          <RiDeleteBinLine className="h-3.5 w-3.5" aria-hidden />
-                        </button>
+                          <RiDeleteBinLine className="size-3.5" aria-hidden />
+                        </Button>
                       </span>
                     </span>
                   </div>
@@ -462,8 +518,10 @@ export function Sidebar({
               })}
             </div>
             {hiddenCount > 0 && (
-              <button
+              <Button
                 type="button"
+                variant="ghost"
+                size="xs"
                 onClick={() =>
                   setExpanded((prev) => {
                     const next = new Set(prev);
@@ -472,10 +530,10 @@ export function Sidebar({
                     return next;
                   })
                 }
-                className="ml-6 mt-0.5 text-xs text-gray-500 hover:text-gray-300"
+                className="ml-6 mt-0.5 h-auto px-1 text-xs text-muted-foreground"
               >
                 {isExpanded ? "Show less" : `Show more (${hiddenCount})`}
-              </button>
+              </Button>
             )}
             </>
             );
@@ -485,36 +543,40 @@ export function Sidebar({
         })}
       </div>
 
-      <div className="flex items-center justify-between border-t border-[#2e2e2e] p-4">
-        <div className="flex items-center space-x-2">
-          <div className="flex h-8 w-8 items-center justify-center rounded bg-blue-600 text-sm font-bold text-white">
+      <div className="flex shrink-0 items-center justify-between border-t border-border px-4 pb-[calc(1rem+8px)] pt-4">
+        <div className="flex h-8 items-center gap-2">
+          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded bg-primary text-sm font-bold leading-none text-primary-foreground">
             AD
           </div>
-          <div className="flex items-center space-x-2 text-sm font-medium">
-            <span>AgentDesk</span>
-          </div>
+          <span className="text-sm font-medium leading-none text-foreground">
+            AgentDesk
+          </span>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex h-8 items-center gap-1">
           {onOpenRemoteAccess && (
-            <button
+            <Button
               type="button"
-              className="text-gray-500 hover:text-gray-300"
+              variant="ghost"
+              size="icon-sm"
+              className="text-muted-foreground"
               onClick={onOpenRemoteAccess}
               aria-label="Remote access"
               title="Remote access — open on phone"
             >
-              <RiSmartphoneLine className="h-5 w-5" aria-hidden />
-            </button>
+              <RiSmartphoneLine className="size-5" aria-hidden />
+            </Button>
           )}
-          <button
+          <Button
             type="button"
-            className="text-gray-500 hover:text-gray-300"
+            variant="ghost"
+            size="icon-sm"
+            className="text-muted-foreground"
             onClick={onOpenSettings}
             aria-label="Settings"
             title="Settings"
           >
-            <RiSettings3Line className="h-5 w-5" aria-hidden />
-          </button>
+            <RiSettings3Line className="size-5" aria-hidden />
+          </Button>
         </div>
       </div>
     </aside>
@@ -535,18 +597,20 @@ function QuickAction({
   title?: string;
 }) {
   return (
-    <button
+    <Button
+      type="button"
+      variant="ghost"
       onClick={onClick}
       title={title}
-      className="flex w-full items-center justify-between rounded px-2 py-1.5 text-sm text-gray-300 hover:bg-[#2a2a2a]"
+      className="h-auto w-full justify-between px-2 py-1.5 text-sm font-normal text-foreground/80"
     >
       <span className="flex items-center space-x-2">
         {icon}
         <span>{label}</span>
       </span>
-      {shortcut && <span className="text-xs text-gray-500">{shortcut}</span>}
-    </button>
+      {shortcut && (
+        <span className="text-xs text-muted-foreground">{shortcut}</span>
+      )}
+    </Button>
   );
 }
-
-

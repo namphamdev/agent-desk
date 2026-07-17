@@ -1,5 +1,6 @@
 import { useCallback, useState } from "react";
 import { RiChatNewLine, RiFileCopyLine } from "react-icons/ri";
+import { Button } from "@/components/ui/button";
 
 type Props = {
   /** Raw text to copy / seed a new thread with. */
@@ -44,26 +45,30 @@ export function MessageActions({
 
   return (
     <div className="mt-2 flex items-center gap-1.5">
-      <button
+      <Button
         type="button"
+        variant="outline"
+        size="xs"
         onClick={() => void handleCopy()}
-        className="inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--bg-elevated)]/50 px-2 py-1 text-[11px] text-[var(--text-muted)] transition-colors hover:border-[var(--border-strong)] hover:bg-[var(--bg-elevated)] hover:text-[var(--text)]"
+        className="text-[11px] text-muted-foreground"
         title="Copy raw content"
       >
-        <RiFileCopyLine className="h-3 w-3" aria-hidden />
+        <RiFileCopyLine className="size-3" aria-hidden />
         {copied ? "Copied" : "Copy"}
-      </button>
+      </Button>
       {canNewThread && (
-        <button
+        <Button
           type="button"
+          variant="outline"
+          size="xs"
           onClick={() => void handleNewThread()}
           disabled={busy}
-          className="inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--bg-elevated)]/50 px-2 py-1 text-[11px] text-[var(--text-muted)] transition-colors hover:border-[var(--border-strong)] hover:bg-[var(--bg-elevated)] hover:text-[var(--text)] disabled:opacity-50"
+          className="text-[11px] text-muted-foreground"
           title="New thread with this message as starting context"
         >
-          <RiChatNewLine className="h-3 w-3" aria-hidden />
+          <RiChatNewLine className="size-3" aria-hidden />
           {busy ? "Starting…" : "New thread"}
-        </button>
+        </Button>
       )}
     </div>
   );

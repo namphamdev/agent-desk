@@ -15,11 +15,14 @@ import { NewSessionDialog } from "./components/NewSessionDialog";
 import { ChatEmptyState } from "./components/ChatEmptyState";
 import { BrowserPanel } from "./components/BrowserPanel";
 import { SidebarResizeHandle } from "./components/SidebarResizeHandle";
+import { TooltipProvider } from "@/components/ui/tooltip";
+import { Toaster } from "@/components/ui/sonner";
 import { setBrowserOpenHandler } from "./browser/open-bridge";
 import { useAppController } from "./hooks/useAppController";
 import { useBrowserPanelResize } from "./hooks/useBrowserPanelResize";
 import { useSessionBrowserState } from "./hooks/useSessionBrowserState";
 import { useSidebarResize } from "./hooks/useSidebarResize";
+import { applyDocumentTheme, resolveThemeMode } from "./lib/theme";
 import { isRemoteAccessClient } from "./rpc";
 
 export default function App() {
@@ -38,6 +41,11 @@ export default function App() {
     nudgeBrowserWidth,
   } = useBrowserPanelResize();
   const browser = useSessionBrowserState(app.activeSessionId);
+
+  // DocumentElement owns theme (shadcn `.dark` + data-theme). Keep in sync when settings load.
+  useEffect(() => {
+    applyDocumentTheme(app.settings?.theme ?? "system");
+  }, [app.settings?.theme]);
 
   // Drop browser state for deleted chats.
   useEffect(() => {
@@ -68,10 +76,12 @@ export default function App() {
     app.showNewSession ||
     Boolean(app.pendingDelete);
 
+  const toastTheme = resolveThemeMode(app.settings?.theme ?? "system");
+
   return (
+    <TooltipProvider>
     <div
       className="app-shell flex h-full min-h-0 w-full overflow-hidden"
-      data-theme={app.settings?.theme ?? "light"}
       data-remote={remoteClient ? "true" : undefined}
     >
       {app.showSidebar && (
@@ -135,8 +145,8 @@ export default function App() {
         }`}
       >
         <div
-          className={`relative flex h-full min-w-0 flex-1 flex-col main-bg ${
-            remoteClient ? "rounded-none" : "rounded-[8px]"
+          className={`relative flex h-full min-w-0 flex-1 flex-col main-bg border-t border-l border-gray-300 ${
+            remoteClient ? "rounded-none" : "rounded-tl-[8px]"
           } ${showBrowser && !remoteClient ? "rounded-r-none" : ""}`}
         >
           <div className="shrink-0">
@@ -371,5 +381,7 @@ export default function App() {
         )}
       </main>
     </div>
+    <Toaster theme={toastTheme} />
+    </TooltipProvider>
   );
 }

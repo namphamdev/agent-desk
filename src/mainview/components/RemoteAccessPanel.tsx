@@ -1,7 +1,13 @@
-import { useEffect, useMemo, useState } from "react";
-import { RiCloseLine } from "react-icons/ri";
+import { useMemo, useState } from "react";
 import type { RemoteAccessStatus } from "../../shared/rpc";
 import { qrToDataUrl } from "../utils/qrcode";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 
 type ControlsProps = {
   status: RemoteAccessStatus | null;
@@ -58,21 +64,21 @@ export function RemoteAccessControls({
   };
 
   return (
-    <div className="space-y-4 text-sm text-gray-300">
-      <p className="text-xs leading-relaxed text-gray-500">
+    <div className="space-y-4 text-sm text-foreground/80">
+      <p className="text-xs leading-relaxed text-muted-foreground">
         Scan the QR code or open the URL on a phone on the same Wi‑Fi. Anyone
         with the link can view sessions and send messages until you stop remote
         access or rotate the code.
       </p>
 
       {error && (
-        <div className="rounded-md border border-red-900/60 bg-red-950/40 px-3 py-2 text-xs text-red-300">
+        <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
           {error}
         </div>
       )}
 
       {(loading || busy) && !running && (
-        <div className="py-8 text-center text-xs text-gray-500">
+        <div className="py-8 text-center text-xs text-muted-foreground">
           Starting remote server…
         </div>
       )}
@@ -88,41 +94,43 @@ export function RemoteAccessControls({
                   className="h-44 w-44"
                 />
               ) : (
-                <div className="flex h-44 w-44 items-center justify-center text-xs text-gray-600">
+                <div className="flex h-44 w-44 items-center justify-center text-xs text-muted-foreground">
                   QR unavailable
                 </div>
               )}
             </div>
             <div className="w-full space-y-1">
-              <div className="text-[11px] font-medium uppercase tracking-wider text-gray-500">
+              <div className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
                 Web access URL
               </div>
               <div className="flex items-stretch gap-2">
-                <code className="min-w-0 flex-1 break-all rounded-md border border-[#333] bg-[#121212] px-2.5 py-2 font-mono text-[11px] leading-snug text-gray-200">
+                <code className="min-w-0 flex-1 break-all rounded-md border border-border bg-background px-2.5 py-2 font-mono text-[11px] leading-snug text-foreground">
                   {url}
                 </code>
-                <button
+                <Button
                   type="button"
+                  variant="outline"
+                  size="sm"
                   onClick={() => void copyUrl()}
-                  className="shrink-0 rounded-md border border-[#333] bg-[#222] px-3 text-xs text-gray-200 hover:bg-[#2a2a2a]"
+                  className="shrink-0"
                 >
                   {copied ? "Copied" : "Copy"}
-                </button>
+                </Button>
               </div>
               {status?.code && (
-                <div className="text-[11px] text-gray-600">
+                <div className="text-[11px] text-muted-foreground">
                   Access code{" "}
-                  <span className="font-mono text-gray-400">{status.code}</span>
+                  <span className="font-mono text-muted-foreground">{status.code}</span>
                   {status.port != null ? ` · port ${status.port}` : ""}
                 </div>
               )}
             </div>
             {status && status.urls.length > 1 && (
-              <details className="w-full text-xs text-gray-500">
-                <summary className="cursor-pointer hover:text-gray-300">
+              <details className="w-full text-xs text-muted-foreground">
+                <summary className="cursor-pointer hover:text-foreground">
                   Other network addresses ({status.urls.length - 1})
                 </summary>
-                <ul className="mt-2 space-y-1 font-mono text-[11px] text-gray-400">
+                <ul className="mt-2 space-y-1 font-mono text-[11px] text-muted-foreground">
                   {status.urls
                     .filter((u) => u !== url)
                     .map((u) => (
@@ -136,38 +144,41 @@ export function RemoteAccessControls({
           </div>
 
           <div className="flex flex-wrap gap-2 pt-1">
-            <button
+            <Button
               type="button"
+              variant="outline"
+              size="sm"
               disabled={busy}
               onClick={() => void run(onRegenerate)}
-              className="rounded-md border border-[#333] bg-[#222] px-3 py-1.5 text-xs text-gray-200 hover:bg-[#2a2a2a] disabled:opacity-50"
             >
               New code
-            </button>
-            <button
+            </Button>
+            <Button
               type="button"
+              variant="outline"
+              size="sm"
               disabled={busy}
               onClick={() => void run(onStop)}
-              className="rounded-md border border-red-900/50 bg-red-950/40 px-3 py-1.5 text-xs text-red-300 hover:bg-red-950/70 disabled:opacity-50"
+              className="border-destructive/50 bg-destructive/10 text-destructive hover:bg-destructive/20"
             >
               Stop access
-            </button>
+            </Button>
           </div>
         </>
       )}
 
       {!running && !loading && !busy && (
         <div className="flex flex-col items-center gap-3 py-4">
-          <p className="text-center text-xs text-gray-500">
+          <p className="text-center text-xs text-muted-foreground">
             Remote access is off. Start it to get a QR code and link.
           </p>
-          <button
+          <Button
             type="button"
+            size="sm"
             onClick={() => void run(onStart)}
-            className="rounded-md bg-blue-600 px-4 py-2 text-xs font-medium text-white hover:bg-blue-500"
           >
             Start remote access
-          </button>
+          </Button>
         </div>
       )}
     </div>
@@ -193,41 +204,20 @@ export function RemoteAccessPanel({
   onStop,
   onRegenerate,
 }: Props) {
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
-
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-6"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="remote-access-title"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
+    <Dialog
+      open
+      onOpenChange={(open) => {
+        if (!open) onClose();
       }}
     >
-      <div className="w-full max-w-md overflow-hidden rounded-2xl border border-[#333] bg-[#1a1a1a] shadow-2xl">
-        <div className="flex items-center justify-between border-b border-[#2e2e2e] px-5 py-3">
-          <h2
-            id="remote-access-title"
-            className="text-sm font-semibold text-gray-100"
-          >
-            Remote access
-          </h2>
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded p-1 text-gray-500 hover:bg-[#2a2a2a] hover:text-gray-200"
-            aria-label="Close remote access"
-          >
-            <RiCloseLine className="h-4 w-4" aria-hidden />
-          </button>
-        </div>
+      <DialogContent
+        showCloseButton={true}
+        className="w-full max-w-md gap-0 overflow-hidden p-0 sm:max-w-md"
+      >
+        <DialogHeader className="border-b border-border px-5 py-3 pr-12">
+          <DialogTitle id="remote-access-title">Remote access</DialogTitle>
+        </DialogHeader>
 
         <div className="px-5 py-4">
           <RemoteAccessControls
@@ -239,7 +229,7 @@ export function RemoteAccessPanel({
             onRegenerate={onRegenerate}
           />
         </div>
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 }

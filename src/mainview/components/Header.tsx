@@ -7,6 +7,8 @@ import {
   RiSettings3Line,
 } from "react-icons/ri";
 import type { ConnectionStatePayload } from "../../shared/rpc";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 
 type WindowControlAction = "close" | "minimize" | "maximize";
 
@@ -52,12 +54,12 @@ interface HeaderProps {
 }
 
 const statusColor: Record<string, string> = {
-  idle: "bg-gray-500",
+  idle: "bg-muted-foreground/50",
   connecting: "bg-amber-400 animate-pulse",
   ready: "bg-emerald-400",
   prompting: "bg-blue-400 animate-pulse",
   error: "bg-red-400",
-  disconnected: "bg-gray-600",
+  disconnected: "bg-muted-foreground/70",
 };
 
 /** Format agent RSS for the header chip (e.g. 142 MB, 1.2 GB). */
@@ -104,7 +106,7 @@ export function Header({
 
   return (
     <header
-      className={`electrobun-webkit-app-region-drag flex shrink-0 items-center justify-between gap-2 border-b border-[#2e2e2e] ${
+      className={`electrobun-webkit-app-region-drag flex shrink-0 items-center justify-between gap-2 border-b border-border ${
         compact ? "h-12 px-3" : "h-14 px-4 sm:px-6"
       }`}
       onDoubleClick={(e) => {
@@ -140,33 +142,35 @@ export function Header({
             />
           </div>
         )}
-        <button
+        <Button
           type="button"
+          variant="ghost"
+          size="icon-sm"
           onClick={onToggleSidebar}
-          className={`electrobun-webkit-app-region-no-drag shrink-0 rounded p-1.5 text-gray-400 hover:bg-[#2a2a2a] hover:text-gray-200 ${
+          className={`electrobun-webkit-app-region-no-drag shrink-0 text-muted-foreground ${
             compact ? "" : "md:hidden"
           }`}
           aria-label="Toggle sidebar"
         >
-          <RiMenuLine className="h-5 w-5" aria-hidden />
-        </button>
+          <RiMenuLine className="size-5" aria-hidden />
+        </Button>
 
         {/* Title + meta: stacked on narrow screens, row on sm+.
             justify-center is vertical only (flex-col); sm:justify-start keeps
             the row left-aligned once it switches to flex-row. */}
         <div className="flex min-w-0 flex-1 flex-col items-start justify-center gap-0.5 text-left sm:flex-row sm:items-center sm:justify-start sm:gap-3">
           <h1
-            className={`w-full min-w-0 truncate text-left font-semibold text-gray-100 sm:w-auto ${
+            className={`w-full min-w-0 truncate text-left font-semibold text-foreground sm:w-auto ${
               compact ? "text-[13px]" : "text-sm"
             }`}
             title={title}
           >
             {title}
           </h1>
-          <div className="flex min-w-0 items-center gap-1.5 text-[11px] text-gray-400">
+          <div className="flex min-w-0 items-center gap-1.5 text-[11px] text-muted-foreground">
             {projectLabel && projectLabel !== "—" && (
               <span
-                className="flex min-w-0 max-w-[40vw] items-center truncate rounded bg-[#2a2a2a] px-1.5 py-0.5 sm:max-w-[180px] sm:px-2 sm:py-1"
+                className="flex min-w-0 max-w-[40vw] items-center truncate rounded bg-muted px-1.5 py-0.5 sm:max-w-[180px] sm:px-2 sm:py-1"
                 title={cwd || project}
               >
                 <RiFolderLine
@@ -178,7 +182,7 @@ export function Header({
             )}
             {branch && (
               <span
-                className="hidden max-w-[100px] items-center truncate rounded bg-[#2a2a2a] px-2 py-1 sm:flex"
+                className="hidden max-w-[100px] items-center truncate rounded bg-muted px-2 py-1 sm:flex"
                 title={`Git branch: ${branch}`}
               >
                 <RiGitBranchLine className="mr-1 h-3 w-3 shrink-0" aria-hidden />
@@ -189,51 +193,56 @@ export function Header({
         </div>
       </div>
 
-      <div className="electrobun-webkit-app-region-no-drag flex shrink-0 items-center gap-1.5 text-gray-400 sm:gap-3">
+      <div className="electrobun-webkit-app-region-no-drag flex shrink-0 items-center gap-1.5 text-muted-foreground sm:gap-3">
         {connection && (
-          <div
-            className="flex items-center gap-1.5 rounded bg-[#2a2a2a] px-1.5 py-1 text-[11px] sm:px-2"
+          <Badge
+            variant="secondary"
+            className="h-auto gap-1.5 rounded-md px-1.5 py-1 text-[11px] font-normal sm:px-2"
             title={
               connection.error ??
               ([agentLabel, memoryTitle].filter(Boolean).join(" · ") || status)
             }
           >
             <span
-              className={`h-1.5 w-1.5 shrink-0 rounded-full ${statusColor[status] ?? "bg-gray-500"}`}
+              className={`h-1.5 w-1.5 shrink-0 rounded-full ${statusColor[status] ?? "bg-muted-foreground/50"}`}
             />
             <span className="hidden max-w-[120px] truncate sm:inline">
               {agentLabel}
             </span>
             {memoryLabel && (
               <span
-                className="hidden shrink-0 tabular-nums text-gray-500 md:inline"
+                className="hidden shrink-0 tabular-nums text-muted-foreground md:inline"
                 title={memoryTitle}
               >
                 · {memoryLabel}
               </span>
             )}
-          </div>
+          </Badge>
         )}
         {canReview && onReviewInNewSession && (
-          <button
+          <Button
             type="button"
-            className="inline-flex items-center gap-1.5 rounded-md border border-[#333] bg-[#222] px-2 py-1 text-[11px] text-gray-300 hover:border-gray-500 hover:bg-[#2a2a2a] hover:text-gray-100 disabled:opacity-50"
+            variant="outline"
+            size="xs"
+            className="text-[11px] text-muted-foreground"
             onClick={() => onReviewInNewSession()}
             disabled={reviewBusy}
             title="Summarize this session's work and open a new chat to review it"
             aria-label="Review changes in new session"
           >
-            <RiFileList3Line className="h-3.5 w-3.5 shrink-0" aria-hidden />
+            <RiFileList3Line className="size-3.5 shrink-0" aria-hidden />
             <span className="hidden sm:inline">
               {reviewBusy ? "Starting…" : "Review"}
             </span>
-          </button>
+          </Button>
         )}
         {onToggleBrowser && (
-          <button
+          <Button
             type="button"
-            className={`rounded p-1.5 hover:bg-[#2a2a2a] hover:text-gray-200 ${
-              browserOpen ? "bg-[#2a2a2a] text-sky-300" : ""
+            variant="ghost"
+            size="icon-sm"
+            className={`text-muted-foreground ${
+              browserOpen ? "bg-muted text-sky-400" : ""
             } ${!browserEnabled ? "opacity-60" : ""}`}
             onClick={onToggleBrowser}
             aria-label={
@@ -252,17 +261,19 @@ export function Header({
                   : "Open built-in browser panel"
             }
           >
-            <RiGlobalLine className="h-5 w-5" aria-hidden />
-          </button>
+            <RiGlobalLine className="size-5" aria-hidden />
+          </Button>
         )}
-        <button
+        <Button
           type="button"
-          className="rounded p-1.5 hover:bg-[#2a2a2a] hover:text-gray-200"
+          variant="ghost"
+          size="icon-sm"
+          className="text-muted-foreground"
           onClick={onOpenSettings}
           aria-label="Settings"
         >
-          <RiSettings3Line className="h-5 w-5" aria-hidden />
-        </button>
+          <RiSettings3Line className="size-5" aria-hidden />
+        </Button>
       </div>
     </header>
   );

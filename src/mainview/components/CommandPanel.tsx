@@ -1,6 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { RiCloseLine } from "react-icons/ri";
 import type { CommandRunSummary, SavedCommand } from "../../shared/rpc";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { cn } from "@/lib/utils";
 
 type Props = {
   commands: SavedCommand[];
@@ -37,7 +45,7 @@ function statusClass(run: CommandRunSummary): string {
   if (run.status === "error") return "text-red-400";
   if (run.exitCode === 0) return "text-emerald-400";
   if (run.exitCode != null) return "text-red-400";
-  return "text-gray-400";
+  return "text-muted-foreground";
 }
 
 function timeAgo(ts: number): string {
@@ -76,14 +84,6 @@ export function CommandPanel({
   const [logLoading, setLogLoading] = useState(false);
   const logEndRef = useRef<HTMLPreElement | null>(null);
   const stickToBottom = useRef(true);
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !adding) onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [adding, onClose]);
 
   const refreshLog = useCallback(
     async (runId: string, silent = false) => {
@@ -159,32 +159,33 @@ export function CommandPanel({
     : null;
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-6"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="commands-title"
-      onClick={(e) => {
-        if (e.target === e.currentTarget && !adding) onClose();
+    <Dialog
+      open
+      onOpenChange={(open) => {
+        if (!open && !adding) onClose();
       }}
     >
-      <div className="flex h-[min(720px,92vh)] w-full max-w-4xl flex-col overflow-hidden rounded-2xl border border-[#333] bg-[#1a1a1a] shadow-2xl">
-        <div className="flex shrink-0 items-center justify-between border-b border-[#2e2e2e] px-5 py-3">
+      <DialogContent
+        showCloseButton={true}
+        className="flex h-[min(720px,92vh)] w-full max-w-4xl flex-col gap-0 overflow-hidden p-0 sm:max-w-4xl"
+        onInteractOutside={(e) => {
+          if (adding) e.preventDefault();
+        }}
+        onEscapeKeyDown={(e) => {
+          if (adding) e.preventDefault();
+        }}
+      >
+        <DialogHeader className="flex shrink-0 flex-row items-center justify-between space-y-0 border-b border-border px-5 py-3 pr-12">
           <div>
-            <h2
-              id="commands-title"
-              className="text-sm font-semibold text-gray-100"
-            >
-              Project commands
-            </h2>
-            <p className="mt-0.5 text-xs text-gray-500">
+            <DialogTitle id="commands-title">Project commands</DialogTitle>
+            <p className="mt-0.5 text-xs text-muted-foreground">
               {hasProject ? (
                 <>
                   {projectName ? (
-                    <span className="text-gray-300">{projectName}</span>
+                    <span className="text-foreground/80">{projectName}</span>
                   ) : null}
                   {projectName ? " · " : null}
-                  <code className="text-gray-500">{projectCwd}</code>
+                  <code className="text-muted-foreground">{projectCwd}</code>
                   {" · "}
                   {commands.length} saved ·{" "}
                   {runs.filter((r) => r.status === "running").length} running
@@ -194,42 +195,32 @@ export function CommandPanel({
               )}
             </p>
           </div>
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => void onRefresh()}
-              disabled={loading || adding}
-              className="rounded px-2 py-1 text-xs text-gray-400 hover:bg-[#2a2a2a] hover:text-gray-200 disabled:opacity-40"
-              title="Refresh"
-            >
-              Refresh
-            </button>
-            <button
-              type="button"
-              onClick={onClose}
-              className="rounded p-1 text-gray-500 hover:bg-[#2a2a2a] hover:text-gray-200"
-              aria-label="Close commands"
-            >
-              <RiCloseLine className="h-4 w-4" aria-hidden />
-            </button>
-          </div>
-        </div>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={() => void onRefresh()}
+            disabled={loading || adding}
+            title="Refresh"
+          >
+            Refresh
+          </Button>
+        </DialogHeader>
 
         <div className="grid min-h-0 flex-1 grid-cols-1 md:grid-cols-2">
           {/* Left: add + list */}
-          <div className="flex min-h-0 flex-col border-b border-[#2e2e2e] md:border-b-0 md:border-r">
-            <div className="shrink-0 space-y-2 border-b border-[#2e2e2e] px-4 py-3">
-              <div className="text-[11px] font-medium uppercase tracking-wider text-gray-500">
+          <div className="flex min-h-0 flex-col border-b border-border md:border-b-0 md:border-r">
+            <div className="shrink-0 space-y-2 border-b border-border px-4 py-3">
+              <div className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
                 Add command for this project
               </div>
-              <input
+              <Input
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 placeholder="Name (e.g. Run tests)"
                 disabled={adding || !hasProject}
-                className="w-full rounded-md border border-[#333] bg-[#161616] px-3 py-1.5 text-sm text-gray-200 placeholder-gray-600 focus:outline-none focus:ring-1 focus:ring-gray-500 disabled:opacity-50"
               />
-              <input
+              <Input
                 value={command}
                 onChange={(e) => setCommand(e.target.value)}
                 onKeyDown={(e) => {
@@ -239,42 +230,41 @@ export function CommandPanel({
                 }}
                 placeholder="Shell command (e.g. bun test)"
                 disabled={adding || !hasProject}
-                className="w-full rounded-md border border-[#333] bg-[#161616] px-3 py-1.5 font-mono text-sm text-gray-200 placeholder-gray-600 focus:outline-none focus:ring-1 focus:ring-gray-500 disabled:opacity-50"
+                className="font-mono"
               />
-              <p className="text-[10px] leading-relaxed text-gray-600">
+              <p className="text-[10px] leading-relaxed text-muted-foreground">
                 Runs in the project folder. Commands are not shared across
                 projects.
               </p>
-              <button
+              <Button
                 type="button"
                 onClick={() => void handleAdd()}
                 disabled={
                   adding || !hasProject || !name.trim() || !command.trim()
                 }
-                className="rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-40"
               >
                 {adding ? "Adding…" : "Add"}
-              </button>
+              </Button>
             </div>
 
             {displayError && (
-              <div className="mx-4 mt-3 rounded-md border border-red-900/60 bg-red-950/40 px-3 py-2 text-xs text-red-300">
+              <div className="mx-4 mt-3 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
                 {displayError}
               </div>
             )}
 
             <div className="min-h-0 flex-1 overflow-y-auto px-2 py-2">
               {!hasProject ? (
-                <div className="px-3 py-8 text-center text-xs text-gray-500">
+                <div className="px-3 py-8 text-center text-xs text-muted-foreground">
                   Open a session in a project folder to add and run commands for
                   that project.
                 </div>
               ) : loading && commands.length === 0 ? (
-                <div className="py-8 text-center text-xs text-gray-500">
+                <div className="py-8 text-center text-xs text-muted-foreground">
                   Loading…
                 </div>
               ) : commands.length === 0 ? (
-                <div className="px-3 py-8 text-center text-xs text-gray-500">
+                <div className="px-3 py-8 text-center text-xs text-muted-foreground">
                   No commands for this project yet. Add one above, then Run.
                 </div>
               ) : (
@@ -282,35 +272,38 @@ export function CommandPanel({
                   {commands.map((c) => (
                     <li
                       key={c.id}
-                      className="group rounded-lg border border-transparent px-3 py-2 hover:border-[#333] hover:bg-[#222]"
+                      className="group rounded-lg border border-transparent px-3 py-2 hover:border-border hover:bg-accent/50"
                     >
                       <div className="flex items-start justify-between gap-2">
                         <div className="min-w-0 flex-1">
-                          <div className="truncate text-sm font-medium text-gray-100">
+                          <div className="truncate text-sm font-medium text-foreground">
                             {c.name}
                           </div>
-                          <code className="mt-0.5 block truncate font-mono text-[11px] text-gray-500">
+                          <code className="mt-0.5 block truncate font-mono text-[11px] text-muted-foreground">
                             {c.command}
                           </code>
                         </div>
                         <div className="flex shrink-0 items-center gap-1">
-                          <button
+                          <Button
                             type="button"
+                            size="xs"
                             disabled={busyId === c.id}
                             onClick={() => void handleRun(c.id)}
-                            className="rounded bg-emerald-700/80 px-2 py-1 text-[11px] font-medium text-white hover:bg-emerald-600 disabled:opacity-40"
+                            className="bg-emerald-700/80 text-white hover:bg-emerald-600"
                           >
                             Run
-                          </button>
-                          <button
+                          </Button>
+                          <Button
                             type="button"
+                            variant="ghost"
+                            size="xs"
                             disabled={busyId === c.id}
                             onClick={() => void onRemove(c.id)}
-                            className="rounded px-2 py-1 text-[11px] text-gray-500 hover:bg-[#2a2a2a] hover:text-red-400 disabled:opacity-40"
+                            className="text-muted-foreground hover:text-destructive"
                             title="Remove"
                           >
                             Delete
-                          </button>
+                          </Button>
                         </div>
                       </div>
                     </li>
@@ -319,12 +312,12 @@ export function CommandPanel({
               )}
             </div>
 
-            <div className="shrink-0 border-t border-[#2e2e2e] px-3 py-2">
-              <div className="mb-1.5 text-[11px] font-medium uppercase tracking-wider text-gray-500">
+            <div className="shrink-0 border-t border-border px-3 py-2">
+              <div className="mb-1.5 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
                 Recent runs
               </div>
               {runs.length === 0 ? (
-                <div className="py-2 text-[11px] text-gray-600">
+                <div className="py-2 text-[11px] text-muted-foreground">
                   No runs yet.
                 </div>
               ) : (
@@ -334,18 +327,19 @@ export function CommandPanel({
                       <button
                         type="button"
                         onClick={() => setSelectedRunId(r.id)}
-                        className={`flex w-full items-center justify-between gap-2 rounded px-2 py-1.5 text-left text-[11px] hover:bg-[#2a2a2a] ${
-                          selectedRunId === r.id ? "bg-[#252525]" : ""
-                        }`}
+                        className={cn(
+                          "flex w-full items-center justify-between gap-2 rounded px-2 py-1.5 text-left text-[11px] hover:bg-accent",
+                          selectedRunId === r.id ? "bg-accent" : "",
+                        )}
                       >
-                        <span className="min-w-0 truncate text-gray-300">
+                        <span className="min-w-0 truncate text-foreground/80">
                           {r.commandName}
                         </span>
                         <span className="flex shrink-0 items-center gap-2">
                           <span className={statusClass(r)}>
                             {statusLabel(r)}
                           </span>
-                          <span className="text-gray-600">
+                          <span className="text-muted-foreground">
                             {timeAgo(r.startedAt)}
                           </span>
                         </span>
@@ -359,13 +353,13 @@ export function CommandPanel({
 
           {/* Right: log viewer */}
           <div className="flex min-h-0 flex-col">
-            <div className="flex shrink-0 items-center justify-between border-b border-[#2e2e2e] px-4 py-2">
+            <div className="flex shrink-0 items-center justify-between border-b border-border px-4 py-2">
               <div className="min-w-0">
-                <div className="truncate text-xs font-medium text-gray-200">
+                <div className="truncate text-xs font-medium text-foreground">
                   {selectedRun ? selectedRun.commandName : "Log"}
                 </div>
                 {selectedRun && (
-                  <div className="truncate font-mono text-[10px] text-gray-600">
+                  <div className="truncate font-mono text-[10px] text-muted-foreground">
                     {selectedRun.command}
                     {" · "}
                     <span className={statusClass(selectedRun)}>
@@ -376,27 +370,30 @@ export function CommandPanel({
               </div>
               <div className="flex shrink-0 items-center gap-1">
                 {selectedRun?.status === "running" && (
-                  <button
+                  <Button
                     type="button"
+                    variant="outline"
+                    size="xs"
                     onClick={() => void onStop(selectedRun.id)}
-                    className="rounded border border-red-900/50 bg-red-950/40 px-2 py-1 text-[11px] text-red-300 hover:bg-red-950/70"
+                    className="border-destructive/50 bg-destructive/10 text-destructive hover:bg-destructive/20"
                   >
                     Stop
-                  </button>
+                  </Button>
                 )}
                 {selectedRun && (
-                  <button
+                  <Button
                     type="button"
+                    variant="ghost"
+                    size="xs"
                     onClick={() => void refreshLog(selectedRun.id)}
-                    className="rounded px-2 py-1 text-[11px] text-gray-400 hover:bg-[#2a2a2a] hover:text-gray-200"
                   >
                     Reload
-                  </button>
+                  </Button>
                 )}
               </div>
             </div>
             {!selectedRun ? (
-              <div className="flex flex-1 items-center justify-center px-6 text-center text-xs text-gray-600">
+              <div className="flex flex-1 items-center justify-center px-6 text-center text-xs text-muted-foreground">
                 Run a command or select a recent run to view its log.
               </div>
             ) : (
@@ -414,7 +411,7 @@ export function CommandPanel({
                       el.scrollHeight - el.scrollTop - el.clientHeight;
                     stickToBottom.current = dist < 40;
                   }}
-                  className="min-h-0 flex-1 overflow-auto bg-[#0e0e0e] px-3 py-2 font-mono text-[11px] leading-relaxed text-gray-300 whitespace-pre-wrap break-words"
+                  className="min-h-0 flex-1 overflow-auto bg-background px-3 py-2 font-mono text-[11px] leading-relaxed text-foreground/80 whitespace-pre-wrap break-words"
                 >
                   {logLoading && !logText
                     ? "Loading log…"
@@ -427,7 +424,7 @@ export function CommandPanel({
             )}
           </div>
         </div>
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 }

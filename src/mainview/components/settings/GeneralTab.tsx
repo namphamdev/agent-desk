@@ -1,5 +1,8 @@
 import type { Dispatch, SetStateAction } from "react";
 import type { AgentInfo, AppSettings } from "../../../shared/rpc";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Select } from "../Select";
 import {
   EFFORT_OPTIONS,
@@ -47,15 +50,15 @@ export function GeneralTab({
       </Field>
 
       <Field label="Editor command">
-        <input
+        <Input
           value={draft.editorCommand}
           onChange={(e) =>
             setDraft((d) => ({ ...d, editorCommand: e.target.value }))
           }
           placeholder="code"
-          className="w-full rounded-md border border-[#333] bg-[#121212] px-2 py-1.5 font-mono text-gray-200"
+          className="font-mono"
         />
-        <p className="mt-1 text-[11px] text-gray-500">
+        <p className="mt-1 text-[11px] text-muted-foreground">
           Used when opening files from tool-call locations ($EDITOR).
         </p>
       </Field>
@@ -71,7 +74,7 @@ export function GeneralTab({
           disabled={agents.length === 0}
           aria-label="Default agent"
         />
-        <p className="mt-1 text-[11px] text-gray-500">
+        <p className="mt-1 text-[11px] text-muted-foreground">
           Configure agents in ~/.terminal-react/agents.json
         </p>
       </Field>
@@ -85,7 +88,7 @@ export function GeneralTab({
           }
           aria-label="Default thinking level"
         />
-        <p className="mt-1 text-[11px] text-gray-500">
+        <p className="mt-1 text-[11px] text-muted-foreground">
           Applied when a session starts (if the agent exposes a thinking /
           effort selector). You can still change it per turn in the prompt bar.
         </p>
@@ -100,62 +103,58 @@ export function GeneralTab({
           }
           aria-label="Default permission mode"
         />
-        <p className="mt-1 text-[11px] text-gray-500">
+        <p className="mt-1 text-[11px] text-muted-foreground">
           Applied when a session starts (if the agent exposes a permission /
           mode selector). You can still change it per turn in the prompt bar.
         </p>
       </Field>
 
-      <label className="flex items-center gap-2 text-gray-300">
-        <input
-          type="checkbox"
+      <label className="flex items-center gap-2 text-foreground/90">
+        <Checkbox
           checked={draft.enableFsCapabilities}
-          onChange={(e) =>
+          onCheckedChange={(checked) =>
             setDraft((d) => ({
               ...d,
-              enableFsCapabilities: e.target.checked,
+              enableFsCapabilities: checked === true,
             }))
           }
-          className="rounded border-[#444]"
         />
         Enable filesystem capabilities (read/write for the agent)
       </label>
-      <p className="text-[11px] text-gray-500">
+      <p className="text-[11px] text-muted-foreground">
         Off by default. When on, the agent may read and write files via ACP
         fs/* methods.
       </p>
 
-      <label className="flex items-center gap-2 text-gray-300">
-        <input
-          type="checkbox"
+      <label className="flex items-center gap-2 text-foreground/90">
+        <Checkbox
           checked={draft.enableBrowserMcp !== false}
-          onChange={(e) =>
+          onCheckedChange={(checked) =>
             setDraft((d) => ({
               ...d,
-              enableBrowserMcp: e.target.checked,
+              enableBrowserMcp: checked === true,
             }))
           }
-          className="rounded border-[#444]"
         />
         Built-in browser (agent can control the panel)
       </label>
-      <p className="text-[11px] text-gray-500">
+      <p className="text-[11px] text-muted-foreground">
         On by default. When a session starts, Claude Code gets MCP tools that
         drive the in-app browser panel (globe icon) — navigate, snapshot, click,
         type — not a separate Chrome window. Applies to new sessions.
       </p>
 
       <Field label="Worktree shared paths">
-        <textarea
+        <Textarea
           value={worktreePathsText}
           onChange={(e) => setWorktreePathsText(e.target.value)}
           rows={3}
           spellCheck={false}
           placeholder={"node_modules\n.venv"}
-          className="w-full resize-y rounded-md border border-[#333] bg-[#121212] px-2 py-1.5 font-mono text-xs text-gray-200 placeholder-gray-600 focus:outline-none focus:ring-1 focus:ring-gray-500"
+          className="resize-y font-mono text-xs"
           aria-label="Worktree shared paths"
         />
-        <p className="mt-1 text-[11px] text-gray-500">
+        <p className="mt-1 text-[11px] text-muted-foreground">
           Relative paths (one per line or comma-separated) symlinked from the
           main project into new git worktrees. Avoids reinstalling large folders
           like <span className="font-mono">node_modules</span>. Absolute paths
