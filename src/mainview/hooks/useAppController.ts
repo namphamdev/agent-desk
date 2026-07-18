@@ -488,6 +488,8 @@ export function useAppController() {
   }, [activeSessionId]);
 
   const handleCancel = useCallback(async () => {
+    // Cancel the turn for the chat the user is viewing (Stop is only shown
+    // when that chat is mid-turn). Background turns keep running.
     const sessionId = activeSessionId;
     await getRpc().request.cancel({
       sessionId: sessionId ?? undefined,
@@ -1350,7 +1352,23 @@ export function useAppController() {
       ? formatElapsed(now - turnStartedAt)
       : null;
 
-  const isPrompting = connection.status === "prompting";
+  // Scope "working" to the visible chat — another session may still be mid-turn.
+  const isPrompting =
+    !!activeSessionId &&
+    (sessionActivity[activeSessionId] === "processing" ||
+      (connection.status === "prompting" &&
+        connection.sessionId === activeSessionId));
+  // Header/banner should not show another chat's mid-turn as this chat's state.
+  const viewConnection: ConnectionStatePayload =
+    connection.status === "prompting" &&
+    connection.sessionId &&
+    connection.sessionId !== activeSessionId
+      ? {
+          ...connection,
+          status: "ready",
+          sessionId: activeSessionId,
+        }
+      : connection;
   const activePromptQueue = activeSessionId
     ? getQueue(promptQueues, activeSessionId)
     : [];
@@ -1361,7 +1379,7 @@ export function useAppController() {
     sessions,
     activeSessionId,
     activeSession,
-    connection,
+    connection: viewConnection,
     permission,
     commands,
     configOptions,

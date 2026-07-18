@@ -374,13 +374,40 @@ export class SessionManager {
 
     // Prepare agent in the background so the RPC returns as soon as history is
     // loaded (and rapid switches don't queue behind agent spawn/openSession).
+    this.schedulePrepareSession(sessionId);
+
+    return { ok: true as const, session: live.summary };
+  }
+
+  /** Queue background agent prep (connect + open handle). */
+  private schedulePrepareSession(sessionId: string) {
     this.prepareChain = this.prepareChain
       .then(() => this.prepareSessionAgent(sessionId))
       .catch((err) => {
         console.warn("[session-manager] prepare session agent failed:", err);
       });
+  }
 
-    return { ok: true as const, session: live.summary };
+  /**
+   * After a mid-turn finishes/cancels, open the agent handle for the chat the
+   * user is currently viewing (if different from the one that just finished).
+   */
+  private schedulePrepareActiveIfIdle() {
+    const id = this.activeSessionId;
+    if (!id) return;
+    const active = this.live.get(id);
+    if (!active || active.prompting || active.handle) return;
+    if (this.findPromptingSessionId()) return;
+    this.schedulePrepareSession(id);
+  }
+
+  /** First live session currently mid-prompt (optionally excluding one id). */
+  private findPromptingSessionId(exceptId?: string): string | null {
+    for (const [id, live] of this.live) {
+      if (exceptId && id === exceptId) continue;
+      if (live.prompting) return id;
+    }
+    return null;
   }
 
   /** Connect agent + open handle for a session; no-ops if user switched away. */
@@ -389,9 +416,23 @@ export class SessionManager {
     if (!live) return;
     if (this.activeSessionId !== sessionId) return;
 
+    // Single ACP client = one live handle. Opening this chat would dispose the
+    // other session's handle and cancel its in-flight prompt. Defer until idle.
+    const busyOther = this.findPromptingSessionId(sessionId);
+    if (busyOther) {
+      this.emitSessionList();
+      return;
+    }
+
     await this.connectAgent(live.summary.agentId, live.summary.cwd);
 
     if (this.activeSessionId !== sessionId) return;
+
+    // Re-check after await: another chat may have started prompting.
+    if (this.findPromptingSessionId(sessionId)) {
+      this.emitSessionList();
+      return;
+    }
 
     if (!live.handle && this.conn.client) {
       try {
@@ -431,6 +472,15 @@ export class SessionManager {
     if (!id) return { ok: false as const, error: "No active session" };
     const live = this.live.get(id);
     if (!live) return { ok: false as const, error: "Session not found" };
+
+    // Opening a new handle would cancel another chat mid-turn.
+    if (!live.handle && this.findPromptingSessionId(id)) {
+      return {
+        ok: false as const,
+        error:
+          "Another chat is still processing. Wait for it to finish before changing settings here.",
+      };
+    }
 
     if (!this.conn.client || this.conn.connectedAgentId !== live.summary.agentId) {
       const conn = await this.connectAgent(
@@ -545,6 +595,16 @@ export class SessionManager {
     const live = this.live.get(id);
     if (!live) return { ok: false as const, error: "Session not found" };
 
+    // ACP is one live session at a time — do not steal the handle mid-turn.
+    const busyOther = this.findPromptingSessionId(id);
+    if (busyOther && !live.handle) {
+      return {
+        ok: false as const,
+        error:
+          "Another chat is still processing. Wait for it to finish, or open that chat and stop it.",
+      };
+    }
+
     if (!this.conn.client || this.conn.connectedAgentId !== live.summary.agentId) {
       const conn = await this.connectAgent(live.summary.agentId, live.summary.cwd);
       if (!conn.ok) return conn;
@@ -610,15 +670,18 @@ export class SessionManager {
         // cancelled and onTurnEnd may not run — restore a non-error state.
         if (
           result.stopReason === "cancelled" &&
-          this.activeSessionId === id &&
-          this.conn.connectionState.status === "prompting"
+          this.conn.connectionState.status === "prompting" &&
+          (this.conn.connectionState.sessionId === id ||
+            this.activeSessionId === id)
         ) {
           this.conn.setConnection({
             status: this.conn.client ? "ready" : "idle",
             agentName: this.conn.connectionState.agentName,
-            sessionId: id,
+            sessionId: this.activeSessionId,
           });
         }
+        // User may have switched away mid-turn; open the viewed chat now.
+        this.schedulePrepareActiveIfIdle();
       })
       .catch((err) => {
         live.prompting = false;
@@ -632,15 +695,17 @@ export class SessionManager {
         ) {
           console.warn("[session-manager] prompt interrupted:", message);
           if (
-            this.activeSessionId === id &&
-            this.conn.connectionState.status === "prompting"
+            this.conn.connectionState.status === "prompting" &&
+            (this.conn.connectionState.sessionId === id ||
+              this.activeSessionId === id)
           ) {
             this.conn.setConnection({
               status: this.conn.client ? "ready" : "idle",
               agentName: this.conn.connectionState.agentName,
-              sessionId: id,
+              sessionId: this.activeSessionId,
             });
           }
+          this.schedulePrepareActiveIfIdle();
           return;
         }
         console.error("[session-manager] prompt failed:", message);
@@ -665,8 +730,10 @@ export class SessionManager {
     this.conn.setConnection({
       status: "ready",
       agentName: this.conn.connectionState.agentName,
-      sessionId: id,
+      sessionId: this.activeSessionId,
     });
+    // If the user was viewing another chat, attach its agent now.
+    this.schedulePrepareActiveIfIdle();
     return { ok: true };
   }
 

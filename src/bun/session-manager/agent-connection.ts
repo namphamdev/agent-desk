@@ -578,8 +578,14 @@ export class AgentConnection {
 
     // openSession only keeps one active agent session — drop other handles so
     // agentRunning accurately reflects which chat owns the live ACP client.
+    // Never dispose a chat that is mid-prompt (would cancel the agent turn).
     for (const [id, other] of this.host.live) {
       if (id === sessionId || !other.handle) continue;
+      if (other.prompting) {
+        throw new Error(
+          "Cannot open session while another chat is mid-prompt",
+        );
+      }
       try {
         other.handle.dispose();
       } catch {

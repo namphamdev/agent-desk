@@ -651,6 +651,47 @@ describe("SessionManager", () => {
     expect(mgr.listSessions().activeSessionId).toBe(a.session.id);
   });
 
+  it("switchSession mid-prompt keeps the background turn running", async () => {
+    const { mgr, c, agentId } = await boot();
+    const a = await mgr.createSession({ title: "Busy", agentId });
+    const b = await mgr.createSession({ title: "Other", agentId });
+    expect(a.ok && b.ok).toBe(true);
+    if (!a.ok || !b.ok) return;
+
+    // A owns the live handle after create; switch back and start a long turn.
+    await mgr.switchSession(a.session.id);
+    // Wait for prepare to open A's handle (background chain).
+    await waitFor(() => {
+      const list = mgr.listSessions().sessions.find((s) => s.id === a.session.id);
+      return list?.agentRunning === true;
+    });
+
+    await mgr.sendPrompt("keep going", a.session.id);
+    expect(mgr.getConnectionState().status).toBe("prompting");
+
+    // Switch away while A is still streaming.
+    c.loaded.length = 0;
+    const switched = await mgr.switchSession(b.session.id);
+    expect(switched.ok).toBe(true);
+    expect(mgr.listSessions().activeSessionId).toBe(b.session.id);
+    expect(c.loaded.some((l) => l.session.id === b.session.id)).toBe(true);
+
+    // Background prompt must not be cancelled by the switch.
+    await Bun.sleep(30);
+    const endsForA = c.turnEnds.filter((t) => t.sessionId === a.session.id);
+    expect(endsForA.every((t) => t.stopReason !== "cancelled")).toBe(true);
+    expect(
+      endsForA.some((t) => t.stopReason === "cancelled"),
+    ).toBe(false);
+
+    // A still finishes the turn successfully.
+    await waitFor(() =>
+      c.turnEnds.some(
+        (t) => t.sessionId === a.session.id && t.stopReason === "end_turn",
+      ),
+    );
+  });
+
   it("deleteSession removes it and activates another when needed", async () => {
     const { mgr, agentId } = await boot();
     const a = await mgr.createSession({ title: "Keep", agentId });
