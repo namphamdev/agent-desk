@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { RiCloseLine } from "react-icons/ri";
+import { X } from "lucide-react";
 import {
   parseProvidersImportText,
   serializeProvidersExport,
@@ -230,7 +230,7 @@ export function SettingsPanel({
             onClick={onClose}
             aria-label="Close settings"
           >
-            <RiCloseLine className="h-4 w-4" aria-hidden />
+            <X className="h-4 w-4" aria-hidden />
           </Button>
         </DialogHeader>
 

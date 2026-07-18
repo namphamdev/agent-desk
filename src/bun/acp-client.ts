@@ -347,13 +347,31 @@ export class AcpClient {
         meta.defaultAuthMethodId) ||
       null;
     const ids = new Set(methods.map((m) => m.id));
-    const order = [
-      preferred,
-      "cached_token",
-      "xai.api_key",
-      "api_key",
-      ...methods.map((m) => m.id),
-    ].filter((id): id is string => typeof id === "string" && ids.has(id));
+    // Prefer API-key methods when the spawn env carries a provider key (BYOK).
+    // cached_token / browser login send traffic to cli-chat-proxy.grok.com.
+    const hasByokKey = !!(
+      this.options.env?.AGENT_DESK_GROK_API_KEY ||
+      this.options.env?.XAI_API_KEY ||
+      this.options.env?.GROK_CODE_XAI_API_KEY
+    );
+    const order = (
+      hasByokKey
+        ? [
+            "xai.api_key",
+            "api_key",
+            "env_var",
+            preferred,
+            ...methods.map((m) => m.id),
+            "cached_token",
+          ]
+        : [
+            preferred,
+            "cached_token",
+            "xai.api_key",
+            "api_key",
+            ...methods.map((m) => m.id),
+          ]
+    ).filter((id): id is string => typeof id === "string" && ids.has(id));
 
     const methodId = order[0];
     if (!methodId) return;

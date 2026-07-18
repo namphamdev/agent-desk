@@ -1,10 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import {
-  RiArrowDownSLine,
-  RiArrowUpLine,
-  RiCloseLine,
-  RiStopFill,
-} from "react-icons/ri";
+import { ArrowUp, ChevronDown, Square, X } from "lucide-react";
 import type {
   AvailableCommand,
   ClaudeModelAlias,
@@ -313,7 +308,7 @@ export function PromptInput({
                       className="shrink-0 text-muted-foreground"
                       aria-label={`Remove queued prompt ${index + 1}`}
                     >
-                      <RiCloseLine className="size-3.5" aria-hidden />
+                      <X className="size-3.5" aria-hidden />
                     </Button>
                   )}
                 </li>
@@ -370,7 +365,7 @@ export function PromptInput({
                 void onCancel?.();
               }
             }}
-            className="max-h-[200px] min-h-[24px] w-full resize-none border-none bg-transparent text-[15px] leading-6 text-gray-200 placeholder-gray-500 focus:outline-none focus:ring-0 disabled:opacity-50"
+            className="max-h-[200px] min-h-[24px] w-full resize-none border-none bg-transparent text-[15px] leading-6 text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-0 disabled:opacity-50"
             placeholder={
               disabled
                 ? "Connecting to agent…"
@@ -500,7 +495,7 @@ export function PromptInput({
                 className="bg-red-900/60 text-red-200 hover:bg-red-800/60"
                 aria-label="Stop generation"
               >
-                <RiStopFill className="size-3.5" aria-hidden />
+                <Square className="size-3.5" aria-hidden />
                 Stop
               </Button>
             )}
@@ -513,7 +508,7 @@ export function PromptInput({
               aria-label={prompting ? "Queue prompt" : "Send prompt"}
               title={prompting ? "Queue follow-up (sends when agent finishes)" : "Send"}
             >
-              <RiArrowUpLine className="size-4" aria-hidden />
+              <ArrowUp className="size-4" aria-hidden />
             </Button>
           </div>
         </div>
@@ -695,7 +690,7 @@ function Selector({
       >
         {prefix && <span>{prefix}</span>}
         <span className="max-w-[14rem] truncate">{displayValue ?? value}</span>
-        <RiArrowDownSLine className="h-3 w-3 shrink-0 text-muted-foreground" aria-hidden />
+        <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground" aria-hidden />
       </button>
       {open && (
         <div className="absolute bottom-full left-0 z-50 mb-1 max-h-64 min-w-[10rem] overflow-y-auto rounded-lg border border-border bg-popover py-1 text-popover-foreground shadow-xl">
@@ -776,7 +771,7 @@ function GroupedSelector({
         <span className="min-w-0 truncate" title={displayValue ?? value}>
           {displayValue ?? value}
         </span>
-        <RiArrowDownSLine className="h-3 w-3 shrink-0 text-muted-foreground" aria-hidden />
+        <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground" aria-hidden />
       </button>
       {open && (
         <div

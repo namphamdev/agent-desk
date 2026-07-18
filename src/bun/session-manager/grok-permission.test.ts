@@ -25,6 +25,28 @@ describe("withGrokAgentSpawnArgs", () => {
     expect(next.args).toEqual(["agent", "--effort", "low", "stdio"]);
   });
 
+  it("pins catalog model with -m", () => {
+    const next = withGrokAgentSpawnArgs(grok, { modelId: "agent-desk" });
+    expect(next.args).toEqual(["agent", "-m", "agent-desk", "stdio"]);
+  });
+
+  it("combines model, always-approve, and effort", () => {
+    const next = withGrokAgentSpawnArgs(grok, {
+      modelId: "agent-desk",
+      defaultPermissionMode: "yolo",
+      defaultEffort: "high",
+    });
+    expect(next.args).toEqual([
+      "agent",
+      "-m",
+      "agent-desk",
+      "--always-approve",
+      "--effort",
+      "high",
+      "stdio",
+    ]);
+  });
+
   it("combines always-approve and effort", () => {
     const next = withGrokAgentSpawnArgs(grok, {
       defaultPermissionMode: "yolo",

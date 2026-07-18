@@ -1,5 +1,5 @@
 import { useCallback, useState } from "react";
-import { RiChatNewLine, RiFileCopyLine } from "react-icons/ri";
+import { Copy, MessageSquarePlus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 type Props = {
@@ -53,7 +53,7 @@ export function MessageActions({
         className="text-[11px] text-muted-foreground"
         title="Copy raw content"
       >
-        <RiFileCopyLine className="size-3" aria-hidden />
+        <Copy className="size-3" aria-hidden />
         {copied ? "Copied" : "Copy"}
       </Button>
       {canNewThread && (
@@ -66,7 +66,7 @@ export function MessageActions({
           className="text-[11px] text-muted-foreground"
           title="New thread with this message as starting context"
         >
-          <RiChatNewLine className="size-3" aria-hidden />
+          <MessageSquarePlus className="size-3" aria-hidden />
           {busy ? "Starting…" : "New thread"}
         </Button>
       )}

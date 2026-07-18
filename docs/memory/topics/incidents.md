@@ -28,6 +28,11 @@
 - Cause: Electrobun `transparent: true` uses layered windows; expanded client area stays non-hittable until/while WebView2 bounds lag
 - Fix / avoid: keep `transparent: false` on `win32` (`src/bun/index.ts`); macOS can stay transparent for rounded corners. Prefer `titleBarStyle: "hiddenInset"` on Windows so the frame stays resizable.
 
+### Maximize buries bottom under taskbar (2026-07)
+- Symptom: header double-click / traffic-light maximize puts the bottom ~30–40px of the app under the Windows taskbar
+- Cause: native `maximize()` on `titleBarStyle: "hiddenInset"` can size to full monitor bounds, not the work area
+- Fix / avoid: custom maximize snaps to `Screen.getAllDisplays()` work area (`maximizeToWorkArea` in `src/bun/index.ts`, geometry in `window-geometry.ts`)
+
 ### POSIX-only shellouts (pgrep/ps) ENOENT on Windows (2026-07)
 - Symptom: `[acp] memory sample failed: ... ENOENT "pgrep"` every poll interval on Windows; memory meter dead
 - Cause: `collectDescendantPids` / `sampleProcessTreeRssBytes` (`src/bun/acp-client.ts`) shelled out to `pgrep`/`ps`, absent on win32
@@ -42,4 +47,9 @@
 - Symptom: taskbar/exe icon is Bun’s logo instead of AgentDesk
 - Cause: Electrobun CLI embeds icons via `require.resolve("rcedit/...")` baked to CI path `D:\a\electrobun\...`; rcedit fails, EXEs keep Bun resources. `build.win.icon` is otherwise correct (`assets/icon.ico`).
 - Fix / avoid: `scripts/embed-win-icon.mjs` via electrobun `scripts.postBuild` + `postPackage` in `electrobun.config.ts`. Runtime process is `bun.exe`; launcher also needs embed. Windows icon cache may need rebuild/restart after fixing.
+
+### Timeline jumps while streaming ACP (2026-07)
+- Symptom: chat viewport thrash / jump up-down as agent tokens stream
+- Cause: dual stick-to-bottom (LegendList `maintainScrollAtEnd` + custom `scrollToEnd` every chunk/`onItemSizeChanged`) raced each other; per-token React updates amplified measure
+- Fix / avoid: one pin path only (built-in maintain on dataChange+itemLayout, not parent layout); rAF-batch message chunks in `applyUpdate`
 

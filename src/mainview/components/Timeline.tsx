@@ -1,4 +1,5 @@
 import {
+  memo,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -9,10 +10,7 @@ import {
 } from "react";
 import {
   LegendList,
-  type LegendListRef,
   type LegendListRenderItemProps,
-  type NativeScrollEvent,
-  type NativeSyntheticEvent,
 } from "@legendapp/list/react";
 import type { ContentBlock, TimelineEntry as Entry } from "../../session/types";
 import { rawTextFromContent } from "../../session/content-text";
@@ -43,10 +41,7 @@ function itemTypeOf(entry: Entry): ItemType {
   return "agent";
 }
 
-/**
- * Fingerprint last timeline entry so in-place stream updates (same id, growing
- * content) re-trigger stick-to-bottom even when length is unchanged.
- */
+/** Fingerprint trailing entry growth for plain-list stick-to-bottom. */
 function entriesScrollSignature(entries: Entry[]): string {
   if (entries.length === 0) return "0";
   const last = entries[entries.length - 1]!;
@@ -72,10 +67,9 @@ function entriesScrollSignature(entries: Entry[]): string {
  * pixel sizes; if measure fails we fall back to a plain scroll list so messages
  * always show.
  *
- * Stick-to-bottom: LegendList's maintainScrollAtEnd covers data + item layout.
- * We only add a single coalesced re-pin when the trailing entry streams more
- * content (same id, growing text). Multiple staggered scrollToEnd calls and
- * deps on unstable header elements caused jitter during agent processing.
+ * Stick-to-bottom: trust LegendList maintainScrollAtEnd only. A second pin path
+ * (scrollToEnd on every stream chunk + onItemSizeChanged) raced the built-in
+ * path and made the viewport thrash during ACP streaming.
  */
 export function Timeline({
   entries,
@@ -93,13 +87,6 @@ export function Timeline({
   messageActions?: MessageActionHandlers;
 }) {
   const shellRef = useRef<HTMLDivElement>(null);
-  const listRef = useRef<LegendListRef>(null);
-  const stickToBottomRef = useRef(true);
-  /** Ignore onScroll while we pin — intermediate offsets can clear stick state. */
-  const pinningRef = useRef(false);
-  const pinRafRef = useRef(0);
-  const unpinTimerRef = useRef(0);
-  const lastEntryIdRef = useRef<string | null>(null);
   const [viewport, setViewport] = useState({ height: 0, width: 0 });
 
   useLayoutEffect(() => {
@@ -129,39 +116,6 @@ export function Timeline({
     };
   }, []);
 
-  // New session → always follow the bottom again.
-  useLayoutEffect(() => {
-    stickToBottomRef.current = true;
-  }, [sessionKey]);
-
-  useEffect(() => {
-    return () => {
-      if (pinRafRef.current) cancelAnimationFrame(pinRafRef.current);
-      if (unpinTimerRef.current) window.clearTimeout(unpinTimerRef.current);
-    };
-  }, []);
-
-  /** One pin per animation frame — avoids multi-shot scroll fighting layout. */
-  const scheduleScrollToEndIfStuck = useCallback(() => {
-    if (!stickToBottomRef.current) return;
-    if (pinRafRef.current) return;
-    pinRafRef.current = requestAnimationFrame(() => {
-      pinRafRef.current = 0;
-      if (!stickToBottomRef.current) return;
-      const list = listRef.current;
-      if (!list) return;
-      pinningRef.current = true;
-      list.scrollToEnd({ animated: false });
-      stickToBottomRef.current = true;
-      if (unpinTimerRef.current) window.clearTimeout(unpinTimerRef.current);
-      // Hold pin long enough to ignore intermediate scroll events from layout.
-      unpinTimerRef.current = window.setTimeout(() => {
-        unpinTimerRef.current = 0;
-        pinningRef.current = false;
-      }, 32);
-    });
-  }, []);
-
   const renderItem = useCallback(
     ({ item }: LegendListRenderItemProps<Entry>) => (
       <TimelineRow
@@ -180,48 +134,6 @@ export function Timeline({
     [],
   );
 
-  const onLoad = useCallback(() => {
-    stickToBottomRef.current = true;
-    if (entries.length === 0) return;
-    scheduleScrollToEndIfStuck();
-  }, [entries.length, scheduleScrollToEndIfStuck]);
-
-  const onScroll = useCallback(
-    (e: NativeSyntheticEvent<NativeScrollEvent>) => {
-      if (pinningRef.current) return;
-      const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
-      const dist =
-        contentSize.height - contentOffset.y - layoutMeasurement.height;
-      stickToBottomRef.current = dist <= STICK_BOTTOM_PX;
-    },
-    [],
-  );
-
-  const onItemSizeChanged = useCallback(
-    (info: { itemKey: string }) => {
-      if (!stickToBottomRef.current) return;
-      if (info.itemKey !== lastEntryIdRef.current) return;
-      scheduleScrollToEndIfStuck();
-    },
-    [scheduleScrollToEndIfStuck],
-  );
-
-  // User sends a prompt → re-attach follow mode (chat apps always jump to the send).
-  const lastEntry = entries[entries.length - 1];
-  lastEntryIdRef.current = lastEntry?.id ?? null;
-  const lastIsUser =
-    lastEntry?.type === "message" && lastEntry.role === "user";
-  useLayoutEffect(() => {
-    if (lastIsUser) stickToBottomRef.current = true;
-  }, [entries.length, lastIsUser]);
-
-  const scrollSig = entriesScrollSignature(entries);
-  // Re-pin only when timeline content grows (not header/elapsed re-renders).
-  useLayoutEffect(() => {
-    if (entries.length === 0) return;
-    scheduleScrollToEndIfStuck();
-  }, [scrollSig, scheduleScrollToEndIfStuck, entries.length]);
-
   const ready = viewport.height >= 32 && viewport.width >= 32;
 
   return (
@@ -232,7 +144,6 @@ export function Timeline({
     >
       {ready ? (
         <LegendList
-          ref={listRef}
           key={sessionKey ?? "none"}
           data={entries}
           dataKey={sessionKey ?? "none"}
@@ -248,13 +159,11 @@ export function Timeline({
             on: {
               dataChange: true,
               itemLayout: true,
-              layout: true,
+              // Parent/header layout noise (elapsed timer) must not re-pin.
+              layout: false,
             },
           }}
-          maintainScrollAtEndThreshold={0.25}
-          onLoad={onLoad}
-          onScroll={onScroll}
-          onItemSizeChanged={onItemSizeChanged}
+          maintainScrollAtEndThreshold={0.15}
           style={{
             height: viewport.height,
             width: viewport.width,
@@ -335,7 +244,7 @@ function PlainTimeline({
       onScroll={onScroll}
     >
       {header && (
-        <div className="flex items-center space-x-1 text-xs text-gray-500">
+        <div className="flex items-center space-x-1 text-xs text-muted-foreground">
           {header}
         </div>
       )}
@@ -383,7 +292,7 @@ function MessageFooter({
   );
 }
 
-function TimelineRow({
+const TimelineRow = memo(function TimelineRow({
   entry,
   onOpenFile,
   messageActions,
@@ -401,7 +310,7 @@ function TimelineRow({
   if (entry.role === "user") {
     return (
       <div className="flex flex-col items-end gap-0">
-        <div className="max-w-2xl rounded-2xl rounded-tr-sm bg-[#2a2a2a] px-5 py-3 text-sm text-gray-200 shadow-sm">
+        <div className="max-w-2xl rounded-2xl rounded-tr-sm bg-muted px-5 py-3 text-sm text-foreground shadow-sm">
           {entry.content.map((b, i) => (
             <Content key={i} block={b} />
           ))}
@@ -411,8 +320,8 @@ function TimelineRow({
   }
   if (entry.role === "thought") {
     return (
-      <details className="rounded-lg border border-dashed border-[#333] bg-[#181818] px-4 py-3 text-sm text-gray-500">
-        <summary className="cursor-pointer select-none text-xs uppercase tracking-wider text-gray-600">
+      <details className="rounded-lg border border-dashed border-border bg-muted/50 px-4 py-3 text-sm text-muted-foreground">
+        <summary className="cursor-pointer select-none text-xs uppercase tracking-wider text-muted-foreground">
           Thought
         </summary>
         <div className="mt-2">
@@ -424,7 +333,7 @@ function TimelineRow({
     );
   }
   return (
-    <div className="flex flex-col space-y-3 text-gray-300">
+    <div className="flex flex-col space-y-3 text-foreground">
       {entry.content.map((b, i) => (
         <Content key={i} block={b} />
       ))}
@@ -435,4 +344,4 @@ function TimelineRow({
       />
     </div>
   );
-}
+});

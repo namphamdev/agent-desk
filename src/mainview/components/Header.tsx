@@ -1,11 +1,11 @@
 import {
-  RiFileList3Line,
-  RiFolderLine,
-  RiGitBranchLine,
-  RiGlobalLine,
-  RiMenuLine,
-  RiSettings3Line,
-} from "react-icons/ri";
+  FileText,
+  Folder,
+  GitBranch,
+  Globe,
+  Menu,
+  Settings,
+} from "lucide-react";
 import type { ConnectionStatePayload } from "../../shared/rpc";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -152,7 +152,7 @@ export function Header({
           }`}
           aria-label="Toggle sidebar"
         >
-          <RiMenuLine className="size-5" aria-hidden />
+          <Menu className="size-5" aria-hidden />
         </Button>
 
         {/* Title + meta: stacked on narrow screens, row on sm+.
@@ -173,7 +173,7 @@ export function Header({
                 className="flex min-w-0 max-w-[40vw] items-center truncate rounded bg-muted px-1.5 py-0.5 sm:max-w-[180px] sm:px-2 sm:py-1"
                 title={cwd || project}
               >
-                <RiFolderLine
+                <Folder
                   className="mr-1 hidden h-3 w-3 shrink-0 sm:block"
                   aria-hidden
                 />
@@ -185,7 +185,7 @@ export function Header({
                 className="hidden max-w-[100px] items-center truncate rounded bg-muted px-2 py-1 sm:flex"
                 title={`Git branch: ${branch}`}
               >
-                <RiGitBranchLine className="mr-1 h-3 w-3 shrink-0" aria-hidden />
+                <GitBranch className="mr-1 h-3 w-3 shrink-0" aria-hidden />
                 <span className="truncate">{branch}</span>
               </span>
             )}
@@ -230,7 +230,7 @@ export function Header({
             title="Summarize this session's work and open a new chat to review it"
             aria-label="Review changes in new session"
           >
-            <RiFileList3Line className="size-3.5 shrink-0" aria-hidden />
+            <FileText className="size-3.5 shrink-0" aria-hidden />
             <span className="hidden sm:inline">
               {reviewBusy ? "Starting…" : "Review"}
             </span>
@@ -261,7 +261,7 @@ export function Header({
                   : "Open built-in browser panel"
             }
           >
-            <RiGlobalLine className="size-5" aria-hidden />
+            <Globe className="size-5" aria-hidden />
           </Button>
         )}
         <Button
@@ -272,7 +272,7 @@ export function Header({
           onClick={onOpenSettings}
           aria-label="Settings"
         >
-          <RiSettings3Line className="size-5" aria-hidden />
+          <Settings className="size-5" aria-hidden />
         </Button>
       </div>
     </header>

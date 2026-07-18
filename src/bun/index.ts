@@ -2,6 +2,7 @@ import {
   ApplicationMenu,
   BrowserView,
   BrowserWindow,
+  Screen,
   Updater,
   Utils,
 } from "electrobun/bun";
@@ -43,6 +44,7 @@ import type {
   BrowserControlRequest,
   BrowserControlResponse,
 } from "../shared/browser-control";
+import { workAreaForFrame, type Rect } from "./window-geometry";
 
 // GUI launches (canary/stable .app) get a minimal PATH without Homebrew/npm.
 // Fix before any agent/editor/git spawn.
@@ -256,6 +258,45 @@ let manager: SessionManager;
 let mainWindow: BrowserWindow<any>;
 let remoteAccess: RemoteAccessServer;
 let browserControl: BrowserControlServer;
+/**
+ * Frame before the last custom (work-area) maximize. Used instead of native
+ * maximize/unmaximize on Windows, where SW_MAXIMIZE ignores the taskbar for
+ * hiddenInset / FullSizeContentView windows.
+ */
+let restoreFrame: Rect | null = null;
+
+function framesMatch(a: Rect, b: Rect, epsilon = 2): boolean {
+  return (
+    Math.abs(a.x - b.x) <= epsilon &&
+    Math.abs(a.y - b.y) <= epsilon &&
+    Math.abs(a.width - b.width) <= epsilon &&
+    Math.abs(a.height - b.height) <= epsilon
+  );
+}
+
+/** Maximize to the monitor work area (excludes taskbar/dock). */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function maximizeToWorkArea(win: BrowserWindow<any>): void {
+  const frame = win.getFrame();
+  const displays = Screen.getAllDisplays();
+  const area = workAreaForFrame(displays, frame);
+  if (area.width <= 0 || area.height <= 0) {
+    win.maximize();
+    return;
+  }
+  // Already covering the work area → restore previous bounds if known.
+  if (restoreFrame && framesMatch(frame, area)) {
+    const prev = restoreFrame;
+    restoreFrame = null;
+    win.setFrame(prev.x, prev.y, prev.width, prev.height);
+    return;
+  }
+  if (win.isMaximized()) {
+    win.unmaximize();
+  }
+  restoreFrame = { ...frame };
+  win.setFrame(area.x, area.y, area.width, area.height);
+}
 
 function rpc() {
   return mainWindow?.webview?.rpc as
@@ -413,11 +454,10 @@ const terminalRPC = BrowserView.defineRPC<TerminalRPC>({
               mainWindow.minimize();
               break;
             case "maximize":
-              if (mainWindow.isMaximized()) {
-                mainWindow.unmaximize();
-              } else {
-                mainWindow.maximize();
-              }
+              // Native maximize on Windows (hiddenInset) can size to the full
+              // monitor bounds and shove the bottom of the app under the taskbar
+              // (~30–40px). Snap to the work area instead on all platforms.
+              maximizeToWorkArea(mainWindow);
               break;
             default:
               return { ok: false as const, error: `unknown action: ${action}` };

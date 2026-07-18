@@ -70,6 +70,28 @@ export async function applyPreferredConfigDefaults(
     },
   ];
 
+  // Prefer Agent Desk BYOK catalog model when exposed and no defaultModel set.
+  if (!settings.defaultModel?.trim()) {
+    const modelOpt = options.find(
+      (o) =>
+        o.type === "select" &&
+        (o.category === "model" || o.id === "model"),
+    );
+    if (modelOpt && modelOpt.type === "select") {
+      const byok = modelOpt.options.find((o) => o.value === "agent-desk");
+      if (byok && modelOpt.currentValue !== byok.value) {
+        try {
+          options = await handle.setConfigOption(modelOpt.id, byok.value);
+        } catch (err) {
+          console.warn(
+            "[session-manager] failed to pin agent-desk model:",
+            err instanceof Error ? err.message : err,
+          );
+        }
+      }
+    }
+  }
+
   for (const { preferred, category, idFallback } of prefs) {
     if (!preferred?.trim()) continue;
     const target = resolveSelectOptionValue(options, category, idFallback, preferred);

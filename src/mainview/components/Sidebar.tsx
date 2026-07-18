@@ -1,18 +1,21 @@
 import { useEffect, useMemo, useState } from "react";
 import {
-  RiAddLine,
-  RiArrowDownSLine,
-  RiArrowUpSLine,
-  RiDeleteBinLine,
-  RiDownloadLine,
-  RiFolderLine,
-  RiMore2Line,
-  RiSearchLine,
-  RiSettings3Line,
-  RiSmartphoneLine,
-  RiSparklingLine,
-  RiTerminalLine,
-} from "react-icons/ri";
+  ChevronDown,
+  ChevronUp,
+  Download,
+  Folder,
+  Maximize2,
+  Minus,
+  MoreVertical,
+  Plus,
+  Search,
+  Settings,
+  Smartphone,
+  Sparkles,
+  Terminal,
+  Trash2,
+  X,
+} from "lucide-react";
 import type { SessionSummary } from "../../shared/rpc";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -23,6 +26,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { reconcileProjectOrder } from "../projectOrder";
 
 const MATRIX_TITLE = "Agent Desk";
 const MATRIX_GLYPHS =
@@ -175,6 +179,21 @@ export function Sidebar({
   /** Which project's ⋮ menu is open (null = closed). */
   const [menuProject, setMenuProject] = useState<string | null>(null);
 
+  // Sticky project order: seed from session recency once, then keep relative
+  // order so deleting a chat does not reshuffle project groups.
+  useEffect(() => {
+    setProjectOrder((prev) => {
+      const next = reconcileProjectOrder(prev, sessions);
+      if (
+        next.length === prev.length &&
+        next.every((p, i) => p === prev[i])
+      ) {
+        return prev;
+      }
+      return next;
+    });
+  }, [sessions]);
+
   const grouped = useMemo(() => {
     const filtered = query
       ? sessions.filter(
@@ -234,8 +253,12 @@ export function Sidebar({
               aria-label="Close"
               title="Close"
               onClick={() => void onWindowControl("close")}
-              className="group h-3 w-3 rounded-full bg-[#ff5f56] hover:brightness-110"
+              className="group flex h-3 w-3 items-center justify-center rounded-full bg-[#ff5f56] hover:brightness-110"
             >
+              <X
+                className="size-1.5 stroke-[3] text-black/55 opacity-0 group-hover:opacity-100"
+                aria-hidden
+              />
               <span className="sr-only">Close</span>
             </button>
             <button
@@ -243,8 +266,12 @@ export function Sidebar({
               aria-label="Minimize"
               title="Minimize"
               onClick={() => void onWindowControl("minimize")}
-              className="group h-3 w-3 rounded-full bg-[#ffbd2e] hover:brightness-110"
+              className="group flex h-3 w-3 items-center justify-center rounded-full bg-[#ffbd2e] hover:brightness-110"
             >
+              <Minus
+                className="size-1.5 stroke-[3] text-black/55 opacity-0 group-hover:opacity-100"
+                aria-hidden
+              />
               <span className="sr-only">Minimize</span>
             </button>
             <button
@@ -252,8 +279,12 @@ export function Sidebar({
               aria-label="Maximize"
               title="Maximize"
               onClick={() => void onWindowControl("maximize")}
-              className="group h-3 w-3 rounded-full bg-[#27c93f] hover:brightness-110"
+              className="group flex h-3 w-3 items-center justify-center rounded-full bg-[#27c93f] hover:brightness-110"
             >
+              <Maximize2
+                className="size-1.5 stroke-[3] text-black/55 opacity-0 group-hover:opacity-100"
+                aria-hidden
+              />
               <span className="sr-only">Maximize</span>
             </button>
           </div>
@@ -275,21 +306,21 @@ export function Sidebar({
 
       <div className="electrobun-webkit-app-region-no-drag space-y-1 p-3">
         <QuickAction
-          icon={<RiAddLine className="h-4 w-4" aria-hidden />}
+          icon={<Plus className="h-4 w-4" aria-hidden />}
           label="New task"
           shortcut="⌘ N"
           onClick={onNew}
           title="Choose a project folder, workflow, and start a chat"
         />
         <QuickAction
-          icon={<RiSearchLine className="h-4 w-4" aria-hidden />}
+          icon={<Search className="h-4 w-4" aria-hidden />}
           label="Search"
           shortcut="⌘ K"
           onClick={() => setSearchOpen((o) => !o)}
         />
         {onOpenSkills && (
           <QuickAction
-            icon={<RiSparklingLine className="h-4 w-4" aria-hidden />}
+            icon={<Sparkles className="h-4 w-4" aria-hidden />}
             label="Skills"
             onClick={onOpenSkills}
             title="Install and manage agent skills"
@@ -297,7 +328,7 @@ export function Sidebar({
         )}
         {onOpenCommands && (
           <QuickAction
-            icon={<RiTerminalLine className="h-4 w-4" aria-hidden />}
+            icon={<Terminal className="h-4 w-4" aria-hidden />}
             label="Commands"
             onClick={onOpenCommands}
             title="Save and run shell commands, view logs"
@@ -345,13 +376,13 @@ export function Sidebar({
                 aria-expanded={!isCollapsed}
                 title={isCollapsed ? "Expand" : "Collapse"}
               >
-                <RiArrowDownSLine
+                <ChevronDown
                   className={`mr-1 h-3 w-3 shrink-0 transition-transform ${
                     isCollapsed ? "-rotate-90" : ""
                   }`}
                   aria-hidden
                 />
-                <RiFolderLine className="mr-1 h-3 w-3" aria-hidden />
+                <Folder className="mr-1 h-3 w-3" aria-hidden />
                 <span className="truncate">{project}</span>
               </button>
               <div
@@ -378,7 +409,7 @@ export function Sidebar({
                       aria-label="Project menu"
                       title="Project options"
                     >
-                      <RiMore2Line className="size-3.5" aria-hidden />
+                      <MoreVertical className="size-3.5" aria-hidden />
                     </Button>
                   </DropdownMenuTrigger>
                   <DropdownMenuContent align="end" className="min-w-[10.5rem]">
@@ -386,14 +417,14 @@ export function Sidebar({
                       onClick={() => onOpenHarness?.(project)}
                       className="text-xs"
                     >
-                      <RiSparklingLine className="size-3.5" aria-hidden />
+                      <Sparkles className="size-3.5" aria-hidden />
                       AI harness
                     </DropdownMenuItem>
                     <DropdownMenuItem
                       onClick={() => onNewInProject?.(project)}
                       className="text-xs"
                     >
-                      <RiAddLine className="size-3.5" aria-hidden />
+                      <Plus className="size-3.5" aria-hidden />
                       New task
                     </DropdownMenuItem>
                     <DropdownMenuSeparator />
@@ -406,7 +437,7 @@ export function Sidebar({
                       }}
                       className="text-xs"
                     >
-                      <RiArrowUpSLine className="size-3.5" aria-hidden />
+                      <ChevronUp className="size-3.5" aria-hidden />
                       Move up
                     </DropdownMenuItem>
                     <DropdownMenuItem
@@ -417,7 +448,7 @@ export function Sidebar({
                       }}
                       className="text-xs"
                     >
-                      <RiArrowDownSLine className="size-3.5" aria-hidden />
+                      <ChevronDown className="size-3.5" aria-hidden />
                       Move down
                     </DropdownMenuItem>
                     <DropdownMenuSeparator />
@@ -426,7 +457,7 @@ export function Sidebar({
                       onClick={() => onDeleteProject?.(project)}
                       className="text-xs"
                     >
-                      <RiDeleteBinLine className="size-3.5" aria-hidden />
+                      <Trash2 className="size-3.5" aria-hidden />
                       Delete
                     </DropdownMenuItem>
                   </DropdownMenuContent>
@@ -494,7 +525,7 @@ export function Sidebar({
                             }}
                             className="text-muted-foreground hover:text-amber-400"
                           >
-                            <RiDownloadLine className="size-3.5" aria-hidden />
+                            <Download className="size-3.5" aria-hidden />
                           </Button>
                         )}
                         <Button
@@ -509,7 +540,7 @@ export function Sidebar({
                           }}
                           className="text-muted-foreground hover:text-destructive"
                         >
-                          <RiDeleteBinLine className="size-3.5" aria-hidden />
+                          <Trash2 className="size-3.5" aria-hidden />
                         </Button>
                       </span>
                     </span>
@@ -563,7 +594,7 @@ export function Sidebar({
               aria-label="Remote access"
               title="Remote access — open on phone"
             >
-              <RiSmartphoneLine className="size-5" aria-hidden />
+              <Smartphone className="size-5" aria-hidden />
             </Button>
           )}
           <Button
@@ -575,7 +606,7 @@ export function Sidebar({
             aria-label="Settings"
             title="Settings"
           >
-            <RiSettings3Line className="size-5" aria-hidden />
+            <Settings className="size-5" aria-hidden />
           </Button>
         </div>
       </div>

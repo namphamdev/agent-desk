@@ -7,7 +7,7 @@ import {
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
-import { RiCloseLine } from "react-icons/ri";
+import { X } from "lucide-react";
 
 const cache = new Map<string, string>();
 let rendererReady: Promise<typeof import("beautiful-mermaid")> | null = null;
@@ -405,7 +405,7 @@ function DiagramModal({ svg, onClose }: { svg: string; onClose: () => void }) {
             className="rounded-md px-2 py-1 text-sm text-[var(--text-muted)] hover:bg-[var(--bg-elevated)] hover:text-[var(--text)]"
             aria-label="Close"
           >
-            <RiCloseLine className="h-4 w-4" aria-hidden />
+            <X className="h-4 w-4" aria-hidden />
           </button>
         </div>
       </div>

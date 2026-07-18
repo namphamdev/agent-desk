@@ -169,9 +169,71 @@ export function useAppController() {
 
   const gitBranch = useGitBranch(activeSession?.cwd);
 
-  const applyUpdate = useCallback((update: SessionUpdate) => {
-    setSession((prev) => reduce(prev, update));
+  /**
+   * Batch ACP stream chunks into one React update per animation frame.
+   * Token-by-token setSession was thrashing LegendList measure/scroll.
+   * Immediate flush for non-chunk updates (tool_call, plan, mode, …).
+   */
+  const pendingStreamRef = useRef<SessionUpdate[]>([]);
+  const streamRafRef = useRef(0);
+
+  const flushStreamUpdates = useCallback(() => {
+    streamRafRef.current = 0;
+    const batch = pendingStreamRef.current;
+    if (batch.length === 0) return;
+    pendingStreamRef.current = [];
+    setSession((prev) => {
+      let next = prev;
+      for (const u of batch) next = reduce(next, u);
+      return next;
+    });
   }, []);
+
+  const applyUpdate = useCallback(
+    (update: SessionUpdate) => {
+      const kind = update.sessionUpdate;
+      const isStreamChunk =
+        kind === "agent_message_chunk" ||
+        kind === "user_message_chunk" ||
+        kind === "thought_sequence_chunk";
+
+      if (!isStreamChunk) {
+        // Drain any pending chunks first so order is preserved.
+        if (pendingStreamRef.current.length > 0) {
+          if (streamRafRef.current) {
+            cancelAnimationFrame(streamRafRef.current);
+            streamRafRef.current = 0;
+          }
+          flushStreamUpdates();
+        }
+        setSession((prev) => reduce(prev, update));
+        return;
+      }
+
+      pendingStreamRef.current.push(update);
+      if (!streamRafRef.current) {
+        streamRafRef.current = requestAnimationFrame(flushStreamUpdates);
+      }
+    },
+    [flushStreamUpdates],
+  );
+
+  useEffect(() => {
+    return () => {
+      if (streamRafRef.current) cancelAnimationFrame(streamRafRef.current);
+      // Drop pending chunks on unmount; no setState after unmount.
+      pendingStreamRef.current = [];
+    };
+  }, []);
+
+  // Drop in-flight stream batch when switching chats so it cannot land on the next session.
+  useEffect(() => {
+    if (streamRafRef.current) {
+      cancelAnimationFrame(streamRafRef.current);
+      streamRafRef.current = 0;
+    }
+    pendingStreamRef.current = [];
+  }, [activeSessionId]);
 
   const dispatchPrompt = useCallback(
     async (text: string, sessionId: string) => {

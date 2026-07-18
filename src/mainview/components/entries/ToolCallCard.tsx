@@ -1,34 +1,34 @@
-import { useState, type ComponentType } from "react";
-import type { IconBaseProps } from "react-icons";
+import { useState } from "react";
 import {
-  RiArrowDownSLine,
-  RiArrowRightSLine,
-  RiBookOpenLine,
-  RiBox3Line,
-  RiCheckLine,
-  RiCloseLine,
-  RiDeleteBinLine,
-  RiEditLine,
-  RiGlobalLine,
-  RiLightbulbLine,
-  RiPlayLine,
-  RiSearchLine,
-  RiSubtractLine,
-} from "react-icons/ri";
+  BookOpen,
+  Box,
+  Check,
+  ChevronDown,
+  ChevronRight,
+  Globe,
+  Lightbulb,
+  type LucideIcon,
+  Minus,
+  Pencil,
+  Play,
+  Search,
+  Trash2,
+  X,
+} from "lucide-react";
 import type { ToolCall, ToolKind } from "../../../session/types";
 import { Content } from "../content/Content";
 import { DiffView } from "../content/DiffView";
 
-const kindIcon: Record<ToolKind, ComponentType<IconBaseProps>> = {
-  read: RiBookOpenLine,
-  edit: RiEditLine,
-  delete: RiDeleteBinLine,
-  move: RiBox3Line,
-  search: RiSearchLine,
-  execute: RiPlayLine,
-  think: RiLightbulbLine,
-  fetch: RiGlobalLine,
-  other: RiSubtractLine,
+const kindIcon: Record<ToolKind, LucideIcon> = {
+  read: BookOpen,
+  edit: Pencil,
+  delete: Trash2,
+  move: Box,
+  search: Search,
+  execute: Play,
+  think: Lightbulb,
+  fetch: Globe,
+  other: Minus,
 };
 
 const statusStyle: Record<ToolCall["status"], string> = {
@@ -101,9 +101,9 @@ export function ToolCallCard({
           {body && (
             <span className="shrink-0 text-[var(--text-faint)]" aria-hidden>
               {expanded ? (
-                <RiArrowDownSLine className="h-3.5 w-3.5" />
+                <ChevronDown className="h-3.5 w-3.5" />
               ) : (
-                <RiArrowRightSLine className="h-3.5 w-3.5" />
+                <ChevronRight className="h-3.5 w-3.5" />
               )}
             </span>
           )}
@@ -122,10 +122,10 @@ export function ToolCallCard({
               <span className="inline-block h-3 w-3 animate-spin rounded-full border border-amber-500 border-t-transparent" />
             )}
             {toolCall.status === "completed" && (
-              <RiCheckLine className="h-3.5 w-3.5" aria-hidden />
+              <Check className="h-3.5 w-3.5" aria-hidden />
             )}
             {toolCall.status === "failed" && (
-              <RiCloseLine className="h-3.5 w-3.5" aria-hidden />
+              <X className="h-3.5 w-3.5" aria-hidden />
             )}
             {statusLabel[toolCall.status]}
           </span>

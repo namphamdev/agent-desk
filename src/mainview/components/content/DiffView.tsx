@@ -1,6 +1,6 @@
 import { diffLines } from "diff";
 import { useState } from "react";
-import { RiArrowDownSLine, RiArrowRightSLine } from "react-icons/ri";
+import { ChevronDown, ChevronRight } from "lucide-react";
 
 interface DiffViewProps {
   path: string;
@@ -36,9 +36,9 @@ export function DiffView({ path, oldText, newText }: DiffViewProps) {
         <span className="flex items-center gap-2 font-mono text-gray-300">
           <span className="text-gray-500" aria-hidden>
             {expanded ? (
-              <RiArrowDownSLine className="h-3.5 w-3.5" />
+              <ChevronDown className="h-3.5 w-3.5" />
             ) : (
-              <RiArrowRightSLine className="h-3.5 w-3.5" />
+              <ChevronRight className="h-3.5 w-3.5" />
             )}
           </span>
           {filename}

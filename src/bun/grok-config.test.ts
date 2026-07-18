@@ -91,14 +91,18 @@ describe("grok-config", () => {
     expect(toml).toContain('model = "model\\"with\\"quotes"');
   });
 
-  it("buildGrokProviderEnv injects API key", () => {
+  it("buildGrokProviderEnv injects API key and pins default model", () => {
     expect(buildGrokProviderEnv(sample)).toEqual({
       [GROK_PROVIDER_API_KEY_ENV]: "sk-test-key",
+      GROK_DEFAULT_MODEL: GROK_PROVIDER_MODEL_ID,
+      GROK_IMAGE_GEN: "0",
     });
     expect(buildGrokProviderEnv(null)).toBeNull();
-    expect(
-      buildGrokProviderEnv({ ...sample, apiKey: "  " }),
-    ).toBeNull();
+    // No key but base URL still pins model (auth will fail clearly if key missing).
+    expect(buildGrokProviderEnv({ ...sample, apiKey: "  " })).toEqual({
+      GROK_DEFAULT_MODEL: GROK_PROVIDER_MODEL_ID,
+      GROK_IMAGE_GEN: "0",
+    });
   });
 
   it("ensureGrokConfigForProvider writes toml when provider is ready", async () => {

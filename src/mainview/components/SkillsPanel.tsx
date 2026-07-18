@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useState } from "react";
-import { RiDeleteBinLine } from "react-icons/ri";
+import { Trash2 } from "lucide-react";
 import type { SkillInfo } from "../../shared/rpc";
 import { Button } from "@/components/ui/button";
 import {
@@ -263,7 +263,7 @@ export function SkillsPanel({
                           title="Uninstall"
                           aria-label={`Uninstall ${skill.name}`}
                         >
-                          <RiDeleteBinLine className="h-4 w-4" aria-hidden />
+                          <Trash2 className="h-4 w-4" aria-hidden />
                         </Button>
                       )}
                     </div>

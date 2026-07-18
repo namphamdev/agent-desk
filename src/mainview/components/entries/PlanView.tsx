@@ -1,16 +1,10 @@
-import type { ComponentType } from "react";
-import type { IconBaseProps } from "react-icons";
-import {
-  RiCheckboxBlankCircleLine,
-  RiCheckLine,
-  RiSubtractLine,
-} from "react-icons/ri";
+import { Check, Circle, type LucideIcon, Minus } from "lucide-react";
 import type { Plan, PlanEntry } from "../../../session/types";
 
-const marker: Record<PlanEntry["state"], ComponentType<IconBaseProps>> = {
-  completed: RiCheckLine,
-  in_progress: RiCheckboxBlankCircleLine,
-  pending: RiSubtractLine,
+const marker: Record<PlanEntry["state"], LucideIcon> = {
+  completed: Check,
+  in_progress: Circle,
+  pending: Minus,
 };
 
 const cls = {

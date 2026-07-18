@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { RiDeleteBinLine } from "react-icons/ri";
+import { Trash2 } from "lucide-react";
 import type { AgentInfo, RecentProject } from "../../shared/rpc";
 import {
   BUILTIN_WORKFLOWS,
@@ -320,7 +320,7 @@ export function NewSessionDialog({
                         }}
                         className="mt-1.5 mr-1 opacity-0 transition-opacity group-hover:opacity-100 focus:opacity-100"
                       >
-                        <RiDeleteBinLine
+                        <Trash2
                           className="h-3 w-3"
                           aria-hidden
                         />

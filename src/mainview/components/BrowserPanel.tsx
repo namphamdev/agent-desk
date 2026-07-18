@@ -15,13 +15,13 @@ import {
   type MouseEvent as ReactMouseEvent,
 } from "react";
 import {
-  RiArrowGoBackLine,
-  RiArrowGoForwardLine,
-  RiCloseLine,
-  RiExternalLinkLine,
-  RiGlobalLine,
-  RiRefreshLine,
-} from "react-icons/ri";
+  ArrowLeft,
+  ArrowRight,
+  ExternalLink,
+  Globe,
+  RefreshCw,
+  X,
+} from "lucide-react";
 import type {
   BrowserControlRequest,
   BrowserControlResponse,
@@ -471,7 +471,7 @@ export function BrowserPanel({
             title="Back"
             aria-label="Back"
           >
-            <RiArrowGoBackLine className="h-4 w-4" aria-hidden />
+            <ArrowLeft className="h-4 w-4" aria-hidden />
           </button>
           <button
             type="button"
@@ -481,7 +481,7 @@ export function BrowserPanel({
             title="Forward"
             aria-label="Forward"
           >
-            <RiArrowGoForwardLine className="h-4 w-4" aria-hidden />
+            <ArrowRight className="h-4 w-4" aria-hidden />
           </button>
           <button
             type="button"
@@ -490,7 +490,7 @@ export function BrowserPanel({
             title="Reload"
             aria-label="Reload"
           >
-            <RiRefreshLine
+            <RefreshCw
               className={`h-4 w-4 ${loading ? "animate-spin" : ""}`}
               aria-hidden
             />
@@ -501,7 +501,7 @@ export function BrowserPanel({
             className="flex min-w-0 flex-1 items-center gap-1"
           >
             <div className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md border border-[#333] bg-[#121212] px-2 py-1">
-              <RiGlobalLine
+              <Globe
                 className="h-3.5 w-3.5 shrink-0 text-gray-500"
                 aria-hidden
               />
@@ -526,7 +526,7 @@ export function BrowserPanel({
             title="Open in system browser"
             aria-label="Open in system browser"
           >
-            <RiExternalLinkLine className="h-4 w-4" aria-hidden />
+            <ExternalLink className="h-4 w-4" aria-hidden />
           </button>
           <button
             type="button"
@@ -535,7 +535,7 @@ export function BrowserPanel({
             title="Close browser panel"
             aria-label="Close browser panel"
           >
-            <RiCloseLine className="h-4 w-4" aria-hidden />
+            <X className="h-4 w-4" aria-hidden />
           </button>
         </div>
 

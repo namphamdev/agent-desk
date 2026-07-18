@@ -24,6 +24,7 @@ import {
 import {
   buildGrokProviderEnv,
   ensureGrokConfigForProvider,
+  GROK_PROVIDER_MODEL_ID,
   isGrokStyleAgent,
 } from "../grok-config";
 import type { SessionStore } from "../store";
@@ -76,6 +77,8 @@ export function withGrokAgentSpawnArgs(
   opts: {
     defaultPermissionMode?: string;
     defaultEffort?: string;
+    /** Catalog model id (e.g. agent-desk) → `grok agent -m <id> stdio`. */
+    modelId?: string;
   },
 ): AgentInfo {
   if (!isGrokStyleAgent(agent)) return agent;
@@ -83,8 +86,16 @@ export function withGrokAgentSpawnArgs(
   const agentIdx = args.findIndex((a) => a === "agent");
   const insertAt = agentIdx >= 0 ? agentIdx + 1 : 0;
 
-  // Build flags to insert (order: always-approve then effort).
+  // Build flags to insert (order: model, always-approve, effort).
   const flags: string[] = [];
+
+  const modelId = opts.modelId?.trim();
+  const hasModelFlag = args.includes("-m") || args.includes("--model");
+  if (modelId && !hasModelFlag) {
+    // Force BYOK catalog model so Grok does not use built-in grok-4.5 → xAI proxy.
+    flags.push("-m", modelId);
+  }
+
   if (
     isGrokYoloMode(opts.defaultPermissionMode) &&
     !args.includes("--always-approve")
@@ -273,6 +284,10 @@ export class AgentConnection {
       this.connectedAgentId === agentId &&
       this.connectedProviderKey === desiredProviderKey
     ) {
+      // Still refresh ~/.grok/config.toml so reopening a Grok chat keeps BYOK
+      // config in sync (process was spawned earlier; file must stay current for
+      // next respawn and for tools that re-read config).
+      await this.ensureGrokProviderConfig(agent);
       this.setConnection({
         status: "ready",
         agentName: agent.name,
@@ -315,22 +330,7 @@ export class AgentConnection {
           : null;
 
       if (usesGrokProvider) {
-        const grokCfg = await ensureGrokConfigForProvider(this.host.settings);
-        if (!grokCfg.ok) {
-          console.warn("[acp] failed to write Grok config.toml:", grokCfg.error);
-        } else if (grokCfg.wrote) {
-          console.log(
-            `[acp] wrote Grok config.toml at ${grokCfg.path}` +
-              (provider
-                ? ` provider="${provider.name}" model=${modelAlias}` +
-                  (provider.baseUrl ? ` base=${provider.baseUrl}` : "")
-                : ""),
-          );
-        } else {
-          console.log(
-            `[acp] Grok config.toml not rewritten (${grokCfg.reason}) — using existing ~/.grok setup`,
-          );
-        }
+        await this.ensureGrokProviderConfig(agent);
       }
 
       // Always attach Claude meta for Claude agents (browser MCP append + ToolSearch off).
@@ -369,10 +369,20 @@ export class AgentConnection {
           "[acp] browser control plane unavailable — in-app browser MCP will not register",
         );
       }
+      const pinGrokModel =
+        usesGrokProvider && !!provider?.baseUrl?.trim();
+      if (usesGrokProvider && provider && !provider.apiKey.trim()) {
+        console.warn(
+          "[acp] Grok BYOK provider has no API key — set Providers → API key " +
+            `or Grok will fail auth for model ${GROK_PROVIDER_MODEL_ID}`,
+        );
+      }
       const spawnAgent = usesGrokProvider
         ? withGrokAgentSpawnArgs(agent, {
             defaultPermissionMode: this.host.settings.defaultPermissionMode,
             defaultEffort: this.host.settings.defaultEffort,
+            // Pin catalog id written in config.toml so cli-chat-proxy is not used.
+            modelId: pinGrokModel ? GROK_PROVIDER_MODEL_ID : undefined,
           })
         : agent;
       const client = new AcpClient(
@@ -460,8 +470,15 @@ export class AgentConnection {
                 env: withBrowserMcpAlwaysLoaded(providerEnv ?? {}),
                 sessionMeta,
               }
-            : usesGrokProvider && providerEnv
-              ? { env: providerEnv }
+            : usesGrokProvider
+              ? {
+                  // Always pass env (key + GROK_DEFAULT_MODEL) for BYOK; empty key
+                  // still pins default model so we don't hit xAI without meaning to.
+                  env: providerEnv ?? {
+                    GROK_DEFAULT_MODEL: GROK_PROVIDER_MODEL_ID,
+                    GROK_IMAGE_GEN: "0",
+                  },
+                }
               : {}),
           // Grok: synthetic Permission dropdown (session/set_mode / --always-approve via spawn).
           ...(usesGrokProvider
@@ -505,6 +522,39 @@ export class AgentConnection {
     }
   }
 
+
+  /**
+   * Materialize ~/.grok/config.toml from the active app provider.
+   * Called on every Grok connect (including client reuse) so reopening chats
+   * still updates the file.
+   */
+  private async ensureGrokProviderConfig(agent: AgentInfo): Promise<void> {
+    if (!isGrokStyleAgent(agent)) return;
+    const provider = resolveActiveProvider(this.host.settings);
+    const modelAlias = normalizeModelAlias(
+      this.host.settings.activeModelAlias,
+      "sonnet",
+    );
+    const grokCfg = await ensureGrokConfigForProvider(this.host.settings);
+    if (!grokCfg.ok) {
+      console.warn("[acp] failed to write Grok config.toml:", grokCfg.error);
+      return;
+    }
+    if (grokCfg.wrote) {
+      console.log(
+        `[acp] wrote Grok config.toml at ${grokCfg.path}` +
+          (provider
+            ? ` provider="${provider.name}" model=${modelAlias}` +
+              (provider.baseUrl ? ` base=${provider.baseUrl}` : "")
+            : ""),
+      );
+    } else {
+      console.log(
+        `[acp] Grok config.toml not rewritten (${grokCfg.reason}) — using existing ~/.grok setup`,
+      );
+    }
+  }
+
   async ensureHandle(
     sessionId: string,
     cwd: string | undefined,
@@ -514,6 +564,17 @@ export class AgentConnection {
     if (!live) throw new Error("session not found");
     if (live.handle) return live.handle;
     if (!this.client) throw new Error("agent not connected");
+
+    // Reopen/switch onto Grok: refresh config.toml before session/new.
+    const sessionAgent: AgentInfo = {
+      id: live.summary.agentId,
+      name: live.summary.agentId,
+      command: "",
+      args: [],
+    };
+    if (isGrokStyleAgent(sessionAgent)) {
+      await this.ensureGrokProviderConfig(sessionAgent);
+    }
 
     // openSession only keeps one active agent session — drop other handles so
     // agentRunning accurately reflects which chat owns the live ACP client.
