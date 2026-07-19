@@ -5,13 +5,29 @@ import { tmpdir } from "node:os";
 import {
   agentsConfigDir,
   agentsConfigPath,
+  compareVersions,
   DEFAULT_AGENTS,
   ensureAgentsConfig,
   getAgentSetupStatus,
   loadAgents,
+  parseVersionToken,
 } from "./agents";
 
 describe("agents", () => {
+  it("parseVersionToken extracts semver from CLI output", () => {
+    expect(parseVersionToken("0.57.0")).toBe("0.57.0");
+    expect(parseVersionToken("grok 0.2.103 (abc) [stable]")).toBe("0.2.103");
+    expect(parseVersionToken("v1.2.3-beta.1")).toBe("1.2.3-beta.1");
+    expect(parseVersionToken("no version here")).toBeNull();
+  });
+
+  it("compareVersions orders dotted versions", () => {
+    expect(compareVersions("0.57.0", "0.59.0")).toBeLessThan(0);
+    expect(compareVersions("0.59.0", "0.57.0")).toBeGreaterThan(0);
+    expect(compareVersions("0.2.103", "0.2.103")).toBe(0);
+    expect(compareVersions("v1.2.0", "1.2.0")).toBe(0);
+  });
+
   it("DEFAULT_AGENTS includes Claude and Grok Build entries", () => {
     const ids = DEFAULT_AGENTS.map((a) => a.id);
     expect(ids).toContain("claude-code");

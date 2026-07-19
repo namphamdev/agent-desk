@@ -297,6 +297,35 @@ export type AgentSetupStatus = {
   grokInstallCommand: string;
 };
 
+/** Which external ACP agent package Settings can check/update. */
+export type AgentPackageId = "claude" | "grok";
+
+/** Result of checking whether Claude ACP or Grok CLI has an update. */
+export type AgentPackageUpdateStatus = {
+  package: AgentPackageId;
+  /** Binary / package is present on this machine. */
+  installed: boolean;
+  currentVersion: string | null;
+  latestVersion: string | null;
+  updateAvailable: boolean;
+  error?: string | null;
+};
+
+/** Result of installing/updating Claude ACP or Grok CLI. */
+export type AgentPackageUpdateResult =
+  | {
+      ok: true;
+      package: AgentPackageId;
+      message?: string;
+      status: AgentPackageUpdateStatus;
+    }
+  | {
+      ok: false;
+      package: AgentPackageId;
+      error: string;
+      status?: AgentPackageUpdateStatus;
+    };
+
 /** An installed agent skill (SKILL.md package under ~/.agents/skills). */
 export type SkillInfo = {
   id: string;
@@ -566,6 +595,20 @@ export type TerminalRPC = {
       ensureAgentSetup: {
         params: void;
         response: AgentSetupStatus;
+      };
+      /**
+       * Check npm (Claude ACP adapter) or `grok update --check` for a newer version.
+       */
+      checkAgentPackageUpdate: {
+        params: { package: AgentPackageId };
+        response: AgentPackageUpdateStatus;
+      };
+      /**
+       * Install/update Claude ACP (`npm i -g …`) or Grok CLI (`grok update`).
+       */
+      updateAgentPackage: {
+        params: { package: AgentPackageId };
+        response: AgentPackageUpdateResult;
       };
       /** List installed agent skills (global + optional project). */
       listSkills: {

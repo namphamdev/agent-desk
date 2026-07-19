@@ -5,8 +5,14 @@
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { AgentInfo, AgentSetupStatus } from "../shared/rpc";
-import { resolveExecutable } from "./path-env";
+import type {
+  AgentInfo,
+  AgentPackageId,
+  AgentPackageUpdateResult,
+  AgentPackageUpdateStatus,
+  AgentSetupStatus,
+} from "../shared/rpc";
+import { resolveExecutable, buildAugmentedPath } from "./path-env";
 
 export type AgentsFile = {
   agents: Array<{
@@ -21,13 +27,88 @@ export type AgentsFile = {
 const CONFIG_DIR = join(homedir(), ".terminal-react");
 const AGENTS_PATH = join(CONFIG_DIR, "agents.json");
 
-const CLAUDE_INSTALL_COMMAND =
-  "npm i -g @agentclientprotocol/claude-agent-acp";
+const CLAUDE_ACP_NPM_PACKAGE = "@agentclientprotocol/claude-agent-acp";
+const CLAUDE_INSTALL_COMMAND = `npm i -g ${CLAUDE_ACP_NPM_PACKAGE}`;
 /** Official Grok Build install (Windows PowerShell). */
 const GROK_INSTALL_COMMAND_WIN = "irm https://x.ai/cli/install.ps1 | iex";
 /** Official Grok Build install (macOS / Linux / Git Bash). */
 const GROK_INSTALL_COMMAND_UNIX =
   "curl -fsSL https://x.ai/cli/install.sh | bash";
+
+const CMD_TIMEOUT_MS = 120_000;
+
+async function runCmd(
+  argv: string[],
+  opts?: { timeoutMs?: number },
+): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+  const timeoutMs = opts?.timeoutMs ?? CMD_TIMEOUT_MS;
+  const proc = Bun.spawn(argv, {
+    cwd: homedir(),
+    stdout: "pipe",
+    stderr: "pipe",
+    stdin: "ignore",
+    env: {
+      ...process.env,
+      PATH: buildAugmentedPath(process.env.PATH),
+      CI: "1",
+      npm_config_yes: "true",
+    },
+  });
+
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    try {
+      proc.kill();
+    } catch {
+      /* ignore */
+    }
+  }, timeoutMs);
+
+  try {
+    const [stdout, stderr, exitCode] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]);
+    if (timedOut) {
+      return {
+        stdout,
+        stderr: (stderr || stdout || "timed out").trim() || "timed out",
+        exitCode: exitCode === 0 ? 124 : exitCode,
+      };
+    }
+    return { stdout, stderr, exitCode };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** First semver-looking token in a version command's output. */
+export function parseVersionToken(raw: string): string | null {
+  const m = raw.match(/\bv?(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)\b/);
+  return m?.[1] ?? null;
+}
+
+/** Compare dotted versions; returns negative if a < b, 0 if equal, positive if a > b. */
+export function compareVersions(a: string, b: string): number {
+  const norm = (v: string) =>
+    v
+      .trim()
+      .replace(/^v/i, "")
+      .split(/[-+]/)[0]!
+      .split(".")
+      .map((p) => parseInt(p.replace(/\D/g, ""), 10) || 0);
+  const pa = norm(a);
+  const pb = norm(b);
+  const n = Math.max(pa.length, pb.length);
+  for (let i = 0; i < n; i++) {
+    const da = pa[i] ?? 0;
+    const db = pb[i] ?? 0;
+    if (da !== db) return da - db;
+  }
+  return 0;
+}
 
 export const DEFAULT_AGENTS: AgentsFile["agents"] = [
   {
@@ -236,4 +317,229 @@ export async function ensureAgentSetup(): Promise<AgentSetupStatus> {
   await ensureAgentsConfig();
   await ensureGrokAgentEntry();
   return getAgentSetupStatus();
+}
+
+async function resolveClaudeAcpPath(): Promise<string | null> {
+  const status = await getAgentSetupStatus();
+  return status.claudeAcpPath;
+}
+
+async function resolveGrokPath(): Promise<string | null> {
+  const status = await getAgentSetupStatus();
+  return status.grokPath;
+}
+
+async function checkClaudePackageUpdate(): Promise<AgentPackageUpdateStatus> {
+  const base: AgentPackageUpdateStatus = {
+    package: "claude",
+    installed: false,
+    currentVersion: null,
+    latestVersion: null,
+    updateAvailable: false,
+    error: null,
+  };
+
+  const path = await resolveClaudeAcpPath();
+  if (!path) {
+    return {
+      ...base,
+      error: "claude-agent-acp not found on PATH",
+    };
+  }
+  base.installed = true;
+
+  const versionCmd = await runCmd([path, "--version"], { timeoutMs: 15_000 });
+  const current =
+    parseVersionToken(versionCmd.stdout) ??
+    parseVersionToken(versionCmd.stderr);
+  base.currentVersion = current;
+
+  const npm = resolveExecutable("npm");
+  if (!npm) {
+    return {
+      ...base,
+      error: "npm not found on PATH (needed to check latest version)",
+    };
+  }
+
+  const latestCmd = await runCmd(
+    [npm, "view", CLAUDE_ACP_NPM_PACKAGE, "version"],
+    { timeoutMs: 30_000 },
+  );
+  if (latestCmd.exitCode !== 0) {
+    const detail = (latestCmd.stderr || latestCmd.stdout).trim();
+    return {
+      ...base,
+      error: detail.slice(0, 400) || "npm view failed",
+    };
+  }
+  const latest =
+    parseVersionToken(latestCmd.stdout) ??
+    (latestCmd.stdout.trim() || null);
+  base.latestVersion = latest;
+
+  if (current && latest) {
+    base.updateAvailable = compareVersions(current, latest) < 0;
+  } else if (!current && latest) {
+    base.updateAvailable = true;
+  }
+
+  return base;
+}
+
+async function checkGrokPackageUpdate(): Promise<AgentPackageUpdateStatus> {
+  const base: AgentPackageUpdateStatus = {
+    package: "grok",
+    installed: false,
+    currentVersion: null,
+    latestVersion: null,
+    updateAvailable: false,
+    error: null,
+  };
+
+  const path = await resolveGrokPath();
+  if (!path) {
+    return {
+      ...base,
+      error: "grok not found on PATH",
+    };
+  }
+  base.installed = true;
+
+  const check = await runCmd([path, "update", "--check", "--json"], {
+    timeoutMs: 45_000,
+  });
+  const text = (check.stdout || check.stderr).trim();
+  try {
+    const jsonStart = text.indexOf("{");
+    const jsonEnd = text.lastIndexOf("}");
+    if (jsonStart < 0 || jsonEnd < jsonStart) {
+      throw new Error("no JSON in grok update --check output");
+    }
+    const parsed = JSON.parse(text.slice(jsonStart, jsonEnd + 1)) as {
+      currentVersion?: string;
+      latestVersion?: string;
+      updateAvailable?: boolean;
+      error?: string | null;
+    };
+    base.currentVersion = parsed.currentVersion
+      ? parseVersionToken(parsed.currentVersion) ?? parsed.currentVersion
+      : null;
+    base.latestVersion = parsed.latestVersion
+      ? parseVersionToken(parsed.latestVersion) ?? parsed.latestVersion
+      : null;
+    base.updateAvailable = Boolean(parsed.updateAvailable);
+    if (parsed.error) {
+      base.error = String(parsed.error);
+    }
+    return base;
+  } catch {
+    // Fall back to --version + leave latest unknown.
+    const ver = await runCmd([path, "--version"], { timeoutMs: 15_000 });
+    base.currentVersion =
+      parseVersionToken(ver.stdout) ?? parseVersionToken(ver.stderr);
+    if (check.exitCode !== 0) {
+      base.error =
+        (check.stderr || check.stdout || "grok update --check failed")
+          .trim()
+          .slice(0, 400) || "grok update --check failed";
+    } else {
+      base.error = "Could not parse grok update --check output";
+    }
+    return base;
+  }
+}
+
+/** Check whether Claude ACP adapter or Grok CLI has a newer release. */
+export async function checkAgentPackageUpdate(
+  pkg: AgentPackageId,
+): Promise<AgentPackageUpdateStatus> {
+  if (pkg === "claude") return checkClaudePackageUpdate();
+  if (pkg === "grok") return checkGrokPackageUpdate();
+  return {
+    package: pkg,
+    installed: false,
+    currentVersion: null,
+    latestVersion: null,
+    updateAvailable: false,
+    error: `Unknown package: ${pkg}`,
+  };
+}
+
+async function updateClaudePackage(): Promise<AgentPackageUpdateResult> {
+  const npm = resolveExecutable("npm");
+  if (!npm) {
+    return {
+      ok: false,
+      package: "claude",
+      error: "npm not found on PATH",
+    };
+  }
+
+  const result = await runCmd(
+    [npm, "i", "-g", CLAUDE_ACP_NPM_PACKAGE],
+    { timeoutMs: 180_000 },
+  );
+  const status = await checkClaudePackageUpdate();
+  if (result.exitCode !== 0) {
+    const detail = (result.stderr || result.stdout).trim();
+    return {
+      ok: false,
+      package: "claude",
+      error: detail.slice(0, 800) || `npm install failed (exit ${result.exitCode})`,
+      status,
+    };
+  }
+  return {
+    ok: true,
+    package: "claude",
+    message: status.currentVersion
+      ? `Updated to ${status.currentVersion}`
+      : "Updated claude-agent-acp",
+    status,
+  };
+}
+
+async function updateGrokPackage(): Promise<AgentPackageUpdateResult> {
+  const path = await resolveGrokPath();
+  if (!path) {
+    return {
+      ok: false,
+      package: "grok",
+      error: "grok not found on PATH — install Grok Build first",
+    };
+  }
+
+  const result = await runCmd([path, "update"], { timeoutMs: 180_000 });
+  const status = await checkGrokPackageUpdate();
+  if (result.exitCode !== 0) {
+    const detail = (result.stderr || result.stdout).trim();
+    return {
+      ok: false,
+      package: "grok",
+      error: detail.slice(0, 800) || `grok update failed (exit ${result.exitCode})`,
+      status,
+    };
+  }
+  return {
+    ok: true,
+    package: "grok",
+    message: status.currentVersion
+      ? `Updated to ${status.currentVersion}`
+      : "Updated grok",
+    status,
+  };
+}
+
+/** Install or update Claude ACP adapter or Grok CLI. */
+export async function updateAgentPackage(
+  pkg: AgentPackageId,
+): Promise<AgentPackageUpdateResult> {
+  if (pkg === "claude") return updateClaudePackage();
+  if (pkg === "grok") return updateGrokPackage();
+  return {
+    ok: false,
+    package: pkg,
+    error: `Unknown package: ${pkg}`,
+  };
 }

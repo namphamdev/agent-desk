@@ -5,6 +5,9 @@
 import { Electroview } from "electrobun/view";
 import type {
   AgentInfo,
+  AgentPackageId,
+  AgentPackageUpdateResult,
+  AgentPackageUpdateStatus,
   AppSettings,
   AvailableCommand,
   ConnectionStatePayload,
@@ -157,6 +160,12 @@ type RpcClient = {
     regenerateRemoteAccess: () => Promise<RemoteAccessStatus>;
     getAgentSetup: () => Promise<AgentSetupStatus>;
     ensureAgentSetup: () => Promise<AgentSetupStatus>;
+    checkAgentPackageUpdate: (p: {
+      package: AgentPackageId;
+    }) => Promise<AgentPackageUpdateStatus>;
+    updateAgentPackage: (p: {
+      package: AgentPackageId;
+    }) => Promise<AgentPackageUpdateResult>;
     listSkills: (p?: {
       projectCwd?: string | null;
     }) => Promise<{ skills: SkillInfo[] }>;
@@ -586,6 +595,16 @@ function createRemoteWsClient(code: string): RpcClient {
       getAgentSetup: () => request("getAgentSetup") as Promise<AgentSetupStatus>,
       ensureAgentSetup: () =>
         request("ensureAgentSetup") as Promise<AgentSetupStatus>,
+      checkAgentPackageUpdate: (p) =>
+        request(
+          "checkAgentPackageUpdate",
+          p as Record<string, unknown>,
+        ) as Promise<AgentPackageUpdateStatus>,
+      updateAgentPackage: (p) =>
+        request(
+          "updateAgentPackage",
+          p as Record<string, unknown>,
+        ) as Promise<AgentPackageUpdateResult>,
       listSkills: (p) =>
         request("listSkills", (p ?? {}) as Record<string, unknown>),
       installSkill: (p) =>
@@ -1006,6 +1025,23 @@ async getGitBranch() {
       },
       async ensureAgentSetup() {
         return this.getAgentSetup();
+      },
+      async checkAgentPackageUpdate({ package: pkg }) {
+        return {
+          package: pkg,
+          installed: false,
+          currentVersion: null,
+          latestVersion: null,
+          updateAvailable: false,
+          error: "Updates only available in the desktop app",
+        };
+      },
+      async updateAgentPackage({ package: pkg }) {
+        return {
+          ok: false as const,
+          package: pkg,
+          error: "Updates only available in the desktop app",
+        };
       },
       async listSkills() {
         return { skills: [...mockSkills] };

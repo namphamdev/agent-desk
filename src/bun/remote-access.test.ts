@@ -148,6 +148,19 @@ function mockHandlers() {
       grokPath: null,
       grokInstallCommand: "irm https://x.ai/cli/install.ps1 | iex",
     }),
+    checkAgentPackageUpdate: async (pkg: "claude" | "grok") => ({
+      package: pkg,
+      installed: false,
+      currentVersion: null,
+      latestVersion: null,
+      updateAvailable: false,
+      error: null,
+    }),
+    updateAgentPackage: async (pkg: "claude" | "grok") => ({
+      ok: false as const,
+      package: pkg,
+      error: "n/a",
+    }),
   };
 }
 

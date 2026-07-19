@@ -129,14 +129,10 @@ describe("providers", () => {
     });
   });
 
-  it("buildClaudeCodeSessionMeta always registers browser MCP awareness", () => {
+  it("buildClaudeCodeSessionMeta keeps tool search off (browser prompt append disabled)", () => {
     const meta = buildClaudeCodeSessionMeta(sample, "sonnet");
     const baseEnv = buildProviderEnv(sample, "sonnet")!;
     expect(meta).toMatchObject({
-      systemPrompt: {
-        type: "preset",
-        preset: "claude_code",
-      },
       claudeCode: {
         options: {
           env: {
@@ -148,9 +144,7 @@ describe("providers", () => {
         },
       },
     });
-    expect(String((meta as { systemPrompt: { append: string } }).systemPrompt.append)).toContain(
-      "browser_navigate",
-    );
+    expect(meta).not.toHaveProperty("systemPrompt");
 
     // Without app provider, still return meta so MCP tools stay discoverable.
     const noProvider = buildClaudeCodeSessionMeta(null, "sonnet");
@@ -163,6 +157,7 @@ describe("providers", () => {
       (noProvider as { claudeCode: { options: { settingSources: string[] } } })
         .claudeCode.options.settingSources,
     ).toEqual(["user", "project", "local"]);
+    expect(noProvider).not.toHaveProperty("systemPrompt");
   });
 
   it("providerConnectionKey changes when credentials or model change", () => {

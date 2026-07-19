@@ -3,10 +3,33 @@
  * (claude-agent-acp + Grok Build) and agents.json.
  */
 import { useCallback, useEffect, useState } from "react";
-import type { AgentSetupStatus } from "../../../shared/rpc";
+import type {
+  AgentPackageId,
+  AgentPackageUpdateStatus,
+  AgentSetupStatus,
+} from "../../../shared/rpc";
 import { getRpc } from "../../rpc";
 import { Button } from "@/components/ui/button";
 import { StatusDot } from "./StatusDot";
+
+function versionLine(status: AgentPackageUpdateStatus | null | undefined): string {
+  if (!status) return "Not checked yet";
+  if (status.error && !status.currentVersion && !status.latestVersion) {
+    return status.error;
+  }
+  const cur = status.currentVersion ?? "unknown";
+  const latest = status.latestVersion ?? "unknown";
+  if (status.updateAvailable) {
+    return `Update available: ${cur} → ${latest}`;
+  }
+  if (status.currentVersion && status.latestVersion) {
+    return `Up to date (${cur})`;
+  }
+  if (status.currentVersion) {
+    return `Installed ${cur}`;
+  }
+  return status.error || "Could not determine version";
+}
 
 export function ClaudeCodeTab() {
   const [status, setStatus] = useState<AgentSetupStatus | null>(null);
@@ -16,6 +39,12 @@ export function ClaudeCodeTab() {
   const [copiedInstall, setCopiedInstall] = useState<"claude" | "grok" | null>(
     null,
   );
+  const [claudeUpdate, setClaudeUpdate] =
+    useState<AgentPackageUpdateStatus | null>(null);
+  const [grokUpdate, setGrokUpdate] =
+    useState<AgentPackageUpdateStatus | null>(null);
+  const [checking, setChecking] = useState<AgentPackageId | "all" | null>(null);
+  const [updating, setUpdating] = useState<AgentPackageId | null>(null);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -73,6 +102,59 @@ export function ClaudeCodeTab() {
     }
   };
 
+  const checkUpdate = async (pkg: AgentPackageId) => {
+    setChecking(pkg);
+    setError(null);
+    try {
+      const next = await getRpc().request.checkAgentPackageUpdate({ package: pkg });
+      if (pkg === "claude") setClaudeUpdate(next);
+      else setGrokUpdate(next);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setChecking(null);
+    }
+  };
+
+  const checkAllUpdates = async () => {
+    setChecking("all");
+    setError(null);
+    try {
+      const [claude, grok] = await Promise.all([
+        getRpc().request.checkAgentPackageUpdate({ package: "claude" }),
+        getRpc().request.checkAgentPackageUpdate({ package: "grok" }),
+      ]);
+      setClaudeUpdate(claude);
+      setGrokUpdate(grok);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setChecking(null);
+    }
+  };
+
+  const runUpdate = async (pkg: AgentPackageId) => {
+    setUpdating(pkg);
+    setError(null);
+    try {
+      const result = await getRpc().request.updateAgentPackage({ package: pkg });
+      if (result.status) {
+        if (pkg === "claude") setClaudeUpdate(result.status);
+        else setGrokUpdate(result.status);
+      }
+      if (!result.ok) {
+        setError(result.error);
+      }
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setUpdating(null);
+    }
+  };
+
+  const actionBusy = busy || checking != null || updating != null;
+
   return (
     <div className="space-y-4">
       <p className="text-[11px] leading-relaxed text-muted-foreground">
@@ -101,16 +183,26 @@ export function ClaudeCodeTab() {
               ok={status.ready}
               label={status.ready ? "Ready to connect" : "Setup incomplete"}
             />
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              disabled={loading || busy}
-              onClick={() => void refresh()}
-              className="ml-auto"
-            >
-              {loading ? "Checking…" : "Re-check"}
-            </Button>
+            <div className="ml-auto flex flex-wrap gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={actionBusy || loading}
+                onClick={() => void checkAllUpdates()}
+              >
+                {checking === "all" ? "Checking updates…" : "Check updates"}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={loading || actionBusy}
+                onClick={() => void refresh()}
+              >
+                {loading ? "Checking…" : "Re-check"}
+              </Button>
+            </div>
           </div>
 
           <div className="space-y-2">
@@ -177,6 +269,88 @@ export function ClaudeCodeTab() {
                 </code>
               </li>
             </ul>
+          </div>
+
+          <div className="space-y-2">
+            <span className="block text-xs font-medium uppercase tracking-wider text-muted-foreground">
+              Package updates
+            </span>
+            <ul className="space-y-2 rounded-lg border border-border bg-background p-3 text-xs">
+              <li className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                <div className="min-w-0">
+                  <div className="font-medium text-foreground">
+                    Claude ACP adapter
+                  </div>
+                  <div className="text-[11px] text-muted-foreground">
+                    {versionLine(claudeUpdate)}
+                  </div>
+                </div>
+                <div className="flex shrink-0 flex-wrap gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={actionBusy}
+                    onClick={() => void checkUpdate("claude")}
+                  >
+                    {checking === "claude" ? "Checking…" : "Check"}
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    disabled={
+                      actionBusy ||
+                      (claudeUpdate != null &&
+                        !claudeUpdate.updateAvailable &&
+                        claudeUpdate.installed)
+                    }
+                    onClick={() => void runUpdate("claude")}
+                  >
+                    {updating === "claude"
+                      ? "Updating…"
+                      : claudeUpdate?.installed
+                        ? "Update"
+                        : "Install / update"}
+                  </Button>
+                </div>
+              </li>
+              <li className="flex flex-col gap-2 border-t border-border pt-2 sm:flex-row sm:items-center sm:justify-between">
+                <div className="min-w-0">
+                  <div className="font-medium text-foreground">Grok ACP</div>
+                  <div className="text-[11px] text-muted-foreground">
+                    {versionLine(grokUpdate)}
+                  </div>
+                </div>
+                <div className="flex shrink-0 flex-wrap gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={actionBusy || !status.grokOk}
+                    onClick={() => void checkUpdate("grok")}
+                  >
+                    {checking === "grok" ? "Checking…" : "Check"}
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    disabled={
+                      actionBusy ||
+                      !status.grokOk ||
+                      (grokUpdate != null && !grokUpdate.updateAvailable)
+                    }
+                    onClick={() => void runUpdate("grok")}
+                  >
+                    {updating === "grok" ? "Updating…" : "Update"}
+                  </Button>
+                </div>
+              </li>
+            </ul>
+            <p className="text-[11px] text-muted-foreground">
+              Claude uses{" "}
+              <code className="text-muted-foreground">npm i -g …claude-agent-acp</code>
+              . Grok uses <code className="text-muted-foreground">grok update</code>.
+            </p>
           </div>
 
           <div className="space-y-2">

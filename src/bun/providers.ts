@@ -206,11 +206,12 @@ export function buildClaudeCodeSessionMeta(
   const env = withBrowserMcpAlwaysLoaded(providerEnv);
 
   return {
-    systemPrompt: {
-      type: "preset",
-      preset: "claude_code",
-      append: BROWSER_MCP_SYSTEM_APPEND,
-    },
+    // Browser MCP system prompt append commented out — tools still register via MCP.
+    // systemPrompt: {
+    //   type: "preset",
+    //   preset: "claude_code",
+    //   append: BROWSER_MCP_SYSTEM_APPEND,
+    // },
     claudeCode: {
       options: {
         env,

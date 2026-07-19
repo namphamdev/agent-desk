@@ -38,7 +38,12 @@ import {
   loadCommands,
   removeCommand,
 } from "./user-commands";
-import { ensureAgentSetup, getAgentSetupStatus } from "./agents";
+import {
+  checkAgentPackageUpdate,
+  ensureAgentSetup,
+  getAgentSetupStatus,
+  updateAgentPackage,
+} from "./agents";
 import { BrowserControlServer } from "./browser-control-server";
 import type {
   BrowserControlRequest,
@@ -486,6 +491,12 @@ const terminalRPC = BrowserView.defineRPC<TerminalRPC>({
       ensureAgentSetup: async () => {
         return ensureAgentSetup();
       },
+      checkAgentPackageUpdate: async ({ package: pkg }) => {
+        return checkAgentPackageUpdate(pkg);
+      },
+      updateAgentPackage: async ({ package: pkg }) => {
+        return updateAgentPackage(pkg);
+      },
       listSkills: async (params) => {
         const listed = manager.listSessions();
         const projectCwd =
@@ -854,6 +865,8 @@ remoteAccess = new RemoteAccessServer({
     saveProjectWorkflows(cwd ?? "", workflows ?? []),
   getAgentSetup: () => getAgentSetupStatus(),
   ensureAgentSetup: () => ensureAgentSetup(),
+  checkAgentPackageUpdate: (pkg) => checkAgentPackageUpdate(pkg),
+  updateAgentPackage: (pkg) => updateAgentPackage(pkg),
 });
 
 await manager.init();
