@@ -18,4 +18,4 @@ Team memory: `docs/memory/` (git-synced).
 - **No secrets** or personal prefs in shared memory.
 - **Procedures** → skills under `.claude/skills/`, not long memory essays.
 
-Optional Stop-hook reminder: copy from `.claude/settings.example.json` into project or user Claude settings if desired.
+Stop hook (in `.claude/settings.json`): after each turn, a prompt-type Stop gate asks whether a team-durable lesson should be journaled before the agent fully stops. Prefer approve when unsure; never store secrets.

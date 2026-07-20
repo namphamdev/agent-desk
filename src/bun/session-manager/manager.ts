@@ -204,7 +204,8 @@ export class SessionManager {
 
   /**
    * Spawn/reconnect the agent process for a specific chat.
-   * Without a session, creates a short-lived chat (used by tests / legacy RPC).
+   * No-ops (stays idle) when there is no session — never auto-creates a chat
+   * from process.cwd() (that was the packaged-app bin folder on startup).
    */
   async connectAgent(agentId?: string, cwd?: string, sessionId?: string) {
     const resolvedAgentId = agentId ?? this.defaultAgentId;
@@ -217,23 +218,11 @@ export class SessionManager {
       return { ok: false as const, error: `Unknown agent: ${resolvedAgentId}` };
     }
 
-    let id = sessionId ?? this.activeSessionId;
+    const id = sessionId ?? this.activeSessionId;
     if (!id) {
-      const cwdResolved = resolveWorkingDirectory(cwd || process.cwd());
-      if (!cwdResolved.ok) {
-        return { ok: false as const, error: cwdResolved.error };
-      }
-      const syntheticId = this.uid();
-      const stored = this.store.createSession({
-        id: syntheticId,
-        title: "Connect",
-        project: basename(cwdResolved.cwd),
-        cwd: cwdResolved.cwd,
-        agentId: agent.id,
-      });
-      this.live.set(syntheticId, emptyLive(stored));
-      this.activeSessionId = syntheticId;
-      id = syntheticId;
+      // Default screen: chat + project picker only; session opens on create/send.
+      this.conn.emitActiveConnection();
+      return { ok: true as const };
     }
 
     const live = this.live.get(id);
@@ -562,8 +551,17 @@ export class SessionManager {
   ): Promise<{ ok: true } | { ok: false; error: string }> {
     const id = sessionId ?? this.activeSessionId;
     if (!id) {
+      // Only auto-create when a real project was chosen before (never process.cwd()).
+      const projectCwd = this.settings.lastProjectCwd?.trim();
+      if (!projectCwd) {
+        return {
+          ok: false as const,
+          error: "Choose a project folder before sending a prompt.",
+        };
+      }
       const created = await this.createSession({
         title: text.slice(0, 60),
+        cwd: projectCwd,
       });
       if (!created.ok) return created;
       return this.sendPrompt(text, created.session.id);

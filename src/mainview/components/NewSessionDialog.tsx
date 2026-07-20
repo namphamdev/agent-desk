@@ -36,7 +36,8 @@ export type NewSessionOptions = {
   };
   /**
    * When set, auto-send a workflow-specific first prompt after the session
-   * is created (harness-aware: memory INDEX, architecture, AGENTS.md).
+   * is created. When omitted (Free chat), a harness/memory orientation
+   * prompt is still sent so the agent knows the project memory system.
    */
   workflow?: {
     id: WorkflowId;
@@ -95,7 +96,7 @@ export function NewSessionDialog({
   const [useWorktree, setUseWorktree] = useState(false);
   const [worktreeBranch, setWorktreeBranch] = useState("");
   const [createBranch, setCreateBranch] = useState(true);
-  /** null = free chat (no auto-prompt). */
+  /** null = free chat (harness/memory orientation only, no task template). */
   const [workflowId, setWorkflowId] = useState<WorkflowId | null>(null);
   const [task, setTask] = useState("");
   const [prRef, setPrRef] = useState("");
@@ -359,7 +360,7 @@ export function NewSessionDialog({
               >
                 <span className="block text-xs font-medium">Free chat</span>
                 <span className="mt-0.5 block text-[10px] leading-snug text-muted-foreground">
-                  Empty session — type your own prompt
+                  Open session with memory/harness orientation
                 </span>
               </button>
               {workflows.map((w) => {
@@ -390,12 +391,11 @@ export function NewSessionDialog({
                 );
               })}
             </div>
-            {selectedWorkflow && (
-              <p className="mt-2 text-[11px] text-muted-foreground">
-                Starts with a harness-aware prompt (memory INDEX, architecture,
-                AGENTS.md) tailored to this workflow.
-              </p>
-            )}
+            <p className="mt-2 text-[11px] text-muted-foreground">
+              {selectedWorkflow
+                ? "Starts with a harness-aware prompt (memory INDEX, architecture, AGENTS.md) tailored to this workflow."
+                : "Starts with a short harness/memory orientation so the agent knows the project memory system, then you drive the chat."}
+            </p>
           </div>
 
           {selectedWorkflow && (

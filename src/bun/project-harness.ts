@@ -298,7 +298,7 @@ const TOPIC_TOOLING_MD = `# Tooling
 | --- | --- |
 | \`docs/memory/\` | Team-shared memory (git) |
 | \`docs/architecture/\` | arc42 architecture (git) |
-| \`.claude/\` | Claude Code commands, skills, example hooks |
+| \`.claude/\` | Claude Code commands, skills, settings (Stop memory hook) |
 `;
 
 const TOPIC_DOMAIN_MD = `# Domain
@@ -471,21 +471,70 @@ Promote project memory from journal into curated topics.
 - Duplicate AGENTS.md or full arc42 sections into topics
 `;
 
-const CLAUDE_SETTINGS_EXAMPLE = `{
-  "hooks": {
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "echo \\"[project memory] If this session taught a team-durable lesson, run /remember (journal) or /memory-promote. Do not grow docs/memory/INDEX.md with long dumps. Architecture → docs/architecture/.\\""
-          }
-        ]
-      }
-    ]
-  }
+/**
+ * Marker embedded in the Stop prompt so we can detect / upgrade our hook without
+ * clobbering unrelated project Stop hooks.
+ */
+export const MEMORY_STOP_HOOK_MARKER = "PROJECT_MEMORY_STOP_HOOK";
+
+/** LLM Stop hook: blocks end-of-turn until a journal entry is written when warranted. */
+export const MEMORY_STOP_HOOK_PROMPT = [
+  `${MEMORY_STOP_HOOK_MARKER}`,
+  "You are the project-memory Stop gate for a git-synced team memory system.",
+  "",
+  "Decide whether the main agent may stop.",
+  "",
+  "Approve (allow stop) when ANY of these is true:",
+  "- No team-durable lesson (routine coding, one-off debug, pure Q&A, or already-known facts).",
+  "- A journal/topic/ADR/skill capture for this session's lesson was already written under docs/memory/ or docs/architecture/ or .claude/skills/.",
+  "- The only leftovers are secrets, credentials, personal prefs, or local machine paths — never put those in memory.",
+  "",
+  "Block (force continue) ONLY when ALL of these are true:",
+  "- This turn produced a reusable team lesson (gotcha, convention, tooling quirk, domain fact, or architecture decision).",
+  "- That lesson is not yet written to docs/memory/journal/YYYY-MM.md (preferred), a matching docs/memory/topics/*.md bullet, an ADR, or a skill.",
+  "",
+  "When blocking, reason must tell the agent to:",
+  "1) Append a short journal entry to docs/memory/journal/YYYY-MM.md (current month; create if needed) using:",
+  "   ## YYYY-MM-DD — short title",
+  "   - Context:",
+  "   - Lesson:",
+  "   - Promote to: topics/<file>.md | skill | arc42 | discard",
+  "2) Do NOT grow docs/memory/INDEX.md with long dumps; no secrets.",
+  "3) Then stop (or run /memory-promote later for topic promotion).",
+  "",
+  "Return decision approve or block with a short reason. Prefer approve when unsure.",
+].join("\n");
+
+/** Hook object written into Claude Code settings Stop list. */
+export const MEMORY_STOP_HOOK = {
+  type: "prompt" as const,
+  prompt: MEMORY_STOP_HOOK_PROMPT,
+  timeout: 30,
+  statusMessage: "Checking project memory capture",
+};
+
+/** Full settings document scaffolded for project-memory (example + default merge). */
+export function buildProjectMemorySettingsDoc(): {
+  hooks: {
+    Stop: Array<{ hooks: Array<typeof MEMORY_STOP_HOOK> }>;
+  };
+} {
+  return {
+    hooks: {
+      Stop: [
+        {
+          hooks: [MEMORY_STOP_HOOK],
+        },
+      ],
+    },
+  };
 }
-`;
+
+export const CLAUDE_SETTINGS_EXAMPLE = `${JSON.stringify(
+  buildProjectMemorySettingsDoc(),
+  null,
+  2,
+)}\n`;
 
 const CLAUDE_MD_MEMORY_BODY = `# Architecture
 
@@ -504,7 +553,7 @@ Team memory: \`docs/memory/\` (git-synced).
 - **No secrets** or personal prefs in shared memory.
 - **Procedures** → skills under \`.claude/skills/\`, not long memory essays.
 
-Optional Stop-hook reminder: copy from \`.claude/settings.example.json\` into project or user Claude settings if desired.
+Stop hook (in \`.claude/settings.json\`): after each turn, a prompt-type Stop gate asks whether a team-durable lesson should be journaled before the agent fully stops. Prefer approve when unsure; never store secrets.
 `;
 
 /** Write only when missing or empty; returns relative path if written. */
@@ -519,6 +568,138 @@ function writeNewFile(
   mkdirSync(dirname(absPath), { recursive: true });
   writeFileSync(absPath, content.endsWith("\n") ? content : `${content}\n`, "utf8");
   written.push(relPath);
+}
+
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return !!v && typeof v === "object" && !Array.isArray(v);
+}
+
+/** True when a hook entry is our project-memory Stop gate (any generation). */
+export function isProjectMemoryStopHook(hook: unknown): boolean {
+  if (!isPlainObject(hook)) return false;
+  if (hook.type === "prompt") {
+    return (
+      typeof hook.prompt === "string" &&
+      hook.prompt.includes(MEMORY_STOP_HOOK_MARKER)
+    );
+  }
+  // Legacy echo reminder from older harness templates.
+  if (hook.type === "command" && typeof hook.command === "string") {
+    return (
+      hook.command.includes("[project memory]") ||
+      hook.command.includes("[terminal-react memory]") ||
+      (hook.command.includes("docs/memory") &&
+        hook.command.includes("/remember"))
+    );
+  }
+  return false;
+}
+
+/**
+ * Ensure `settings.hooks.Stop` includes the prompt-type project-memory gate.
+ * Replaces legacy echo command hooks; leaves unrelated Stop hooks intact.
+ * Pure — does not touch the filesystem.
+ */
+export function ensureProjectMemoryStopHook(
+  settings: unknown,
+): { settings: Record<string, unknown>; changed: boolean } {
+  const base: Record<string, unknown> = isPlainObject(settings)
+    ? { ...settings }
+    : {};
+
+  const hooksRoot = isPlainObject(base.hooks) ? { ...base.hooks } : {};
+  const stopList = Array.isArray(hooksRoot.Stop) ? [...hooksRoot.Stop] : [];
+
+  let changed = false;
+  let foundOurs = false;
+
+  const nextStop = stopList.map((group) => {
+    if (!isPlainObject(group)) return group;
+    const inner = Array.isArray(group.hooks) ? [...group.hooks] : null;
+    if (!inner) return group;
+
+    let groupChanged = false;
+    const nextInner = inner.map((h) => {
+      if (!isProjectMemoryStopHook(h)) return h;
+      foundOurs = true;
+      // Already current prompt-type gate — keep as-is.
+      if (
+        isPlainObject(h) &&
+        h.type === "prompt" &&
+        h.prompt === MEMORY_STOP_HOOK_PROMPT
+      ) {
+        return h;
+      }
+      // Upgrade legacy echo or stale prompt text to the current gate.
+      groupChanged = true;
+      changed = true;
+      return { ...MEMORY_STOP_HOOK };
+    });
+
+    if (groupChanged) {
+      return { ...group, hooks: nextInner };
+    }
+    return group;
+  });
+
+  if (!foundOurs) {
+    nextStop.push({ hooks: [{ ...MEMORY_STOP_HOOK }] });
+    changed = true;
+  }
+
+  if (!changed) {
+    return { settings: base, changed: false };
+  }
+
+  hooksRoot.Stop = nextStop;
+  base.hooks = hooksRoot;
+  return { settings: base, changed: true };
+}
+
+/**
+ * Write/refresh settings.example.json and merge the Stop gate into settings.json.
+ */
+export function ensureClaudeSettingsMemory(
+  root: string,
+  written: string[] = [],
+): string[] {
+  const examplePath = join(root, ".claude", "settings.example.json");
+  const settingsPath = join(root, ".claude", "settings.json");
+
+  const exampleExisting = readText(examplePath);
+  if (
+    exampleExisting == null ||
+    exampleExisting.trim().length === 0 ||
+    !exampleExisting.includes(MEMORY_STOP_HOOK_MARKER)
+  ) {
+    mkdirSync(dirname(examplePath), { recursive: true });
+    writeFileSync(examplePath, CLAUDE_SETTINGS_EXAMPLE, "utf8");
+    written.push(".claude/settings.example.json");
+  }
+
+  const raw = readText(settingsPath);
+  let parsed: unknown = {};
+  if (raw != null && raw.trim().length > 0) {
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      // Don't overwrite a broken settings.json — only ensure the example exists.
+      return written;
+    }
+  }
+
+  const { settings, changed } = ensureProjectMemoryStopHook(parsed);
+  if (changed || raw == null || raw.trim().length === 0) {
+    mkdirSync(dirname(settingsPath), { recursive: true });
+    writeFileSync(
+      settingsPath,
+      `${JSON.stringify(settings, null, 2)}\n`,
+      "utf8",
+    );
+    written.push(".claude/settings.json");
+  }
+
+  return written;
 }
 
 /**
@@ -734,6 +915,18 @@ function detectProjectMemory(cwd: string): {
     labels.push(".claude/commands");
   }
 
+  const settingsRaw = readText(join(cwd, ".claude", "settings.json"));
+  if (settingsRaw && settingsRaw.includes(MEMORY_STOP_HOOK_MARKER)) {
+    labels.push(".claude/settings.json Stop hook");
+  } else if (
+    fileExists(join(cwd, ".claude", "settings.example.json")) &&
+    (readText(join(cwd, ".claude", "settings.example.json")) || "").includes(
+      MEMORY_STOP_HOOK_MARKER,
+    )
+  ) {
+    labels.push(".claude/settings.example.json");
+  }
+
   if (
     fileExists(join(cwd, "docs", "architecture", "README.md")) &&
     (readText(join(cwd, "docs", "architecture", "README.md")) || "").includes(
@@ -878,12 +1071,10 @@ function applyProjectMemory(root: string, written: string[]): void {
     ".claude/commands/memory-promote.md",
     written,
   );
-  writeNewFile(
-    join(root, ".claude", "settings.example.json"),
-    CLAUDE_SETTINGS_EXAMPLE,
-    ".claude/settings.example.json",
-    written,
-  );
+
+  // Real settings.json (Claude loads this) + example template. Upgrades legacy
+  // echo Stop hooks to the prompt-type memory gate without clobbering others.
+  ensureClaudeSettingsMemory(root, written);
 
   for (const rel of ensureClaudeMdMemory(claudeMdPath(root))) {
     written.push(rel);

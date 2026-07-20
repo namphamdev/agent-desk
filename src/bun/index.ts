@@ -929,7 +929,5 @@ console.log("[terminal-react] started");
 console.log(`[terminal-react] data dir: ${dataDir}`);
 console.log(`[terminal-react] userData: ${Utils.paths.userData}`);
 
-// Auto-connect the default (demo) agent so the UI is ready immediately.
-void manager.connectAgent().then((r) => {
-  if (!r.ok) console.warn("[terminal-react] initial connect:", r.error);
-});
+// Do not auto-create a session on launch. Default UI is the empty chat with
+// project picker; connectAgent runs when the user opens/creates a session.

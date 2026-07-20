@@ -27,7 +27,7 @@ bunx vite build
 - Entry: `CLAUDE.md` (`@AGENTS.md`, `@docs/memory/INDEX.md`)
 - Commands: `.claude/commands/remember.md`, `memory-promote.md`
 - Skills: project `.claude/skills/` (and harness-managed packages)
-- Optional hooks: see `.claude/settings.example.json` (copy into local/project settings as needed)
+- Stop hook: `.claude/settings.json` prompt-type gate (scaffolded by project-memory harness) nudges journal capture when a team-durable lesson was not written; example at `.claude/settings.example.json`
 
 ## Agents
 

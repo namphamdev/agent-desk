@@ -204,9 +204,10 @@ export default function App() {
               empty={
                 <ChatEmptyState
                   sessionLoading={app.sessionLoading}
-                  connection={app.connection}
-                  activeSession={app.activeSession}
+                  hasActiveSession={Boolean(app.activeSessionId)}
+                  recentProjects={app.recentProjects}
                   onNewSession={app.handleNewSession}
+                  onOpenProject={(cwd) => void app.handleOpenProjectCwd(cwd)}
                 />
               }
             />
@@ -225,8 +226,9 @@ export default function App() {
           )}
           <PromptInput
             disabled={
-              app.connection.status === "connecting" ||
-              app.connection.status === "idle"
+              // Allow typing on the default empty screen; send opens New task
+              // when there is no session. Block only while an agent connects.
+              app.connection.status === "connecting"
             }
             prompting={app.isPrompting}
             commands={app.commands}
@@ -340,7 +342,7 @@ export default function App() {
               }}
               onPickFolder={app.handlePickFolder}
               onRemoveRecent={app.handleRemoveRecentProject}
-              onCancel={() => app.setShowNewSession(false)}
+              onCancel={app.handleCancelNewSession}
               onCreate={app.handleCreateSession}
             />
           )}

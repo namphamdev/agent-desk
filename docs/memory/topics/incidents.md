@@ -53,3 +53,8 @@
 - Cause: dual stick-to-bottom (LegendList `maintainScrollAtEnd` + custom `scrollToEnd` every chunk/`onItemSizeChanged`) raced each other; per-token React updates amplified measure
 - Fix / avoid: one pin path only (built-in maintain on dataChange+itemLayout, not parent layout); rAF-batch message chunks in `applyUpdate`
 
+### Memory not updated after agent turn (2026-07)
+- Symptom: team lessons from a session never land in `docs/memory/journal/`
+- Cause: harness only shipped `.claude/settings.example.json` with a no-op `echo` Stop hook; Claude never loaded it unless manually copied
+- Fix / avoid: project-memory apply merges a **prompt-type** Stop gate into `.claude/settings.json` (can block stop until journaled when a durable lesson exists). Re-apply harness or ensure settings contain `PROJECT_MEMORY_STOP_HOOK`.
+

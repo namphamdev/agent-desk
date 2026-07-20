@@ -23,7 +23,7 @@ User types prompt
 ```text
 During / after session
   → agent or /remember appends to docs/memory/journal/YYYY-MM.md
-  → optional Stop hook nudges capture (Claude project settings)
+  → Stop prompt-hook in `.claude/settings.json` can block stop until a team-durable lesson is journaled (when warranted; prefers approve when unsure)
   → human or /memory-promote moves durable lines into topics/*.md
   → INDEX.md updated only for hot facts or new topic rows
   → procedures become .claude/skills/<name>/SKILL.md
@@ -40,8 +40,7 @@ Significant design change
   → do not paste full ADR into memory
 ```
 
-## 6.5 Project harness apply (existing + future)
+## 6.5 Project harness apply
 
-Today: writes `AGENTS.md`, `CLAUDE.md` pointer, skill packages under project skill dirs.
+Today: writes `AGENTS.md`, `CLAUDE.md` pointer, skill packages, sharded `docs/memory/*`, arc42 scaffold, `/remember` + `/memory-promote` commands, and merges a prompt-type Stop hook into `.claude/settings.json` (plus `settings.example.json`).
 
-Future: also scaffold `docs/memory/*`, example commands, and documented hook snippets if missing.

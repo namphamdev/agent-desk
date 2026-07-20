@@ -598,14 +598,16 @@ describe("SessionManager", () => {
     expect(session?.title).toBe("How does progress work?");
   });
 
-  it("sendPrompt without a session auto-creates one", async () => {
+  it("sendPrompt without a session auto-creates one when lastProjectCwd is set", async () => {
     const { mgr, c } = await boot();
+    mgr.saveSettings({ lastProjectCwd: process.cwd() });
     const res = await mgr.sendPrompt("auto create please");
     expect(res.ok).toBe(true);
 
     await waitFor(() => c.turnEnds.some((t) => t.stopReason === "end_turn"));
     expect(mgr.listSessions().sessions.length).toBe(1);
     expect(mgr.listSessions().sessions[0]!.title).toBe("auto create please");
+    expect(mgr.listSessions().sessions[0]!.cwd).toBe(process.cwd());
   });
 
   it("switchSession reloads persisted events", async () => {
@@ -857,15 +859,43 @@ describe("SessionManager", () => {
     expect(c.connections.some((x) => x.status === "error")).toBe(true);
   });
 
-  it("connectAgent succeeds for configured agent and reconnect is a no-op success", async () => {
+  it("connectAgent without a session does not auto-create one", async () => {
     const { mgr, agentId } = await boot();
-    const first = await mgr.connectAgent(agentId);
+    const res = await mgr.connectAgent(agentId);
+    expect(res.ok).toBe(true);
+    expect(mgr.listSessions()).toEqual({
+      sessions: [],
+      activeSessionId: null,
+    });
+    expect(mgr.getConnectionState().status).toBe("idle");
+  });
+
+  it("connectAgent succeeds for an existing session and reconnect is a no-op success", async () => {
+    const { mgr, agentId } = await boot();
+    const created = await mgr.createSession({
+      title: "Ready",
+      cwd: process.cwd(),
+      agentId,
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    const first = await mgr.connectAgent(agentId, undefined, created.session.id);
     expect(first.ok).toBe(true);
     expect(mgr.getConnectionState().status).toBe("ready");
 
-    const second = await mgr.connectAgent(agentId);
+    const second = await mgr.connectAgent(agentId, undefined, created.session.id);
     expect(second.ok).toBe(true);
     expect(mgr.getConnectionState().agentName).toBeTruthy();
+  });
+
+  it("sendPrompt without session or lastProjectCwd does not use process.cwd()", async () => {
+    const { mgr } = await boot();
+    const res = await mgr.sendPrompt("should not open bin folder");
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.error).toMatch(/project folder/i);
+    expect(mgr.listSessions().sessions).toHaveLength(0);
   });
 
   it("respondPermission returns false for unknown request ids", async () => {

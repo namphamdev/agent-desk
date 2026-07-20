@@ -343,6 +343,29 @@ export function buildWorkflowPrompt(
   return [WORKFLOW_HARNESS_PREAMBLE, "", body].join("\n");
 }
 
+/**
+ * Free-chat body (no fixed task). Still tells the agent about the memory
+ * system so open-ended sessions orient the same way as named workflows.
+ */
+export const FREE_CHAT_TEMPLATE = [
+  "## Workflow: Free chat",
+  "",
+  "No fixed task template — the user will drive the conversation after this orientation.",
+  "",
+  "### How to work",
+  "1. Read memory INDEX; open only the topic files it points to when relevant.",
+  "2. Follow `AGENTS.md` / `CLAUDE.md` (think first, simplicity, surgical changes, goal-driven checks).",
+  "3. Use the project memory system: durable facts in `docs/memory/topics/`, raw capture in `docs/memory/journal/`; do not bloat INDEX; no secrets.",
+  "4. For structural questions, prefer `docs/architecture/` over inventing design.",
+  "",
+  "Confirm you loaded harness context briefly, then wait for the user's next message.",
+].join("\n");
+
+/** First prompt for Free chat sessions (harness + memory orientation). */
+export function buildFreeChatPrompt(): string {
+  return [WORKFLOW_HARNESS_PREAMBLE, "", FREE_CHAT_TEMPLATE].join("\n");
+}
+
 /** Create a blank custom workflow for the settings editor. */
 export function createEmptyWorkflow(label = "Custom workflow"): WorkflowDefinition {
   const id = `custom_${Date.now().toString(36)}`;

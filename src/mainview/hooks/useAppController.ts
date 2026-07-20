@@ -8,6 +8,7 @@ import {
   summarizeSessionChanges,
 } from "../../session/session-summary";
 import {
+  buildFreeChatPrompt,
   buildWorkflowPrompt,
   resolveWorkflows,
   type WorkflowDefinition,
@@ -143,6 +144,11 @@ export function useAppController() {
   promptQueuesRef.current = promptQueues;
   /** Sessions with an in-flight agent turn (local, independent of connection banner). */
   const busySessionsRef = useRef(new Set<string>());
+  /**
+   * Prompt typed on the default empty screen before a project/session exists.
+   * Sent once after the user creates a session via New task.
+   */
+  const pendingFirstPromptRef = useRef<string | null>(null);
 
   const refreshRecentProjects = useCallback(async () => {
     try {
@@ -326,7 +332,8 @@ export function useAppController() {
     void rpc.request
       .listRecentProjects()
       .then((r) => setRecentProjects(r.projects));
-    void rpc.request.connectAgent().then(() => {});
+    // Do not call connectAgent here — that used to auto-create a session in
+    // process.cwd() (packaged bin path). Agent connects when a session opens.
   }, [applyUpdate]);
 
   // Elapsed timer while prompting.
@@ -338,10 +345,17 @@ export function useAppController() {
   }, [connection.status, turnStartedAt]);
 
   const handleNewSession = useCallback(async () => {
+    // Explicit New task (sidebar / empty state) — clear any leftover draft.
+    pendingFirstPromptRef.current = null;
     await refreshRecentProjects();
     setNewSessionDefaultCwd("");
     setShowNewSession(true);
   }, [refreshRecentProjects]);
+
+  const handleCancelNewSession = useCallback(() => {
+    pendingFirstPromptRef.current = null;
+    setShowNewSession(false);
+  }, []);
 
   const loadResolvedWorkflows = useCallback(
     async (cwd: string, globalList?: WorkflowDefinition[] | null) => {
@@ -406,8 +420,12 @@ export function useAppController() {
         );
         await refreshRecentProjects();
 
-        // Workflow sessions: auto-send harness-aware first prompt (same pattern
-        // as review-in-new-session).
+        const pending = pendingFirstPromptRef.current?.trim() || "";
+        pendingFirstPromptRef.current = null;
+
+        // Workflow sessions: harness-aware first prompt.
+        // Free chat: send the user's pending message if they pressed Send on
+        // the empty screen; otherwise the memory-system preamble.
         if (opts.workflow) {
           const def =
             resolvedWorkflows.find((w) => w.id === opts.workflow!.id) ??
@@ -421,6 +439,11 @@ export function useAppController() {
             resolvedWorkflows,
           );
           await dispatchPrompt(prompt, res.session.id);
+          if (pending) await dispatchPrompt(pending, res.session.id);
+        } else if (pending) {
+          await dispatchPrompt(pending, res.session.id);
+        } else {
+          await dispatchPrompt(buildFreeChatPrompt(), res.session.id);
         }
       } else {
         setConnection({ status: "error", error: res.error });
@@ -432,9 +455,14 @@ export function useAppController() {
 
   const handlePrompt = useCallback(
     async (text: string) => {
-      // Require an explicit project folder before the first prompt.
+      // No session yet: remember the prompt and open New task so the user
+      // can pick a project. Session is created on confirm; then we send.
+      // Do not call handleNewSession() — it clears pendingFirstPromptRef.
       if (!activeSessionId) {
-        await handleNewSession();
+        pendingFirstPromptRef.current = text;
+        await refreshRecentProjects();
+        setNewSessionDefaultCwd("");
+        setShowNewSession(true);
         return;
       }
 
@@ -468,7 +496,12 @@ export function useAppController() {
 
       await dispatchPrompt(text, sessionId);
     },
-    [activeSessionId, dispatchPrompt, flushPromptQueue, handleNewSession],
+    [
+      activeSessionId,
+      dispatchPrompt,
+      flushPromptQueue,
+      refreshRecentProjects,
+    ],
   );
 
   const handleRemoveQueued = useCallback(
@@ -517,6 +550,7 @@ export function useAppController() {
    */
   const handleNewInProject = useCallback(
     async (project: string) => {
+      pendingFirstPromptRef.current = null;
       const fromSession = sessions.find(
         (s) => (s.project || "other") === project,
       );
@@ -533,6 +567,17 @@ export function useAppController() {
       setShowNewSession(true);
     },
     [recentProjects, refreshRecentProjects, sessions],
+  );
+
+  /** Prefill New task from a known project path (default empty-state picker). */
+  const handleOpenProjectCwd = useCallback(
+    async (cwd: string) => {
+      // Project chip from empty state — keep pending send text if any.
+      await refreshRecentProjects();
+      setNewSessionDefaultCwd(cwd.trim());
+      setShowNewSession(true);
+    },
+    [refreshRecentProjects],
   );
 
   const handlePickFolder = useCallback(
@@ -1467,7 +1512,9 @@ export function useAppController() {
     handleClearQueue,
     handleCancel,
     handleNewSession,
+    handleCancelNewSession,
     handleNewInProject,
+    handleOpenProjectCwd,
     handlePickFolder,
     handleCreateSession,
     handleSwitchSession,

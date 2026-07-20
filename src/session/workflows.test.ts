@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   BUILTIN_WORKFLOWS,
   BUILTIN_WORKFLOW_IDS,
+  FREE_CHAT_TEMPLATE,
   WORKFLOW_HARNESS_PREAMBLE,
+  buildFreeChatPrompt,
   buildWorkflowPrompt,
   getWorkflow,
   normalizeWorkflowList,
@@ -195,5 +197,18 @@ describe("buildWorkflowPrompt", () => {
       promptTemplate: "Ship it: {{task}}",
     };
     expect(buildWorkflowPrompt(w, { task: "v1" })).toContain("Ship it: v1");
+  });
+});
+
+describe("buildFreeChatPrompt", () => {
+  it("includes harness preamble and memory-system guidance", () => {
+    const p = buildFreeChatPrompt();
+    expect(p).toContain(WORKFLOW_HARNESS_PREAMBLE.slice(0, 40));
+    expect(p).toContain("docs/memory/INDEX.md");
+    expect(p).toContain("AGENTS.md");
+    expect(p).toContain(FREE_CHAT_TEMPLATE.slice(0, 40));
+    expect(p).toContain("Workflow: Free chat");
+    expect(p.toLowerCase()).toContain("memory system");
+    expect(p.toLowerCase()).toContain("wait for the user's next message");
   });
 });
