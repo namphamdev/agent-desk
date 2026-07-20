@@ -179,10 +179,15 @@ describe("CommandRunner project runs", () => {
     const proj = tempDir();
     dirs.push(data, proj);
     const runner = new CommandRunner(data);
+    // Windows: sleep is not always on PATH; ping loops are portable.
+    const command =
+      process.platform === "win32"
+        ? "ping -n 60 127.0.0.1 >nul"
+        : "sleep 30";
     const start = await runner.start({
       id: "cmd_sleep",
       name: "Sleep",
-      command: "sleep 30",
+      command,
       projectCwd: proj,
       createdAt: Date.now(),
     });

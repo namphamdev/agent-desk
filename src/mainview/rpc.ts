@@ -11,6 +11,7 @@ import type {
   AppSettings,
   AvailableCommand,
   ConnectionStatePayload,
+  GitFileChange,
   PermissionRequest,
   UserQuestionDecision,
   UserQuestionRequest,
@@ -143,6 +144,50 @@ type RpcClient = {
     getGitBranch: (p: {
       cwd: string;
     }) => Promise<{ branch: string | null }>;
+    getGitStatus: (p: {
+      cwd: string;
+    }) => Promise<
+      | {
+          ok: true;
+          branch: string | null;
+          ahead: number;
+          behind: number;
+          files: GitFileChange[];
+          isRepo: boolean;
+        }
+      | { ok: false; error: string }
+    >;
+    getGitDiff: (p: {
+      cwd: string;
+      path: string;
+      staged: boolean;
+    }) => Promise<{ ok: true; diff: string } | { ok: false; error: string }>;
+    stageGitFiles: (p: {
+      cwd: string;
+      paths: string[];
+    }) => Promise<{ ok: true } | { ok: false; error: string }>;
+    unstageGitFiles: (p: {
+      cwd: string;
+      paths: string[];
+    }) => Promise<{ ok: true } | { ok: false; error: string }>;
+    commitGit: (p: {
+      cwd: string;
+      subject: string;
+      body?: string;
+    }) => Promise<{ ok: true; hash: string } | { ok: false; error: string }>;
+    fetchGit: (p: {
+      cwd: string;
+    }) => Promise<{ ok: true; summary: string } | { ok: false; error: string }>;
+    pushGit: (p: {
+      cwd: string;
+    }) => Promise<{ ok: true; summary: string } | { ok: false; error: string }>;
+    generateGitCommitMessage: (p: {
+      cwd: string;
+      agentId?: string;
+    }) => Promise<
+      | { ok: true; subject: string; body: string; raw: string }
+      | { ok: false; error: string }
+    >;
     windowControl: (p: {
       action: "close" | "minimize" | "maximize";
     }) => Promise<{ ok: true } | { ok: false; error?: string }>;
@@ -597,6 +642,22 @@ function createRemoteWsClient(code: string): RpcClient {
         >,
       getGitBranch: (p) =>
         request("getGitBranch", p as Record<string, unknown>),
+      getGitStatus: (p) =>
+        request("getGitStatus", p as Record<string, unknown>),
+      getGitDiff: (p) =>
+        request("getGitDiff", p as Record<string, unknown>),
+      stageGitFiles: (p) =>
+        request("stageGitFiles", p as Record<string, unknown>),
+      unstageGitFiles: (p) =>
+        request("unstageGitFiles", p as Record<string, unknown>),
+      commitGit: (p) =>
+        request("commitGit", p as Record<string, unknown>),
+      fetchGit: (p) =>
+        request("fetchGit", p as Record<string, unknown>),
+      pushGit: (p) =>
+        request("pushGit", p as Record<string, unknown>),
+      generateGitCommitMessage: (p) =>
+        request("generateGitCommitMessage", p as Record<string, unknown>),
       windowControl: async () => ({
         ok: false as const,
         error: "No window control on remote",
@@ -944,6 +1005,40 @@ function createBrowserMock(): RpcClient {
       },
 async getGitBranch() {
         return { branch: null };
+      },
+      async getGitStatus() {
+        return {
+          ok: true as const,
+          branch: null,
+          ahead: 0,
+          behind: 0,
+          files: [],
+          isRepo: false,
+        };
+      },
+      async getGitDiff() {
+        return { ok: true as const, diff: "" };
+      },
+      async stageGitFiles() {
+        return { ok: false as const, error: "Git only available in the desktop app." };
+      },
+      async unstageGitFiles() {
+        return { ok: false as const, error: "Git only available in the desktop app." };
+      },
+      async commitGit() {
+        return { ok: false as const, error: "Git only available in the desktop app." };
+      },
+      async fetchGit() {
+        return { ok: false as const, error: "Git only available in the desktop app." };
+      },
+      async pushGit() {
+        return { ok: false as const, error: "Git only available in the desktop app." };
+      },
+      async generateGitCommitMessage() {
+        return {
+          ok: false as const,
+          error: "Commit message generation requires the desktop app.",
+        };
       },
       async windowControl() {
         // Browser mock — no native window to control.

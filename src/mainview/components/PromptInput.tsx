@@ -9,6 +9,10 @@ import type {
 } from "../../shared/rpc";
 import type { QueuedPrompt } from "../promptQueue";
 import { Button } from "@/components/ui/button";
+import {
+  shouldFocusPromptInput,
+  type PromptFocusTarget,
+} from "./promptFocus";
 
 const MODEL_ALIAS_LABELS: Record<ClaudeModelAlias, string> = {
   haiku: "Haiku",
@@ -19,6 +23,11 @@ const MODEL_ALIAS_LABELS: Record<ClaudeModelAlias, string> = {
 type Props = {
   disabled?: boolean;
   prompting?: boolean;
+  /**
+   * Active chat id. When it changes (sidebar switch), focus returns to the
+   * prompt so the user can type immediately.
+   */
+  sessionKey?: string | null;
   commands?: AvailableCommand[];
   mode?: string;
   /** ACP session config options (model, thought_level, …). */
@@ -108,6 +117,7 @@ function findSelectOption(
 export function PromptInput({
   disabled,
   prompting,
+  sessionKey = null,
   commands = [],
   mode,
   configOptions = [],
@@ -131,6 +141,30 @@ export function PromptInput({
   /** Prevents Enter+click or repeated keydown from double-submitting. */
   const submittingRef = useRef(false);
 
+  /**
+   * Focus the prompt when safe: not disabled, no modal/dialog open, and the
+   * active element is not already another text field (e.g. browser omnibox).
+   */
+  const tryFocusPrompt = () => {
+    const el = inputRef.current;
+    // Read disabled from the DOM so window-focus listeners stay correct
+    // without re-binding when the connecting state flips.
+    if (!el || el.disabled) return;
+    const active = document.activeElement;
+    const asTarget = (node: Element | null): PromptFocusTarget | null =>
+      node instanceof HTMLElement ? node : null;
+    if (
+      !shouldFocusPromptInput({
+        disabled: el.disabled,
+        activeElement: asTarget(active),
+        promptElement: el,
+      })
+    ) {
+      return;
+    }
+    el.focus();
+  };
+
   /** Grow/shrink the textarea with content (capped so the chat stays visible). */
   useEffect(() => {
     const el = inputRef.current;
@@ -140,6 +174,35 @@ export function PromptInput({
     el.style.height = `${Math.min(el.scrollHeight, maxPx)}px`;
     el.style.overflowY = el.scrollHeight > maxPx ? "auto" : "hidden";
   }, [value]);
+
+  // After switching chats (or first mount), put the caret in the prompt.
+  useEffect(() => {
+    tryFocusPrompt();
+  }, [sessionKey]);
+
+  // Re-focus when the input leaves the connecting/disabled state.
+  useEffect(() => {
+    if (!disabled) tryFocusPrompt();
+  }, [disabled]);
+
+  // Returning from another OS app often leaves WebView2 with no focused field.
+  useEffect(() => {
+    const onWindowFocus = () => {
+      // Defer one frame so nested webviews / dialogs settle first.
+      requestAnimationFrame(() => tryFocusPrompt());
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") {
+        requestAnimationFrame(() => tryFocusPrompt());
+      }
+    };
+    window.addEventListener("focus", onWindowFocus);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.removeEventListener("focus", onWindowFocus);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, []);
 
   const hasProviders = providers.length > 0;
   const activeProvider =

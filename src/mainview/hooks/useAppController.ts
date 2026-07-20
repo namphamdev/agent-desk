@@ -101,6 +101,7 @@ export function useAppController() {
   const [harnessLoading, setHarnessLoading] = useState(false);
   const [harnessError, setHarnessError] = useState<string | null>(null);
   const [harnessBusyId, setHarnessBusyId] = useState<string | null>(null);
+  const [showGitChanges, setShowGitChanges] = useState(false);
   const [showRemoteAccess, setShowRemoteAccess] = useState(false);
   const [remoteAccess, setRemoteAccess] = useState<RemoteAccessStatus | null>(
     null,
@@ -1477,6 +1478,7 @@ export function useAppController() {
     harnessLoading,
     harnessError,
     harnessBusyId,
+    showGitChanges,
     showRemoteAccess,
     remoteAccess,
     remoteAccessLoading,
@@ -1502,6 +1504,7 @@ export function useAppController() {
     setShowSkills,
     setShowCommands,
     setShowHarness,
+    setShowGitChanges,
     setShowRemoteAccess,
     setShowNewSession,
     setShowSidebar,

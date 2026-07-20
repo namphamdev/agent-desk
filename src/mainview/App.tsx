@@ -10,6 +10,7 @@ import { SkillsPanel } from "./components/SkillsPanel";
 import { CommandPanel } from "./components/CommandPanel";
 import { ProjectHarnessModal } from "./components/ProjectHarnessModal";
 import { RemoteAccessPanel } from "./components/RemoteAccessPanel";
+import { GitChangesPanel } from "./components/GitChangesPanel";
 import { ConnectionBanner } from "./components/ConnectionBanner";
 import { ConfirmDialog } from "./components/ConfirmDialog";
 import { NewSessionDialog } from "./components/NewSessionDialog";
@@ -74,6 +75,7 @@ export default function App() {
     app.showCommands ||
     app.showHarness ||
     app.showRemoteAccess ||
+    app.showGitChanges ||
     app.showNewSession ||
     Boolean(app.pendingDelete);
 
@@ -172,6 +174,13 @@ export default function App() {
               canReview={app.canReviewSession}
               reviewBusy={app.reviewBusy}
               onReviewInNewSession={() => void app.handleReviewInNewSession()}
+              onOpenGitChanges={() => app.setShowGitChanges(true)}
+              gitChangesOpen={app.showGitChanges}
+              gitChangesEnabled={Boolean(
+                app.activeSession?.cwd ||
+                  app.settings?.lastProjectCwd ||
+                  app.recentProjects[0]?.cwd,
+              )}
               showWindowControls={!remoteClient && !app.showSidebar}
               onWindowControl={
                 remoteClient ? undefined : app.handleWindowControl
@@ -231,6 +240,7 @@ export default function App() {
               app.connection.status === "connecting"
             }
             prompting={app.isPrompting}
+            sessionKey={app.activeSessionId}
             commands={app.commands}
             mode={app.session.mode}
             configOptions={app.configOptions}
@@ -319,6 +329,23 @@ export default function App() {
               onStart={() => void app.startRemoteAccess()}
               onStop={() => void app.stopRemoteAccess()}
               onRegenerate={() => void app.regenerateRemoteAccess()}
+            />
+          )}
+          {app.showGitChanges && (
+            <GitChangesPanel
+              open={app.showGitChanges}
+              cwd={
+                app.activeSession?.cwd ||
+                app.settings?.lastProjectCwd ||
+                app.recentProjects[0]?.cwd ||
+                null
+              }
+              agentId={
+                app.activeSession?.agentId ||
+                app.settings?.defaultAgentId ||
+                null
+              }
+              onClose={() => app.setShowGitChanges(false)}
             />
           )}
           {app.showNewSession && (

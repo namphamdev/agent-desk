@@ -45,6 +45,11 @@ export type LiveSession = {
   mode: string;
   configOptions: SessionConfigOption[];
   prompting: boolean;
+  /**
+   * Wall-clock ms of last agent activity (connect, prompt, turn end, cancel).
+   * Used to auto-offload idle ACP processes.
+   */
+  lastAgentActivityAt: number;
   /** Latest context window usage from ACP `usage_update`. */
   usage: SessionUsage | null;
   /**

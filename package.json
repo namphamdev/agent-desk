@@ -5,8 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite build --mode development && electrobun dev",
-    "dev:hmr": "concurrently \"vite --port 5173\" \"vite build --mode development && electrobun dev\"",
-    "dev:web": "vite --port 5173",
+    "dev:hmr": "bun scripts/free-dev-port.mjs && concurrently \"vite --port 5173\" \"vite build --mode development && electrobun dev\"",
+    "dev:web": "bun scripts/free-dev-port.mjs && vite --port 5173",
     "embed:win-icon": "node scripts/embed-win-icon.mjs",
     "build": "vite build && electrobun build",
     "build:canary": "vite build && electrobun build --env=canary",

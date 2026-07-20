@@ -45,6 +45,27 @@ export type SessionSummary = {
   agentRunning?: boolean;
 };
 
+/** One path from `git status --porcelain` (Git Changes panel). */
+export type GitFileKind =
+  | "modified"
+  | "added"
+  | "deleted"
+  | "renamed"
+  | "copied"
+  | "untracked"
+  | "conflict"
+  | "typechange"
+  | "unknown";
+
+export type GitFileChange = {
+  path: string;
+  oldPath?: string;
+  kind: GitFileKind;
+  staged: boolean;
+  unstaged: boolean;
+  xy: string;
+};
+
 export type PermissionRequest = {
   requestId: string;
   sessionId: string;
@@ -581,6 +602,65 @@ export type TerminalRPC = {
       getGitBranch: {
         params: { cwd: string };
         response: { branch: string | null };
+      };
+      /** Working-tree status for the Git Changes panel. */
+      getGitStatus: {
+        params: { cwd: string };
+        response:
+          | {
+              ok: true;
+              branch: string | null;
+              ahead: number;
+              behind: number;
+              files: GitFileChange[];
+              isRepo: boolean;
+            }
+          | { ok: false; error: string };
+      };
+      /** Unified diff for one path (staged or unstaged). */
+      getGitDiff: {
+        params: { cwd: string; path: string; staged: boolean };
+        response:
+          | { ok: true; diff: string }
+          | { ok: false; error: string };
+      };
+      stageGitFiles: {
+        params: { cwd: string; paths: string[] };
+        response: { ok: true } | { ok: false; error: string };
+      };
+      unstageGitFiles: {
+        params: { cwd: string; paths: string[] };
+        response: { ok: true } | { ok: false; error: string };
+      };
+      commitGit: {
+        params: { cwd: string; subject: string; body?: string };
+        response:
+          | { ok: true; hash: string }
+          | { ok: false; error: string };
+      };
+      /** `git fetch --prune` for the project cwd. */
+      fetchGit: {
+        params: { cwd: string };
+        response:
+          | { ok: true; summary: string }
+          | { ok: false; error: string };
+      };
+      /** Push current branch (sets upstream on first push). */
+      pushGit: {
+        params: { cwd: string };
+        response:
+          | { ok: true; summary: string }
+          | { ok: false; error: string };
+      };
+      /**
+       * One-shot ACP turn: draft commit subject + body from git changes.
+       * Does not stage or commit.
+       */
+      generateGitCommitMessage: {
+        params: { cwd: string; agentId?: string };
+        response:
+          | { ok: true; subject: string; body: string; raw: string }
+          | { ok: false; error: string };
       };
       windowControl: {
         params: { action: "close" | "minimize" | "maximize" };

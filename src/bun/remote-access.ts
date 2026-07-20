@@ -15,6 +15,7 @@ import type {
   AppSettings,
   AvailableCommand,
   ConnectionStatePayload,
+  GitFileChange,
   PermissionRequest,
   RecentProject,
   SessionConfigOption,
@@ -100,6 +101,50 @@ export type RemoteAccessHandlers = {
     cwd: string,
   ) => { ok: true; projects: RecentProject[] };
   getGitBranch: (cwd: string) => Promise<{ branch: string | null }>;
+  getGitStatus: (
+    cwd: string,
+  ) => Promise<
+    | {
+        ok: true;
+        branch: string | null;
+        ahead: number;
+        behind: number;
+        files: GitFileChange[];
+        isRepo: boolean;
+      }
+    | { ok: false; error: string }
+  >;
+  getGitDiff: (
+    cwd: string,
+    path: string,
+    staged: boolean,
+  ) => Promise<{ ok: true; diff: string } | { ok: false; error: string }>;
+  stageGitFiles: (
+    cwd: string,
+    paths: string[],
+  ) => Promise<{ ok: true } | { ok: false; error: string }>;
+  unstageGitFiles: (
+    cwd: string,
+    paths: string[],
+  ) => Promise<{ ok: true } | { ok: false; error: string }>;
+  commitGit: (
+    cwd: string,
+    subject: string,
+    body?: string,
+  ) => Promise<{ ok: true; hash: string } | { ok: false; error: string }>;
+  fetchGit: (
+    cwd: string,
+  ) => Promise<{ ok: true; summary: string } | { ok: false; error: string }>;
+  pushGit: (
+    cwd: string,
+  ) => Promise<{ ok: true; summary: string } | { ok: false; error: string }>;
+  generateGitCommitMessage: (
+    cwd: string,
+    agentId?: string,
+  ) => Promise<
+    | { ok: true; subject: string; body: string; raw: string }
+    | { ok: false; error: string }
+  >;
   setConfigOption: (
     configId: string,
     value: string | boolean,
@@ -724,6 +769,43 @@ export class RemoteAccessServer {
         return h.readClipboard();
       case "getGitBranch":
         return h.getGitBranch(String(params.cwd ?? ""));
+      case "getGitStatus":
+        return h.getGitStatus(String(params.cwd ?? ""));
+      case "getGitDiff":
+        return h.getGitDiff(
+          String(params.cwd ?? ""),
+          String(params.path ?? ""),
+          Boolean(params.staged),
+        );
+      case "stageGitFiles":
+        return h.stageGitFiles(
+          String(params.cwd ?? ""),
+          Array.isArray(params.paths)
+            ? params.paths.map((p) => String(p))
+            : [],
+        );
+      case "unstageGitFiles":
+        return h.unstageGitFiles(
+          String(params.cwd ?? ""),
+          Array.isArray(params.paths)
+            ? params.paths.map((p) => String(p))
+            : [],
+        );
+      case "commitGit":
+        return h.commitGit(
+          String(params.cwd ?? ""),
+          String(params.subject ?? ""),
+          params.body != null ? String(params.body) : undefined,
+        );
+      case "fetchGit":
+        return h.fetchGit(String(params.cwd ?? ""));
+      case "pushGit":
+        return h.pushGit(String(params.cwd ?? ""));
+      case "generateGitCommitMessage":
+        return h.generateGitCommitMessage(
+          String(params.cwd ?? ""),
+          params.agentId != null ? String(params.agentId) : undefined,
+        );
       case "windowControl":
         return { ok: false as const, error: "No window control on remote" };
       case "setConfigOption":

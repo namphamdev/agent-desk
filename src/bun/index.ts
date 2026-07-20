@@ -448,6 +448,30 @@ const terminalRPC = BrowserView.defineRPC<TerminalRPC>({
       getGitBranch: async ({ cwd }) => {
         return manager.getGitBranch(cwd);
       },
+      getGitStatus: async ({ cwd }) => {
+        return manager.getGitStatus(cwd);
+      },
+      getGitDiff: async ({ cwd, path, staged }) => {
+        return manager.getGitDiff(cwd, path, staged);
+      },
+      stageGitFiles: async ({ cwd, paths }) => {
+        return manager.stageGitFiles(cwd, paths);
+      },
+      unstageGitFiles: async ({ cwd, paths }) => {
+        return manager.unstageGitFiles(cwd, paths);
+      },
+      commitGit: async ({ cwd, subject, body }) => {
+        return manager.commitGit(cwd, subject, body);
+      },
+      fetchGit: async ({ cwd }) => {
+        return manager.fetchGit(cwd);
+      },
+      pushGit: async ({ cwd }) => {
+        return manager.pushGit(cwd);
+      },
+      generateGitCommitMessage: async ({ cwd, agentId }) => {
+        return manager.generateGitCommitMessage(cwd, agentId);
+      },
       setConfigOption: async ({ sessionId, configId, value }) => {
         return manager.setConfigOption(configId, value, sessionId);
       },
@@ -828,6 +852,15 @@ remoteAccess = new RemoteAccessServer({
     return { ok: true as const, projects };
   },
   getGitBranch: (cwd) => manager.getGitBranch(cwd),
+  getGitStatus: (cwd) => manager.getGitStatus(cwd),
+  getGitDiff: (cwd, path, staged) => manager.getGitDiff(cwd, path, staged),
+  stageGitFiles: (cwd, paths) => manager.stageGitFiles(cwd, paths),
+  unstageGitFiles: (cwd, paths) => manager.unstageGitFiles(cwd, paths),
+  commitGit: (cwd, subject, body) => manager.commitGit(cwd, subject, body),
+  fetchGit: (cwd) => manager.fetchGit(cwd),
+  pushGit: (cwd) => manager.pushGit(cwd),
+  generateGitCommitMessage: (cwd, agentId) =>
+    manager.generateGitCommitMessage(cwd, agentId),
   setConfigOption: (configId, value, sessionId) =>
     manager.setConfigOption(configId, value, sessionId),
   writeClipboard: async (text) => {

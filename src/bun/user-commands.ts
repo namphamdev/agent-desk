@@ -19,6 +19,12 @@ import type {
   CommandRunSummary,
   SavedCommand,
 } from "../shared/rpc";
+import { killProcessTree } from "./process-kill";
+
+function winCmdExe(): string {
+  const root = process.env.SystemRoot ?? process.env.WINDIR ?? "C:\\Windows";
+  return join(root, "System32", "cmd.exe");
+}
 
 const MAX_LOG_CHARS = 512_000;
 const MAX_RUNS = 50;
@@ -51,7 +57,8 @@ function spawnShell(
   onExit: (code: number | null) => void,
 ): LiveProc {
   const isWin = process.platform === "win32";
-  const file = isWin ? "cmd.exe" : "/bin/zsh";
+  // Absolute path: Bun.spawn does not always resolve bare cmd.exe when PATH is thin.
+  const file = isWin ? winCmdExe() : "/bin/zsh";
   const args = isWin ? ["/d", "/s", "/c", command] : ["-c", command];
 
   if (typeof Bun !== "undefined" && typeof Bun.spawn === "function") {
@@ -78,6 +85,11 @@ function spawnShell(
     })();
     return {
       kill: () => {
+        // Prefer tree kill so Windows grandchildren (cmd → node → vite) die too.
+        if (typeof proc.pid === "number" && proc.pid > 0) {
+          killProcessTree(proc.pid);
+          return;
+        }
         try {
           proc.kill();
         } catch {
@@ -103,6 +115,10 @@ function spawnShell(
   child.on("close", (code) => onExit(code));
   return {
     kill: () => {
+      if (typeof child.pid === "number" && child.pid > 0) {
+        killProcessTree(child.pid);
+        return;
+      }
       try {
         child.kill("SIGTERM");
       } catch {

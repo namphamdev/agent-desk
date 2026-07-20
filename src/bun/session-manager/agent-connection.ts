@@ -161,6 +161,9 @@ export type AgentConnectionHost = {
   ) => Promise<import("../user-question").GrokAskUserQuestionResponse>;
   /** Built-in browser control plane (in-app panel MCP). */
   getBrowserControl?: () => { url: string; token: string } | null;
+  /** Reset idle-offload clock when the agent is active for a chat. */
+  touchAgentActivity?: (sessionId: string) => void;
+  now?: () => number;
 };
 
 function idleConnection(sessionId?: string | null): ConnectionStatePayload {
@@ -331,6 +334,7 @@ export class AgentConnection {
       live.connectedProviderKey === desiredProviderKey
     ) {
       await this.ensureGrokProviderConfig(agent);
+      this.host.touchAgentActivity?.(sessionId);
       if (!live.prompting) {
         this.setSessionConnection(sessionId, {
           status: "ready",
@@ -497,6 +501,7 @@ export class AgentConnection {
               this.agentToLocal.get(agentSessionId) ?? localSessionId;
             const target = this.host.live.get(localId);
             if (target) target.prompting = false;
+            this.host.touchAgentActivity?.(localId);
             this.setSessionConnection(localId, {
               status: "ready",
               agentName: agent.name,
@@ -547,6 +552,7 @@ export class AgentConnection {
       live.client = client;
       live.connectedAgentId = agentId;
       live.connectedProviderKey = desiredProviderKey;
+      this.host.touchAgentActivity?.(sessionId);
       this.setSessionConnection(sessionId, {
         status: "ready",
         agentName: agent.name,

@@ -1,4 +1,5 @@
 import {
+  FileDiff,
   FileText,
   Folder,
   GitBranch,
@@ -43,6 +44,12 @@ interface HeaderProps {
   canReview?: boolean;
   /** True while creating the review session / sending the first prompt. */
   reviewBusy?: boolean;
+  /** Open the Git Changes panel (stage / commit / AI message). */
+  onOpenGitChanges?: () => void;
+  /** Whether the Git Changes panel is open. */
+  gitChangesOpen?: boolean;
+  /** Disable git control when no project cwd is available. */
+  gitChangesEnabled?: boolean;
   /**
    * When the sidebar is hidden, show traffic lights here.
    * Never used on remote/phone clients (pass false).
@@ -87,6 +94,9 @@ export function Header({
   onReviewInNewSession,
   canReview = false,
   reviewBusy = false,
+  onOpenGitChanges,
+  gitChangesOpen = false,
+  gitChangesEnabled = true,
   showWindowControls,
   onWindowControl,
   compact = false,
@@ -218,6 +228,31 @@ export function Header({
               </span>
             )}
           </Badge>
+        )}
+        {onOpenGitChanges && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            className={`text-muted-foreground ${
+              gitChangesOpen ? "bg-muted text-emerald-400" : ""
+            } ${!gitChangesEnabled ? "opacity-60" : ""}`}
+            onClick={onOpenGitChanges}
+            disabled={!gitChangesEnabled}
+            aria-label={
+              gitChangesOpen ? "Close git changes" : "Open git changes"
+            }
+            aria-pressed={gitChangesOpen}
+            title={
+              !gitChangesEnabled
+                ? "Open a project to review git changes"
+                : gitChangesOpen
+                  ? "Close git changes panel"
+                  : "Review git changes and commit"
+            }
+          >
+            <FileDiff className="size-5" aria-hidden />
+          </Button>
         )}
         {canReview && onReviewInNewSession && (
           <Button

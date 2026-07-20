@@ -14,6 +14,16 @@ import type {
 import type { SessionUpdate } from "../../session/types";
 import { ensureAgentsConfig, ensureGrokAgentEntry, loadAgents } from "../agents";
 import { getGitBranch } from "../git-branch";
+import { generateCommitMessageViaAcp } from "../git-commit-message";
+import {
+  commitGit,
+  fetchGit,
+  getGitDiff,
+  getGitStatus,
+  pushGit,
+  stageGitFiles,
+  unstageGitFiles,
+} from "../git-status";
 import { loadSettings, saveSettings } from "../settings";
 import { SessionStore } from "../store";
 import { createWorktree } from "../worktree";
@@ -36,9 +46,15 @@ import { formatSeededPrompt, seedUpdateForRole } from "./seed";
 import type { LiveSession, SessionManagerEvents } from "./types";
 import type { BrowserTokenRecord } from "../store";
 
+/** Default: free ACP process memory after 1h of no agent activity. */
+export const DEFAULT_IDLE_OFFLOAD_AFTER_MS = 60 * 60 * 1000;
+/** How often to scan for idle ACP instances. */
+export const DEFAULT_IDLE_OFFLOAD_CHECK_INTERVAL_MS = 60 * 1000;
+
 function emptyLive(
   summary: LiveSession["summary"],
   extras?: Partial<LiveSession>,
+  nowMs: number = Date.now(),
 ): LiveSession {
   return {
     summary,
@@ -51,10 +67,21 @@ function emptyLive(
     mode: "default",
     configOptions: [],
     prompting: false,
+    lastAgentActivityAt: nowMs,
     usage: null,
     ...extras,
   };
 }
+
+export type SessionManagerOptions = {
+  getBrowserControl?: () => { url: string; token: string } | null;
+  /** Override idle ACP offload threshold (default 1h). */
+  idleOffloadAfterMs?: number;
+  /** Override scan interval (default 60s). */
+  idleOffloadCheckIntervalMs?: number;
+  /** Injectable clock for tests. */
+  now?: () => number;
+};
 
 export class SessionManager {
   private store: SessionStore;
@@ -81,17 +108,26 @@ export class SessionManager {
   private conn: AgentConnection;
   /** Serializes background agent prep so rapid session switches don't race. */
   private prepareChain: Promise<void> = Promise.resolve();
+  private idleOffloadAfterMs: number;
+  private idleOffloadCheckIntervalMs: number;
+  private now: () => number;
+  private idleOffloadTimer: ReturnType<typeof setInterval> | null = null;
+  private idleOffloadInFlight = false;
 
   constructor(
     dataDir: string,
     events: SessionManagerEvents,
-    options?: {
-      getBrowserControl?: () => { url: string; token: string } | null;
-    },
+    options?: SessionManagerOptions,
   ) {
     this.store = new SessionStore(dataDir);
     this.settings = loadSettings(this.store);
     this.events = events;
+    this.idleOffloadAfterMs =
+      options?.idleOffloadAfterMs ?? DEFAULT_IDLE_OFFLOAD_AFTER_MS;
+    this.idleOffloadCheckIntervalMs =
+      options?.idleOffloadCheckIntervalMs ??
+      DEFAULT_IDLE_OFFLOAD_CHECK_INTERVAL_MS;
+    this.now = options?.now ?? Date.now;
     const mgr = this;
     this.conn = new AgentConnection({
       get settings() {
@@ -112,7 +148,16 @@ export class SessionManager {
       queuePermission: (params) => mgr.queuePermission(params),
       queueUserQuestion: (params) => mgr.queueUserQuestion(params),
       getBrowserControl: options?.getBrowserControl,
+      touchAgentActivity: (sessionId) => mgr.touchAgentActivity(sessionId),
+      now: () => mgr.now(),
     });
+  }
+
+  /** Record agent activity so idle offload resets for this chat. */
+  touchAgentActivity(sessionId: string) {
+    const live = this.live.get(sessionId);
+    if (!live) return;
+    live.lastAgentActivityAt = this.now();
   }
 
   async init() {
@@ -126,16 +171,67 @@ export class SessionManager {
         ? this.settings.defaultAgentId
         : defaultAgentId || agents[0]?.id || "";
 
+    const nowMs = this.now();
     for (const s of this.store.listSessions()) {
       this.live.set(
         s.id,
-        emptyLive(s, {
-          mode: this.store.getSession(s.id)?.mode ?? "default",
-        }),
+        emptyLive(
+          s,
+          {
+            mode: this.store.getSession(s.id)?.mode ?? "default",
+          },
+          nowMs,
+        ),
       );
     }
 
     this.emitSessionList();
+    this.startIdleOffloadTimer();
+  }
+
+  private startIdleOffloadTimer() {
+    this.stopIdleOffloadTimer();
+    if (this.idleOffloadAfterMs <= 0) return;
+    this.idleOffloadTimer = setInterval(() => {
+      void this.offloadIdleSessions();
+    }, this.idleOffloadCheckIntervalMs);
+    // Unref so the timer alone does not keep the process alive in tests/CLI.
+    const timer = this.idleOffloadTimer as { unref?: () => void };
+    timer.unref?.();
+  }
+
+  private stopIdleOffloadTimer() {
+    if (this.idleOffloadTimer != null) {
+      clearInterval(this.idleOffloadTimer);
+      this.idleOffloadTimer = null;
+    }
+  }
+
+  /**
+   * Kill ACP processes that have been idle longer than the threshold.
+   * Skips sessions currently mid-prompt (turn still open).
+   */
+  async offloadIdleSessions(): Promise<string[]> {
+    if (this.idleOffloadInFlight) return [];
+    this.idleOffloadInFlight = true;
+    const offloaded: string[] = [];
+    try {
+      const now = this.now();
+      const ids = [...this.live.keys()];
+      for (const id of ids) {
+        const live = this.live.get(id);
+        if (!live) continue;
+        const running = live.client != null || live.handle != null;
+        if (!running) continue;
+        if (live.prompting) continue;
+        if (now - live.lastAgentActivityAt < this.idleOffloadAfterMs) continue;
+        const res = await this.offloadSession(id);
+        if (res.ok && res.killed) offloaded.push(id);
+      }
+    } finally {
+      this.idleOffloadInFlight = false;
+    }
+    return offloaded;
   }
 
   getAgents() {
@@ -329,12 +425,16 @@ export class SessionManager {
 
     this.live.set(
       id,
-      emptyLive(stored, {
-        contextSeed: seedText || null,
-        contextSeedPurpose: seedText
-          ? (opts.seedContext?.purpose ?? "continue")
-          : undefined,
-      }),
+      emptyLive(
+        stored,
+        {
+          contextSeed: seedText || null,
+          contextSeedPurpose: seedText
+            ? (opts.seedContext?.purpose ?? "continue")
+            : undefined,
+        },
+        this.now(),
+      ),
     );
     this.activeSessionId = id;
     this.emitSessionList();
@@ -599,6 +699,7 @@ export class SessionManager {
     }
 
     live.prompting = true;
+    this.touchAgentActivity(id);
     this.conn.setSessionConnection(id, {
       status: "prompting",
       agentName:
@@ -683,6 +784,7 @@ export class SessionManager {
     if (!live?.handle) return { ok: false };
     await live.handle.cancel();
     live.prompting = false;
+    this.touchAgentActivity(id);
     this.conn.setSessionConnection(id, {
       status: "ready",
       agentName: live.connection.agentName,
@@ -783,7 +885,48 @@ export class SessionManager {
     return { branch };
   }
 
+  async getGitStatus(cwd: string) {
+    return getGitStatus(cwd);
+  }
+
+  async getGitDiff(cwd: string, path: string, staged: boolean) {
+    return getGitDiff(cwd, path, staged);
+  }
+
+  async stageGitFiles(cwd: string, paths: string[]) {
+    return stageGitFiles(cwd, paths);
+  }
+
+  async unstageGitFiles(cwd: string, paths: string[]) {
+    return unstageGitFiles(cwd, paths);
+  }
+
+  async commitGit(cwd: string, subject: string, body?: string) {
+    return commitGit(cwd, subject, body);
+  }
+
+  async fetchGit(cwd: string) {
+    return fetchGit(cwd);
+  }
+
+  async pushGit(cwd: string) {
+    return pushGit(cwd);
+  }
+
+  async generateGitCommitMessage(cwd: string, agentId?: string) {
+    const fromActive = this.activeSessionId
+      ? this.live.get(this.activeSessionId)?.summary.agentId
+      : undefined;
+    return generateCommitMessageViaAcp({
+      cwd,
+      agents: this.agents,
+      settings: this.settings,
+      agentId: agentId || fromActive,
+    });
+  }
+
   async dispose() {
+    this.stopIdleOffloadTimer();
     await this.conn.dispose();
     this.live.clear();
     this.store.close();

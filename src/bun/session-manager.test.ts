@@ -810,6 +810,96 @@ describe("SessionManager", () => {
     expect(switched.ok).toBe(true);
   });
 
+  it("auto-offloads idle ACP after threshold without deleting history", async () => {
+    mockAcpClients.length = 0;
+    const dir = tempDir();
+    dirs.push(dir);
+    const c = capture();
+    let now = 1_000_000;
+    const mgr = new SessionManager(dir, c.events, {
+      idleOffloadAfterMs: 1_000,
+      idleOffloadCheckIntervalMs: 60_000,
+      now: () => now,
+    });
+    managers.push(mgr);
+    await mgr.init();
+    const agentId = mgr.getAgents()[0]?.id;
+    if (!agentId) throw new Error("No agents configured");
+
+    const created = await mgr.createSession({ title: "Idle me", agentId });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    const client = mockAcpClients[mockAcpClients.length - 1]!;
+    expect(client.disposed).toBe(false);
+    expect(
+      mgr.listSessions().sessions.find((s) => s.id === created.session.id)
+        ?.agentRunning,
+    ).toBe(true);
+
+    // Still within threshold — keep running.
+    now += 999;
+    const early = await mgr.offloadIdleSessions();
+    expect(early).toEqual([]);
+    expect(client.disposed).toBe(false);
+
+    // Past threshold — free ACP process, keep chat.
+    now += 2;
+    const offloaded = await mgr.offloadIdleSessions();
+    expect(offloaded).toEqual([created.session.id]);
+    expect(client.disposed).toBe(true);
+    expect(
+      mgr.listSessions().sessions.find((s) => s.id === created.session.id)
+        ?.agentRunning,
+    ).toBe(false);
+    expect(mgr.listSessions().sessions.map((s) => s.id)).toContain(
+      created.session.id,
+    );
+  });
+
+  it("auto-offload skips sessions mid-prompt and resets on activity", async () => {
+    mockAcpClients.length = 0;
+    const dir = tempDir();
+    dirs.push(dir);
+    const c = capture();
+    let now = 2_000_000;
+    const mgr = new SessionManager(dir, c.events, {
+      idleOffloadAfterMs: 500,
+      idleOffloadCheckIntervalMs: 60_000,
+      now: () => now,
+    });
+    managers.push(mgr);
+    await mgr.init();
+    const agentId = mgr.getAgents()[0]?.id;
+    if (!agentId) throw new Error("No agents configured");
+
+    const created = await mgr.createSession({ title: "Busy", agentId });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    const client = mockAcpClients[mockAcpClients.length - 1]!;
+
+    await mgr.sendPrompt("still working", created.session.id);
+    // Mid-prompt even after idle threshold.
+    now += 10_000;
+    const skipped = await mgr.offloadIdleSessions();
+    expect(skipped).toEqual([]);
+    expect(client.disposed).toBe(false);
+
+    // Finish the turn (demo agent), then activity timestamp is fresh again.
+    await waitFor(
+      () => c.turnEnds.some((t) => t.sessionId === created.session.id),
+      5000,
+    );
+    const afterTurn = await mgr.offloadIdleSessions();
+    expect(afterTurn).toEqual([]);
+    expect(client.disposed).toBe(false);
+
+    now += 501;
+    const later = await mgr.offloadIdleSessions();
+    expect(later).toEqual([created.session.id]);
+    expect(client.disposed).toBe(true);
+  });
+
   it("cancel during a prompt stops streaming", async () => {
     const { mgr, c, agentId } = await boot();
     const created = await mgr.createSession({ agentId });
