@@ -4,6 +4,7 @@ import { Header } from "./components/Header";
 import { Timeline } from "./components/Timeline";
 import { PromptInput } from "./components/PromptInput";
 import { PermissionPrompt } from "./components/PermissionPrompt";
+import { UserQuestionPrompt } from "./components/UserQuestionPrompt";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { SkillsPanel } from "./components/SkillsPanel";
 import { CommandPanel } from "./components/CommandPanel";
@@ -214,6 +215,12 @@ export default function App() {
             <PermissionPrompt
               request={app.permission}
               onRespond={app.handlePermission}
+            />
+          )}
+          {app.userQuestion && (
+            <UserQuestionPrompt
+              request={app.userQuestion}
+              onRespond={app.handleUserQuestion}
             />
           )}
           <PromptInput

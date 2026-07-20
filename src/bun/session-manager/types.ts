@@ -5,9 +5,10 @@ import type {
   SessionConfigOption,
   SessionSummary,
   SessionUsage,
+  UserQuestionRequest,
 } from "../../shared/rpc";
 import type { SessionUpdate } from "../../session/types";
-import type { AcpSessionHandle } from "../acp-client";
+import type { AcpClient, AcpSessionHandle } from "../acp-client";
 import type { SeedPurpose } from "./seed";
 
 export type SessionManagerEvents = {
@@ -15,6 +16,7 @@ export type SessionManagerEvents = {
   onTurnEnd: (sessionId: string, stopReason: string) => void;
   onConnectionState: (state: ConnectionStatePayload) => void;
   onPermissionRequest: (req: PermissionRequest) => void;
+  onUserQuestionRequest: (req: UserQuestionRequest) => void;
   onSessionList: (sessions: SessionSummary[], activeSessionId: string | null) => void;
   onCommands: (sessionId: string, commands: AvailableCommand[]) => void;
   onMode: (sessionId: string, mode: string) => void;
@@ -33,6 +35,12 @@ export type SessionManagerEvents = {
 export type LiveSession = {
   summary: SessionSummary;
   handle: AcpSessionHandle | null;
+  /** Dedicated ACP process for this chat (one client per session). */
+  client: AcpClient | null;
+  connectedAgentId: string | null;
+  connectedProviderKey: string | null;
+  /** Per-session connection snapshot for the UI header/banner. */
+  connection: ConnectionStatePayload;
   commands: AvailableCommand[];
   mode: string;
   configOptions: SessionConfigOption[];

@@ -10,6 +10,7 @@ import type {
   SessionConfigOption,
   SessionSummary,
   SessionUsage,
+  UserQuestionRequest,
 } from "../../shared/rpc";
 import { notifyBrowserOpen } from "../browser/open-bridge";
 import { alertTurnComplete } from "../completionAlert";
@@ -29,6 +30,7 @@ type Deps = {
   setActiveSessionId: Dispatch<SetStateAction<string | null>>;
   setConnection: Dispatch<SetStateAction<ConnectionStatePayload>>;
   setPermission: Dispatch<SetStateAction<PermissionRequest | null>>;
+  setUserQuestion: Dispatch<SetStateAction<UserQuestionRequest | null>>;
   setCommands: Dispatch<SetStateAction<AvailableCommand[]>>;
   setConfigOptions: Dispatch<SetStateAction<SessionConfigOption[]>>;
   setUsage: Dispatch<SetStateAction<SessionUsage | null>>;
@@ -51,6 +53,7 @@ export function createAppRpcListeners(deps: Deps): RpcListeners {
     setActiveSessionId,
     setConnection,
     setPermission,
+    setUserQuestion,
     setCommands,
     setConfigOptions,
     setUsage,
@@ -67,10 +70,13 @@ export function createAppRpcListeners(deps: Deps): RpcListeners {
     },
     onTurnEnd: ({ sessionId }) => {
       if (sessionId) busySessionsRef.current.delete(sessionId);
-      setTurnStartedAt(null);
-      setConnection((c) =>
-        c.status === "prompting" ? { ...c, status: "ready" } : c,
-      );
+      const active = activeSessionIdRef.current;
+      if (!sessionId || sessionId === active) {
+        setTurnStartedAt(null);
+        setConnection((c) =>
+          c.status === "prompting" ? { ...c, status: "ready" } : c,
+        );
+      }
 
       // Auto-send the next queued follow-up for this session (if any).
       // Skip the "done" chime/indicator so chained prompts feel continuous.
@@ -96,7 +102,11 @@ export function createAppRpcListeners(deps: Deps): RpcListeners {
       });
     },
     onConnectionState: (state) => {
-      setConnection(state);
+      // Banner/header only track the viewed chat; each session has its own agent.
+      const active = activeSessionIdRef.current;
+      if (!state.sessionId || state.sessionId === active) {
+        setConnection(state);
+      }
       if (state.status === "prompting" && state.sessionId) {
         setSessionActivity((prev) => ({
           ...prev,
@@ -126,6 +136,7 @@ export function createAppRpcListeners(deps: Deps): RpcListeners {
       }
     },
     onPermissionRequest: (req) => setPermission(req),
+    onUserQuestionRequest: (req) => setUserQuestion(req),
     onSessionList: ({ sessions: list, activeSessionId: active }) => {
       setSessions(list);
       setActiveSessionId(active);

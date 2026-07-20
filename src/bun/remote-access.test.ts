@@ -66,6 +66,7 @@ function mockHandlers() {
     deleteSession: async () => ({ ok: true }),
     offloadSession: async () => ({ ok: true as const, killed: false }),
     respondPermission: async () => ({ ok: true }),
+    respondUserQuestion: async () => ({ ok: true }),
     openFile: async () => ({ ok: false, error: "n/a" }),
     getSettings: () => ({
       editorCommand: "code",

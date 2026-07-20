@@ -15,6 +15,7 @@ import type {
   SessionConfigOption,
   SessionSummary,
   SessionUsage,
+  UserQuestionRequest,
 } from "../shared/rpc";
 import { demoUpdates } from "../fixtures/demo";
 
@@ -254,6 +255,7 @@ type Captured = {
   turnEnds: Array<{ sessionId: string; stopReason: string }>;
   connections: ConnectionStatePayload[];
   permissions: PermissionRequest[];
+  userQuestions: UserQuestionRequest[];
   lists: Array<{ sessions: SessionSummary[]; active: string | null }>;
   loaded: Array<{
     session: SessionSummary;
@@ -278,6 +280,7 @@ function capture(): Captured {
     turnEnds: [],
     connections: [],
     permissions: [],
+    userQuestions: [],
     lists: [],
     loaded: [],
     commands: [],
@@ -289,6 +292,7 @@ function capture(): Captured {
         c.turnEnds.push({ sessionId, stopReason }),
       onConnectionState: (state) => c.connections.push(state),
       onPermissionRequest: (req) => c.permissions.push(req),
+      onUserQuestionRequest: (req) => c.userQuestions.push(req),
       onSessionList: (sessions, activeSessionId) =>
         c.lists.push({ sessions, active: activeSessionId }),
       onCommands: (sessionId, commands) =>
@@ -690,6 +694,72 @@ describe("SessionManager", () => {
         (t) => t.sessionId === a.session.id && t.stopReason === "end_turn",
       ),
     );
+  });
+
+  it("createSession mid-prompt does not cancel the background turn", async () => {
+    const { mgr, c, agentId } = await boot();
+    const a = await mgr.createSession({ title: "Busy", agentId });
+    expect(a.ok).toBe(true);
+    if (!a.ok) return;
+
+    await mgr.sendPrompt("keep going", a.session.id);
+    expect(mgr.getConnectionState().status).toBe("prompting");
+
+    const created = await mgr.createSession({ title: "New while busy", agentId });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    expect(mgr.listSessions().activeSessionId).toBe(created.session.id);
+
+    // New chat has its own agent process; both can be running.
+    const list = mgr.listSessions().sessions;
+    expect(list.find((s) => s.id === a.session.id)?.agentRunning).toBe(true);
+    expect(list.find((s) => s.id === created.session.id)?.agentRunning).toBe(
+      true,
+    );
+
+    // Background turn on A must keep running.
+    await Bun.sleep(30);
+    expect(
+      c.turnEnds.some(
+        (t) => t.sessionId === a.session.id && t.stopReason === "cancelled",
+      ),
+    ).toBe(false);
+
+    await waitFor(() =>
+      c.turnEnds.some(
+        (t) => t.sessionId === a.session.id && t.stopReason === "end_turn",
+      ),
+    );
+  });
+
+  it("createSession spawns a separate agent process per chat", async () => {
+    mockAcpClients.length = 0;
+    const { mgr, agentId } = await boot();
+    const a = await mgr.createSession({ title: "A", agentId });
+    const b = await mgr.createSession({ title: "B", agentId });
+    expect(a.ok && b.ok).toBe(true);
+    if (!a.ok || !b.ok) return;
+
+    expect(mockAcpClients.length).toBeGreaterThanOrEqual(2);
+    const clients = mockAcpClients.slice(-2);
+    expect(clients.every((c) => !c.disposed)).toBe(true);
+
+    // Both chats report an independent running agent.
+    const list = mgr.listSessions().sessions;
+    expect(list.find((s) => s.id === a.session.id)?.agentRunning).toBe(true);
+    expect(list.find((s) => s.id === b.session.id)?.agentRunning).toBe(true);
+
+    // Offloading B only kills B's process.
+    const before = mockAcpClients.length;
+    const off = await mgr.offloadSession(b.session.id);
+    expect(off.ok).toBe(true);
+    if (!off.ok) return;
+    expect(off.killed).toBe(true);
+    const bClient = mockAcpClients[before - 1]!;
+    expect(bClient.disposed).toBe(true);
+    // A's client still alive
+    const aStill = mockAcpClients.find((c) => !c.disposed);
+    expect(aStill).toBeTruthy();
   });
 
   it("deleteSession removes it and activates another when needed", async () => {

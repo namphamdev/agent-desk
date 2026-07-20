@@ -81,6 +81,9 @@ export type RemoteAccessHandlers = {
     requestId: string,
     optionId: string,
   ) => Promise<{ ok: boolean }>;
+  respondUserQuestion: (
+    decision: import("../shared/rpc").UserQuestionDecision,
+  ) => Promise<{ ok: boolean }>;
   openFile: (
     path: string,
     line?: number,
@@ -435,6 +438,9 @@ export class RemoteAccessServer {
   onPermissionRequest(req: PermissionRequest) {
     this.broadcast("onPermissionRequest", req);
   }
+  onUserQuestionRequest(req: import("../shared/rpc").UserQuestionRequest) {
+    this.broadcast("onUserQuestionRequest", req);
+  }
   onSessionList(payload: SessionListPayload) {
     this.broadcast("onSessionList", payload);
   }
@@ -674,6 +680,10 @@ export class RemoteAccessServer {
         return h.respondPermission(
           String(params.requestId),
           String(params.optionId),
+        );
+      case "respondUserQuestion":
+        return h.respondUserQuestion(
+          params as import("../shared/rpc").UserQuestionDecision,
         );
       case "openFile":
         return h.openFile(

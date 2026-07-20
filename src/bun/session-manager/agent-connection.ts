@@ -1,5 +1,6 @@
 /**
- * ACP agent process lifecycle: connect, open session handles, memory polling.
+ * ACP agent process lifecycle: one client process per chat session.
+ * Connect, open session handles, memory polling for the active chat.
  */
 import type {
   AgentInfo,
@@ -50,9 +51,6 @@ function isClaudeStyleAgent(agent: Pick<AgentInfo, "id" | "command" | "name">): 
   );
 }
 
-
-
-
 function isGrokYoloMode(defaultPermissionMode: string | undefined): boolean {
   const mode = (defaultPermissionMode ?? "").trim().toLowerCase();
   return (
@@ -64,10 +62,6 @@ function isGrokYoloMode(defaultPermissionMode: string | undefined): boolean {
   );
 }
 
-/**
- * Grok CLI takes `--always-approve` on `grok agent` (before `stdio`):
- * `grok agent --always-approve stdio`.
- */
 /**
  * Insert CLI flags after `agent` for Grok Build ACP spawn:
  * `grok agent [--always-approve] [--effort LEVEL] stdio`
@@ -86,13 +80,11 @@ export function withGrokAgentSpawnArgs(
   const agentIdx = args.findIndex((a) => a === "agent");
   const insertAt = agentIdx >= 0 ? agentIdx + 1 : 0;
 
-  // Build flags to insert (order: model, always-approve, effort).
   const flags: string[] = [];
 
   const modelId = opts.modelId?.trim();
   const hasModelFlag = args.includes("-m") || args.includes("--model");
   if (modelId && !hasModelFlag) {
-    // Force BYOK catalog model so Grok does not use built-in grok-4.5 → xAI proxy.
     flags.push("-m", modelId);
   }
 
@@ -137,7 +129,6 @@ function normalizeGrokEffort(raw: string | undefined): string | null {
   ) {
     return v;
   }
-  // Claude-style defaults often store "High" — still map known effort words.
   return null;
 }
 
@@ -163,21 +154,56 @@ export type AgentConnectionHost = {
   queuePermission: (
     params: RequestPermissionRequest & { requestId: string },
   ) => Promise<RequestPermissionResponse>;
+  queueUserQuestion: (
+    params: import("../user-question").GrokAskUserQuestionParsed & {
+      requestId: string;
+    },
+  ) => Promise<import("../user-question").GrokAskUserQuestionResponse>;
   /** Built-in browser control plane (in-app panel MCP). */
   getBrowserControl?: () => { url: string; token: string } | null;
 };
 
+function idleConnection(sessionId?: string | null): ConnectionStatePayload {
+  return sessionId
+    ? { status: "idle", sessionId }
+    : { status: "idle" };
+}
+
+function mergeConnection(
+  prev: ConnectionStatePayload,
+  state: ConnectionStatePayload,
+): ConnectionStatePayload {
+  const next: ConnectionStatePayload = {
+    ...state,
+    memoryRssBytes:
+      state.memoryRssBytes !== undefined
+        ? state.memoryRssBytes
+        : prev.memoryRssBytes,
+    memorySampledAt:
+      state.memorySampledAt !== undefined
+        ? state.memorySampledAt
+        : prev.memorySampledAt,
+  };
+  if (
+    next.status === "idle" ||
+    next.status === "disconnected" ||
+    next.status === "error" ||
+    next.status === "connecting"
+  ) {
+    if (state.memoryRssBytes === undefined) {
+      next.memoryRssBytes = null;
+      next.memorySampledAt = null;
+    }
+  }
+  return next;
+}
+
 export class AgentConnection {
-  client: AcpClient | null = null;
-  connectedAgentId: string | null = null;
   /**
-   * Provider+model fingerprint for the live ACP process. When settings
-   * change credentials or model mapping we must respawn, not reuse.
+   * ACP agent session id → local chat id (permissions / update routing).
+   * Multiple agent processes may be live; ids are unique per openSession.
    */
-  connectedProviderKey: string | null = null;
-  /** Maps ACP agent session ids to our persisted local session ids. */
   agentToLocal = new Map<string, string>();
-  connectionState: ConnectionStatePayload = { status: "idle" };
 
   private memoryPollTimer: ReturnType<typeof setInterval> | null = null;
   private memoryPollInFlight = false;
@@ -187,38 +213,44 @@ export class AgentConnection {
     this.host = host;
   }
 
-  setConnection(state: ConnectionStatePayload) {
-    // Preserve the last memory sample unless the caller overrides it.
-    const next: ConnectionStatePayload = {
+  /** Connection payload for a chat (or idle if unknown). */
+  getSessionConnection(sessionId: string | null | undefined): ConnectionStatePayload {
+    if (!sessionId) return { status: "idle" };
+    return this.host.live.get(sessionId)?.connection ?? idleConnection(sessionId);
+  }
+
+  /** UI connection state for the currently viewed chat. */
+  getActiveConnection(): ConnectionStatePayload {
+    return this.getSessionConnection(this.host.activeSessionId);
+  }
+
+  /**
+   * Update a session's connection snapshot. Always emits for sessionActivity
+   * tracking; the webview scopes the main banner to the active chat.
+   */
+  setSessionConnection(sessionId: string, state: ConnectionStatePayload) {
+    const live = this.host.live.get(sessionId);
+    if (!live) return;
+    const next = mergeConnection(live.connection, {
       ...state,
-      memoryRssBytes:
-        state.memoryRssBytes !== undefined
-          ? state.memoryRssBytes
-          : this.connectionState.memoryRssBytes,
-      memorySampledAt:
-        state.memorySampledAt !== undefined
-          ? state.memorySampledAt
-          : this.connectionState.memorySampledAt,
-    };
-    // Drop stale samples when we're not connected to a live agent.
-    if (
-      next.status === "idle" ||
-      next.status === "disconnected" ||
-      next.status === "error" ||
-      next.status === "connecting"
-    ) {
-      if (state.memoryRssBytes === undefined) {
-        next.memoryRssBytes = null;
-        next.memorySampledAt = null;
-      }
-    }
-    this.connectionState = next;
+      sessionId,
+    });
+    live.connection = next;
     this.host.events.onConnectionState(next);
+  }
+
+  /** Re-emit the active chat's connection (e.g. after switch). */
+  emitActiveConnection() {
+    const id = this.host.activeSessionId;
+    if (!id) {
+      this.host.events.onConnectionState({ status: "idle" });
+      return;
+    }
+    this.host.events.onConnectionState(this.getSessionConnection(id));
   }
 
   startMemoryPolling() {
     this.stopMemoryPolling();
-    // Immediate sample so the header isn't blank for a full interval.
     void this.sampleAndPushMemory();
     this.memoryPollTimer = setInterval(() => {
       void this.sampleAndPushMemory();
@@ -235,24 +267,24 @@ export class AgentConnection {
 
   private async sampleAndPushMemory() {
     if (this.memoryPollInFlight) return;
-    const client = this.client;
-    if (!client) return;
-    // Only show memory while the agent process is up.
-    const status = this.connectionState.status;
+    const sessionId = this.host.activeSessionId;
+    if (!sessionId) return;
+    const live = this.host.live.get(sessionId);
+    const client = live?.client;
+    if (!client || !live) return;
+    const status = live.connection.status;
     if (status !== "ready" && status !== "prompting") return;
-    // Tests / stubs may not implement sampling.
     if (typeof client.sampleMemoryRssBytes !== "function") return;
 
     this.memoryPollInFlight = true;
     try {
       const bytes = await client.sampleMemoryRssBytes();
-      // Bail if connection changed under us.
-      if (this.client !== client) return;
-      const cur = this.connectionState;
+      if (this.host.activeSessionId !== sessionId) return;
+      if (live.client !== client) return;
+      const cur = live.connection;
       if (cur.status !== "ready" && cur.status !== "prompting") return;
-      // Skip no-op updates so we don't thrash the webview.
       if (bytes === cur.memoryRssBytes) return;
-      this.setConnection({
+      this.setSessionConnection(sessionId, {
         ...cur,
         memoryRssBytes: bytes,
         memorySampledAt: Date.now(),
@@ -264,54 +296,63 @@ export class AgentConnection {
     }
   }
 
-  async connectAgent(
+  /**
+   * Spawn / reuse this chat's dedicated ACP process.
+   * Does not touch other sessions' agents.
+   */
+  async connectSessionAgent(
+    sessionId: string,
     agents: AgentInfo[],
     agentId: string,
     cwd: string | undefined,
     emitSessionList: () => void,
   ) {
+    const live = this.host.live.get(sessionId);
+    if (!live) {
+      return { ok: false as const, error: "Session not found" };
+    }
+
     const agent = agents.find((a) => a.id === agentId);
     if (!agent) {
-      this.setConnection({ status: "error", error: `Unknown agent: ${agentId}` });
+      this.setSessionConnection(sessionId, {
+        status: "error",
+        error: `Unknown agent: ${agentId}`,
+        sessionId,
+      });
       return { ok: false as const, error: `Unknown agent: ${agentId}` };
     }
 
     const desiredProviderKey = providerConnectionKey(this.host.settings);
 
-    // Reuse only when agent AND provider credentials/model match.
+    // Reuse this chat's process when agent + provider fingerprint still match.
     if (
-      this.client &&
-      this.connectedAgentId === agentId &&
-      this.connectedProviderKey === desiredProviderKey
+      live.client &&
+      live.connectedAgentId === agentId &&
+      live.connectedProviderKey === desiredProviderKey
     ) {
-      // Still refresh ~/.grok/config.toml so reopening a Grok chat keeps BYOK
-      // config in sync (process was spawned earlier; file must stay current for
-      // next respawn and for tools that re-read config).
       await this.ensureGrokProviderConfig(agent);
-      this.setConnection({
-        status: "ready",
-        agentName: agent.name,
-        sessionId: this.host.activeSessionId,
-      });
+      if (!live.prompting) {
+        this.setSessionConnection(sessionId, {
+          status: "ready",
+          agentName: agent.name,
+          sessionId,
+        });
+      }
       this.startMemoryPolling();
       emitSessionList();
       return { ok: true as const };
     }
 
-    if (this.client) {
-      this.stopMemoryPolling();
-      await this.client.dispose();
-      this.client = null;
-      this.connectedAgentId = null;
-      this.connectedProviderKey = null;
-      this.agentToLocal.clear();
-      for (const live of this.host.live.values()) {
-        live.handle = null;
-      }
-      emitSessionList();
+    // Provider/agent change for this chat only — replace its process.
+    if (live.client) {
+      await this.killSessionAgent(sessionId, { emit: false });
     }
 
-    this.setConnection({ status: "connecting", agentName: agent.name });
+    this.setSessionConnection(sessionId, {
+      status: "connecting",
+      agentName: agent.name,
+      sessionId,
+    });
 
     try {
       const provider = resolveActiveProvider(this.host.settings);
@@ -319,8 +360,6 @@ export class AgentConnection {
         this.host.settings.activeModelAlias,
         "sonnet",
       );
-      // Anthropic-style providers + Claude session _meta only apply to Claude ACP.
-      // Grok Build reads ~/.grok/config.toml (+ env_key) — materialize that for BYOK.
       const usesClaudeProvider = isClaudeStyleAgent(agent);
       const usesGrokProvider = isGrokStyleAgent(agent);
       const providerEnv = usesClaudeProvider
@@ -333,14 +372,12 @@ export class AgentConnection {
         await this.ensureGrokProviderConfig(agent);
       }
 
-      // Always attach Claude meta for Claude agents (browser MCP append + ToolSearch off).
-      // Other agents get no claudeCode session _meta (still may register MCP servers).
       const sessionMeta = usesClaudeProvider
         ? buildClaudeCodeSessionMeta(provider, modelAlias)
         : undefined;
       if (usesClaudeProvider && provider) {
         console.log(
-          `[acp] spawning with provider "${provider.name}" (${provider.id})` +
+          `[acp] session ${sessionId.slice(0, 8)}… provider "${provider.name}"` +
             ` model=${modelAlias}` +
             (providerEnv?.ANTHROPIC_MODEL
               ? ` → ${providerEnv.ANTHROPIC_MODEL}`
@@ -351,15 +388,15 @@ export class AgentConnection {
         );
       } else if (usesClaudeProvider) {
         console.log(
-          "[acp] spawning without app provider (browser MCP still registered per session)",
+          `[acp] session ${sessionId.slice(0, 8)}… Claude without app provider`,
         );
       } else if (usesGrokProvider) {
         console.log(
-          `[acp] spawning agent "${agent.name}" (Grok; config.toml / env_key for provider)`,
+          `[acp] session ${sessionId.slice(0, 8)}… Grok agent "${agent.name}"`,
         );
       } else {
         console.log(
-          `[acp] spawning agent "${agent.name}" (non-Claude; app Anthropic provider env skipped)`,
+          `[acp] session ${sessionId.slice(0, 8)}… agent "${agent.name}"`,
         );
       }
 
@@ -381,10 +418,12 @@ export class AgentConnection {
         ? withGrokAgentSpawnArgs(agent, {
             defaultPermissionMode: this.host.settings.defaultPermissionMode,
             defaultEffort: this.host.settings.defaultEffort,
-            // Pin catalog id written in config.toml so cli-chat-proxy is not used.
             modelId: pinGrokModel ? GROK_PROVIDER_MODEL_ID : undefined,
           })
         : agent;
+
+      // Capture local id in closures so this process only ever feeds one chat.
+      const localSessionId = sessionId;
       const client = new AcpClient(
         spawnAgent,
         {
@@ -392,49 +431,53 @@ export class AgentConnection {
           enableBrowserMcp:
             this.host.settings.enableBrowserMcp !== false && !!browserControl,
           ...(browserControl ? { browserControl } : {}),
-          onUpdate: (sessionId, update) => {
-            const localId = this.agentToLocal.get(sessionId) ?? sessionId;
-            // We persist user messages ourselves in sendPrompt. Skip any the
-            // agent echoes back to avoid duplicates on reload.
+          onUpdate: (agentSessionId, update) => {
+            const localId =
+              this.agentToLocal.get(agentSessionId) ?? localSessionId;
             if (update.sessionUpdate === "user_message_chunk") return;
             this.host.store.appendEvent(localId, update);
-            const live = this.host.live.get(localId);
-            if (live) {
-              live.summary = {
-                ...live.summary,
+            const target = this.host.live.get(localId);
+            if (target) {
+              target.summary = {
+                ...target.summary,
                 updatedAt: Date.now(),
               };
             }
             this.host.events.onUpdate(localId, update);
           },
-          onCommands: (sessionId, commands: AvailableCommand[]) => {
-            const localId = this.agentToLocal.get(sessionId) ?? sessionId;
-            const live = this.host.live.get(localId);
-            if (live) live.commands = commands;
+          onCommands: (agentSessionId, commands: AvailableCommand[]) => {
+            const localId =
+              this.agentToLocal.get(agentSessionId) ?? localSessionId;
+            const target = this.host.live.get(localId);
+            if (target) target.commands = commands;
             this.host.events.onCommands(localId, commands);
           },
-          onMode: (sessionId, mode) => {
-            const localId = this.agentToLocal.get(sessionId) ?? sessionId;
-            const live = this.host.live.get(localId);
-            if (live) {
-              live.mode = mode;
+          onMode: (agentSessionId, mode) => {
+            const localId =
+              this.agentToLocal.get(agentSessionId) ?? localSessionId;
+            const target = this.host.live.get(localId);
+            if (target) {
+              target.mode = mode;
               this.host.store.updateSession(localId, { mode });
             }
             this.host.events.onMode(localId, mode);
           },
-          onConfigOptions: (sessionId, configOptions: SessionConfigOption[]) => {
-            const localId = this.agentToLocal.get(sessionId) ?? sessionId;
-            const live = this.host.live.get(localId);
-            if (live) live.configOptions = configOptions;
-            // Sync mode from configOptions when agent uses category "mode".
+          onConfigOptions: (
+            agentSessionId,
+            configOptions: SessionConfigOption[],
+          ) => {
+            const localId =
+              this.agentToLocal.get(agentSessionId) ?? localSessionId;
+            const target = this.host.live.get(localId);
+            if (target) target.configOptions = configOptions;
             const modeOpt = configOptions.find(
               (o) =>
                 o.category === "mode" &&
                 o.type === "select" &&
                 typeof o.currentValue === "string",
             );
-            if (modeOpt && modeOpt.type === "select" && live) {
-              live.mode = modeOpt.currentValue;
+            if (modeOpt && modeOpt.type === "select" && target) {
+              target.mode = modeOpt.currentValue;
               this.host.store.updateSession(localId, {
                 mode: modeOpt.currentValue,
               });
@@ -442,45 +485,46 @@ export class AgentConnection {
             }
             this.host.events.onConfigOptions(localId, configOptions);
           },
-          onUsage: (sessionId, usage: SessionUsage) => {
-            const localId = this.agentToLocal.get(sessionId) ?? sessionId;
-            const live = this.host.live.get(localId);
-            if (live) live.usage = usage;
+          onUsage: (agentSessionId, usage: SessionUsage) => {
+            const localId =
+              this.agentToLocal.get(agentSessionId) ?? localSessionId;
+            const target = this.host.live.get(localId);
+            if (target) target.usage = usage;
             this.host.events.onUsage(localId, usage);
           },
-          onTurnEnd: (sessionId, stopReason) => {
-            const localId = this.agentToLocal.get(sessionId) ?? sessionId;
-            const live = this.host.live.get(localId);
-            if (live) live.prompting = false;
-            this.setConnection({
+          onTurnEnd: (agentSessionId, stopReason) => {
+            const localId =
+              this.agentToLocal.get(agentSessionId) ?? localSessionId;
+            const target = this.host.live.get(localId);
+            if (target) target.prompting = false;
+            this.setSessionConnection(localId, {
               status: "ready",
               agentName: agent.name,
-              sessionId: this.host.activeSessionId,
+              sessionId: localId,
             });
             this.host.events.onTurnEnd(localId, stopReason);
           },
           onPermission: async (params) => {
             return this.host.queuePermission(params);
           },
+          onUserQuestion: async (params) => {
+            return this.host.queueUserQuestion(params);
+          },
         },
         {
           ...(usesClaudeProvider
             ? {
-                // Always surface browser MCP tools (disable deferred tool search).
                 env: withBrowserMcpAlwaysLoaded(providerEnv ?? {}),
                 sessionMeta,
               }
             : usesGrokProvider
               ? {
-                  // Always pass env (key + GROK_DEFAULT_MODEL) for BYOK; empty key
-                  // still pins default model so we don't hit xAI without meaning to.
                   env: providerEnv ?? {
                     GROK_DEFAULT_MODEL: GROK_PROVIDER_MODEL_ID,
                     GROK_IMAGE_GEN: "0",
                   },
                 }
               : {}),
-          // Grok: synthetic Permission dropdown (session/set_mode / --always-approve via spawn).
           ...(usesGrokProvider
             ? {
                 fallbackPermissionMode: grokInitialModeId(
@@ -495,38 +539,46 @@ export class AgentConnection {
       );
 
       await client.connect();
-      this.client = client;
-      this.connectedAgentId = agentId;
-      this.connectedProviderKey = desiredProviderKey;
-      this.setConnection({
+      // Drop if session deleted while connecting.
+      if (!this.host.live.has(sessionId)) {
+        await client.dispose();
+        return { ok: false as const, error: "Session not found" };
+      }
+      live.client = client;
+      live.connectedAgentId = agentId;
+      live.connectedProviderKey = desiredProviderKey;
+      this.setSessionConnection(sessionId, {
         status: "ready",
         agentName: agent.name,
-        sessionId: this.host.activeSessionId,
+        sessionId,
       });
       this.startMemoryPolling();
-      // Agent process is up — surface offload affordance for the active chat
-      // even before openSession finishes.
       emitSessionList();
 
-      if (this.host.activeSessionId) {
-        await this.ensureHandle(this.host.activeSessionId, cwd, emitSessionList);
+      if (!live.handle) {
+        await this.ensureHandle(sessionId, cwd, emitSessionList);
       }
 
       return { ok: true as const };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       console.error("[session-manager] connect failed:", message);
-      this.stopMemoryPolling();
-      this.setConnection({ status: "error", error: message, agentName: agent.name });
+      live.client = null;
+      live.connectedAgentId = null;
+      live.connectedProviderKey = null;
+      live.handle = null;
+      this.setSessionConnection(sessionId, {
+        status: "error",
+        error: message,
+        agentName: agent.name,
+        sessionId,
+      });
       return { ok: false as const, error: message };
     }
   }
 
-
   /**
    * Materialize ~/.grok/config.toml from the active app provider.
-   * Called on every Grok connect (including client reuse) so reopening chats
-   * still updates the file.
    */
   private async ensureGrokProviderConfig(agent: AgentInfo): Promise<void> {
     if (!isGrokStyleAgent(agent)) return;
@@ -563,9 +615,8 @@ export class AgentConnection {
     const live = this.host.live.get(sessionId);
     if (!live) throw new Error("session not found");
     if (live.handle) return live.handle;
-    if (!this.client) throw new Error("agent not connected");
+    if (!live.client) throw new Error("agent not connected");
 
-    // Reopen/switch onto Grok: refresh config.toml before session/new.
     const sessionAgent: AgentInfo = {
       id: live.summary.agentId,
       name: live.summary.agentId,
@@ -576,36 +627,12 @@ export class AgentConnection {
       await this.ensureGrokProviderConfig(sessionAgent);
     }
 
-    // openSession only keeps one active agent session — drop other handles so
-    // agentRunning accurately reflects which chat owns the live ACP client.
-    // Never dispose a chat that is mid-prompt (would cancel the agent turn).
-    for (const [id, other] of this.host.live) {
-      if (id === sessionId || !other.handle) continue;
-      if (other.prompting) {
-        throw new Error(
-          "Cannot open session while another chat is mid-prompt",
-        );
-      }
-      try {
-        other.handle.dispose();
-      } catch {
-        /* ignore */
-      }
-      other.handle = null;
-    }
-
-    const handle = await this.client.openSession(cwd ?? live.summary.cwd, {
+    const handle = await live.client.openSession(cwd ?? live.summary.cwd, {
       localSessionId: sessionId,
     });
-    // Map agent session id → local id before draining updates so early
-    // notifications (available_commands_update, config_option_update, …)
-    // land on the correct live session.
     this.agentToLocal.set(handle.sessionId, sessionId);
 
-    // Apply session/new config options now that agent→local mapping is ready.
     let configOptions = handle.configOptions;
-
-    // Push user defaults (thinking level, permission mode, model) before the UI sees options.
     configOptions = await applyPreferredConfigDefaults(
       handle,
       configOptions,
@@ -642,35 +669,60 @@ export class AgentConnection {
       },
     };
 
-    // Drain session/update immediately (slash commands, mode, etc.).
     handle.beginUpdates();
 
     emitSessionList();
     return live.handle;
   }
 
-  /** Kill the agent process and clear all live handles. */
-  async killAgent() {
-    this.stopMemoryPolling();
-    if (this.client) {
-      await this.client.dispose();
+  /** Kill one chat's agent process and clear its handle. */
+  async killSessionAgent(
+    sessionId: string,
+    opts?: { emit?: boolean },
+  ): Promise<boolean> {
+    const live = this.host.live.get(sessionId);
+    if (!live) return false;
+
+    const hadClient = live.client != null;
+    try {
+      live.handle?.dispose();
+    } catch {
+      /* ignore */
     }
-    this.client = null;
-    this.connectedAgentId = null;
-    this.connectedProviderKey = null;
-    this.agentToLocal.clear();
-    for (const l of this.host.live.values()) {
-      l.handle = null;
-      l.prompting = false;
+    live.handle = null;
+    live.prompting = false;
+
+    for (const [agentSessionId, localId] of [...this.agentToLocal.entries()]) {
+      if (localId === sessionId) this.agentToLocal.delete(agentSessionId);
     }
+
+    if (live.client) {
+      try {
+        await live.client.dispose();
+      } catch {
+        /* ignore */
+      }
+    }
+    live.client = null;
+    live.connectedAgentId = null;
+    live.connectedProviderKey = null;
+    this.setSessionConnection(sessionId, idleConnection(sessionId));
+
+    if (opts?.emit !== false) {
+      // no-op marker for callers that also emitSessionList
+    }
+    return hadClient;
+  }
+
+  clientForSession(sessionId: string): AcpClient | null {
+    return this.host.live.get(sessionId)?.client ?? null;
   }
 
   async dispose() {
     this.stopMemoryPolling();
-    await this.client?.dispose();
-    this.client = null;
-    this.connectedAgentId = null;
-    this.connectedProviderKey = null;
+    for (const id of [...this.host.live.keys()]) {
+      await this.killSessionAgent(id, { emit: false });
+    }
     this.agentToLocal.clear();
   }
 }

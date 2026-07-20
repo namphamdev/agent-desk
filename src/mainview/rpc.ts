@@ -12,6 +12,8 @@ import type {
   AvailableCommand,
   ConnectionStatePayload,
   PermissionRequest,
+  UserQuestionDecision,
+  UserQuestionRequest,
   RecentProject,
   AgentSetupStatus,
   RemoteAccessStatus,
@@ -39,6 +41,7 @@ export type RpcListeners = {
   onTurnEnd?: (payload: TurnEndPayload) => void;
   onConnectionState?: (state: ConnectionStatePayload) => void;
   onPermissionRequest?: (req: PermissionRequest) => void;
+  onUserQuestionRequest?: (req: UserQuestionRequest) => void;
   onSessionList?: (payload: SessionListPayload) => void;
   onSessionLoaded?: (payload: SessionLoadedPayload) => void;
   onCommands?: (sessionId: string, commands: AvailableCommand[]) => void;
@@ -98,6 +101,9 @@ type RpcClient = {
       requestId: string;
       optionId: string;
     }) => Promise<{ ok: boolean }>;
+    respondUserQuestion: (
+      p: UserQuestionDecision,
+    ) => Promise<{ ok: boolean }>;
     openFile: (p: {
       path: string;
       line?: number;
@@ -341,6 +347,9 @@ export function initRpc(): RpcClient {
           onPermissionRequest: (req) => {
             listeners.onPermissionRequest?.(req);
           },
+          onUserQuestionRequest: (req) => {
+            listeners.onUserQuestionRequest?.(req);
+          },
           onSessionList: (payload) => {
             listeners.onSessionList?.(payload);
           },
@@ -408,6 +417,11 @@ function createRemoteWsClient(code: string): RpcClient {
       case "onPermissionRequest":
         listeners.onPermissionRequest?.(
           params as unknown as PermissionRequest,
+        );
+        break;
+      case "onUserQuestionRequest":
+        listeners.onUserQuestionRequest?.(
+          params as unknown as UserQuestionRequest,
         );
         break;
       case "onSessionList":
@@ -559,6 +573,8 @@ function createRemoteWsClient(code: string): RpcClient {
         request("offloadSession", p as Record<string, unknown>),
       respondPermission: (p) =>
         request("respondPermission", p as Record<string, unknown>),
+      respondUserQuestion: (p) =>
+        request("respondUserQuestion", p as Record<string, unknown>),
       openFile: (p) => request("openFile", p as Record<string, unknown>),
       getSettings: () => request("getSettings"),
       saveSettings: (p) =>
@@ -798,6 +814,9 @@ function createBrowserMock(): RpcClient {
         return { ok: true as const, killed: true };
       },
       async respondPermission() {
+        return { ok: true };
+      },
+      async respondUserQuestion() {
         return { ok: true };
       },
       async openFile() {

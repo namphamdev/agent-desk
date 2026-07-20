@@ -18,6 +18,7 @@ import type {
   AvailableCommand,
   ConnectionStatePayload,
   PermissionRequest,
+  UserQuestionRequest,
   RecentProject,
   RemoteAccessStatus,
   SessionConfigOption,
@@ -51,11 +52,13 @@ function clearSessionUi(
   setCommands: (c: AvailableCommand[]) => void,
   setConfigOptions: (o: SessionConfigOption[]) => void,
   setPermission: (p: PermissionRequest | null) => void,
+  setUserQuestion: (p: UserQuestionRequest | null) => void,
 ) {
   setSession(initialSession);
   setCommands([]);
   setConfigOptions([]);
   setPermission(null);
+  setUserQuestion(null);
 }
 
 /**
@@ -70,6 +73,7 @@ export function useAppController() {
     status: "idle",
   });
   const [permission, setPermission] = useState<PermissionRequest | null>(null);
+  const [userQuestion, setUserQuestion] = useState<UserQuestionRequest | null>(null);
   const [commands, setCommands] = useState<AvailableCommand[]>([]);
   const [configOptions, setConfigOptions] = useState<SessionConfigOption[]>([]);
   const [usage, setUsage] = useState<SessionUsage | null>(null);
@@ -301,6 +305,7 @@ export function useAppController() {
         setActiveSessionId,
         setConnection,
         setPermission,
+        setUserQuestion,
         setCommands,
         setConfigOptions,
         setUsage,
@@ -381,7 +386,7 @@ export function useAppController() {
       // Clear prior session UI before create. Do not clear again after the RPC
       // returns — createSession already pushes onSessionLoaded / onConfigOptions
       // with model/effort selectors; a post-success wipe hid the Selector.
-      clearSessionUi(setSession, setCommands, setConfigOptions, setPermission);
+      clearSessionUi(setSession, setCommands, setConfigOptions, setPermission, setUserQuestion);
 
       const res = await getRpc().request.createSession({
         cwd: opts.cwd,
@@ -555,7 +560,7 @@ export function useAppController() {
         delete next[id];
         return next;
       });
-      clearSessionUi(setSession, setCommands, setConfigOptions, setPermission);
+      clearSessionUi(setSession, setCommands, setConfigOptions, setPermission, setUserQuestion);
       setSessionLoading(true);
       setTurnStartedAt(null);
       try {
@@ -656,6 +661,39 @@ export function useAppController() {
     [permission],
   );
 
+  const handleUserQuestion = useCallback(
+    async (decision: {
+      action: "accepted" | "skip_interview" | "chat_about_this";
+      answers?: Record<string, string>;
+      partialAnswers?: boolean;
+      message?: string;
+    }) => {
+      if (!userQuestion) return;
+      const base = { requestId: userQuestion.requestId };
+      if (decision.action === "accepted") {
+        await getRpc().request.respondUserQuestion({
+          ...base,
+          action: "accepted",
+          answers: decision.answers ?? {},
+          ...(decision.partialAnswers ? { partialAnswers: true } : {}),
+        });
+      } else if (decision.action === "skip_interview") {
+        await getRpc().request.respondUserQuestion({
+          ...base,
+          action: "skip_interview",
+        });
+      } else {
+        await getRpc().request.respondUserQuestion({
+          ...base,
+          action: "chat_about_this",
+          ...(decision.message ? { message: decision.message } : {}),
+        });
+      }
+      setUserQuestion(null);
+    },
+    [userQuestion],
+  );
+
   const handleOpenFile = useCallback(async (path: string, line?: number) => {
     await getRpc().request.openFile({ path, line });
   }, []);
@@ -688,7 +726,7 @@ export function useAppController() {
         return;
       }
       // Clear prior UI first; onSessionLoaded will apply seed + configOptions.
-      clearSessionUi(setSession, setCommands, setConfigOptions, setPermission);
+      clearSessionUi(setSession, setCommands, setConfigOptions, setPermission, setUserQuestion);
 
       const res = await getRpc().request.createSession({
         cwd,
@@ -756,7 +794,7 @@ export function useAppController() {
 
     setReviewBusy(true);
     try {
-      clearSessionUi(setSession, setCommands, setConfigOptions, setPermission);
+      clearSessionUi(setSession, setCommands, setConfigOptions, setPermission, setUserQuestion);
 
       const res = await getRpc().request.createSession({
         cwd,
@@ -1352,23 +1390,12 @@ export function useAppController() {
       ? formatElapsed(now - turnStartedAt)
       : null;
 
-  // Scope "working" to the visible chat — another session may still be mid-turn.
+  // Scope "working" to the visible chat — other chats may still be mid-turn.
   const isPrompting =
     !!activeSessionId &&
     (sessionActivity[activeSessionId] === "processing" ||
       (connection.status === "prompting" &&
-        connection.sessionId === activeSessionId));
-  // Header/banner should not show another chat's mid-turn as this chat's state.
-  const viewConnection: ConnectionStatePayload =
-    connection.status === "prompting" &&
-    connection.sessionId &&
-    connection.sessionId !== activeSessionId
-      ? {
-          ...connection,
-          status: "ready",
-          sessionId: activeSessionId,
-        }
-      : connection;
+        (!connection.sessionId || connection.sessionId === activeSessionId)));
   const activePromptQueue = activeSessionId
     ? getQueue(promptQueues, activeSessionId)
     : [];
@@ -1379,8 +1406,9 @@ export function useAppController() {
     sessions,
     activeSessionId,
     activeSession,
-    connection: viewConnection,
+    connection,
     permission,
+    userQuestion,
     commands,
     configOptions,
     usage,
@@ -1447,6 +1475,7 @@ export function useAppController() {
     handleOffloadSession,
     confirmDeleteSession,
     handlePermission,
+    handleUserQuestion,
     handleOpenFile,
     handleSetConfigOption,
     handleSaveSettings,

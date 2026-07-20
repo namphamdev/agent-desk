@@ -1,6 +1,6 @@
 /**
  * Session manager: multi-session orchestration on the Bun side.
- * Owns the active ACP client, permission queue, and persistence.
+ * Each chat owns its own ACP agent process so sessions can run in parallel.
  */
 import { basename } from "node:path";
 import type {
@@ -8,6 +8,8 @@ import type {
   AppSettings,
   CreateSessionWorktree,
   SessionConfigOption,
+  UserQuestionDecision,
+  UserQuestionRequest,
 } from "../../shared/rpc";
 import type { SessionUpdate } from "../../session/types";
 import { ensureAgentsConfig, ensureGrokAgentEntry, loadAgents } from "../agents";
@@ -19,6 +21,11 @@ import type {
   RequestPermissionRequest,
   RequestPermissionResponse,
 } from "@agentclientprotocol/sdk";
+import {
+  toGrokAskUserQuestionResponse,
+  type GrokAskUserQuestionParsed,
+  type GrokAskUserQuestionResponse,
+} from "../user-question";
 import { AgentConnection } from "./agent-connection";
 import { resolveWorkingDirectory } from "./cwd";
 import { openFileInEditor } from "./open-file";
@@ -28,6 +35,26 @@ import { injectBrowserTokensIntoPrompt } from "../browser-tokens";
 import { formatSeededPrompt, seedUpdateForRole } from "./seed";
 import type { LiveSession, SessionManagerEvents } from "./types";
 import type { BrowserTokenRecord } from "../store";
+
+function emptyLive(
+  summary: LiveSession["summary"],
+  extras?: Partial<LiveSession>,
+): LiveSession {
+  return {
+    summary,
+    handle: null,
+    client: null,
+    connectedAgentId: null,
+    connectedProviderKey: null,
+    connection: { status: "idle", sessionId: summary.id },
+    commands: [],
+    mode: "default",
+    configOptions: [],
+    prompting: false,
+    usage: null,
+    ...extras,
+  };
+}
 
 export class SessionManager {
   private store: SessionStore;
@@ -44,6 +71,13 @@ export class SessionManager {
       params: RequestPermissionRequest;
     }
   >();
+  private pendingUserQuestions = new Map<
+    string,
+    {
+      resolve: (r: GrokAskUserQuestionResponse) => void;
+      params: GrokAskUserQuestionParsed;
+    }
+  >();
   private conn: AgentConnection;
   /** Serializes background agent prep so rapid session switches don't race. */
   private prepareChain: Promise<void> = Promise.resolve();
@@ -58,7 +92,6 @@ export class SessionManager {
     this.store = new SessionStore(dataDir);
     this.settings = loadSettings(this.store);
     this.events = events;
-    // Live getters so AgentConnection always sees current SessionManager state.
     const mgr = this;
     this.conn = new AgentConnection({
       get settings() {
@@ -77,6 +110,7 @@ export class SessionManager {
         return mgr.activeSessionId;
       },
       queuePermission: (params) => mgr.queuePermission(params),
+      queueUserQuestion: (params) => mgr.queueUserQuestion(params),
       getBrowserControl: options?.getBrowserControl,
     });
   }
@@ -92,17 +126,13 @@ export class SessionManager {
         ? this.settings.defaultAgentId
         : defaultAgentId || agents[0]?.id || "";
 
-    // Hydrate summaries from store (no live handles yet).
     for (const s of this.store.listSessions()) {
-      this.live.set(s.id, {
-        summary: s,
-        handle: null,
-        commands: [],
-        mode: this.store.getSession(s.id)?.mode ?? "default",
-        configOptions: [],
-        prompting: false,
-        usage: null,
-      });
+      this.live.set(
+        s.id,
+        emptyLive(s, {
+          mode: this.store.getSession(s.id)?.mode ?? "default",
+        }),
+      );
     }
 
     this.emitSessionList();
@@ -112,7 +142,6 @@ export class SessionManager {
     return this.agents;
   }
 
-  /** Project-scoped browser tokens stored in SQLite. */
   listBrowserTokens(projectCwd: string): BrowserTokenRecord[] {
     return this.store.listBrowserTokens(projectCwd);
   }
@@ -132,7 +161,6 @@ export class SessionManager {
     return this.store.deleteBrowserToken(projectCwd, key);
   }
 
-  /** Resolve project cwd for a chat session (for token scoping). */
   getSessionCwd(sessionId: string): string | null {
     return this.live.get(sessionId)?.summary.cwd ?? null;
   }
@@ -144,35 +172,23 @@ export class SessionManager {
   saveSettings(patch: Partial<AppSettings>) {
     this.settings = saveSettings(this.store, patch);
     if (patch.defaultAgentId) this.defaultAgentId = patch.defaultAgentId;
-    // Provider credentials/model mapping live in process env. connectAgent
-    // compares providerConnectionKey and respawns when they diverge.
     return this.settings;
   }
 
   getConnectionState() {
-    return this.conn.connectionState;
+    return this.conn.getActiveConnection();
   }
 
   listSessions(): {
     sessions: import("../../shared/rpc").SessionSummary[];
     activeSessionId: string | null;
   } {
-    const clientUp = this.conn.client != null;
     const sessions = [...this.live.values()]
-      .map((l) => {
-        // Agent process is up for this chat when we have a live handle, or
-        // this is the active session and its agent process is currently connected
-        // (openSession may still be in flight after history loads).
-        const ownsHandle = l.handle != null;
-        const activeAgentConnected =
-          l.summary.id === this.activeSessionId &&
-          clientUp &&
-          this.conn.connectedAgentId === l.summary.agentId;
-        return {
-          ...l.summary,
-          agentRunning: clientUp && (ownsHandle || activeAgentConnected),
-        };
-      })
+      .map((l) => ({
+        ...l.summary,
+        // Process up or openSession in flight after spawn.
+        agentRunning: l.client != null || l.handle != null,
+      }))
       .sort((a, b) => b.updatedAt - a.updatedAt);
     return { sessions, activeSessionId: this.activeSessionId };
   }
@@ -186,12 +202,47 @@ export class SessionManager {
     return `sess-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
   }
 
-  async connectAgent(agentId?: string, cwd?: string) {
-    const id = agentId ?? this.defaultAgentId;
-    return this.conn.connectAgent(
-      this.agents,
+  /**
+   * Spawn/reconnect the agent process for a specific chat.
+   * Without a session, creates a short-lived chat (used by tests / legacy RPC).
+   */
+  async connectAgent(agentId?: string, cwd?: string, sessionId?: string) {
+    const resolvedAgentId = agentId ?? this.defaultAgentId;
+    const agent = this.agents.find((a) => a.id === resolvedAgentId);
+    if (!agent) {
+      this.events.onConnectionState({
+        status: "error",
+        error: `Unknown agent: ${resolvedAgentId}`,
+      });
+      return { ok: false as const, error: `Unknown agent: ${resolvedAgentId}` };
+    }
+
+    let id = sessionId ?? this.activeSessionId;
+    if (!id) {
+      const cwdResolved = resolveWorkingDirectory(cwd || process.cwd());
+      if (!cwdResolved.ok) {
+        return { ok: false as const, error: cwdResolved.error };
+      }
+      const syntheticId = this.uid();
+      const stored = this.store.createSession({
+        id: syntheticId,
+        title: "Connect",
+        project: basename(cwdResolved.cwd),
+        cwd: cwdResolved.cwd,
+        agentId: agent.id,
+      });
+      this.live.set(syntheticId, emptyLive(stored));
+      this.activeSessionId = syntheticId;
+      id = syntheticId;
+    }
+
+    const live = this.live.get(id);
+    if (!live) return { ok: false as const, error: "Session not found" };
+    return this.conn.connectSessionAgent(
       id,
-      cwd,
+      this.agents,
+      resolvedAgentId,
+      cwd ?? live.summary.cwd,
       () => this.emitSessionList(),
     );
   }
@@ -200,9 +251,6 @@ export class SessionManager {
     return this.conn.ensureHandle(sessionId, cwd, () => this.emitSessionList());
   }
 
-  /**
-   * Distinct project folders from recent sessions (most recently used first).
-   */
   listRecentProjects(limit = 12) {
     return buildRecentProjects(
       this.listSessions().sessions,
@@ -240,7 +288,6 @@ export class SessionManager {
     seedContext?: {
       text: string;
       role?: "user" | "agent" | "thought";
-      /** How the seed is framed on the first prompt (default: continue). */
       purpose?: "continue" | "review";
     };
   }) {
@@ -253,8 +300,6 @@ export class SessionManager {
     const mainCwd = cwd;
     const mainProjectName = basename(mainCwd);
 
-    // Optional: open the session inside a git worktree (shared heavy dirs
-    // like node_modules are symlinked from the main tree per settings).
     if (opts.worktree?.branch?.trim()) {
       const wt = await createWorktree({
         mainCwd,
@@ -270,7 +315,6 @@ export class SessionManager {
       cwd = wt.path;
     }
 
-    // Prefer the main repo folder name even when cwd is a worktree path.
     const project = opts.project || mainProjectName;
     const agentId = opts.agentId || this.defaultAgentId;
     const id = this.uid();
@@ -281,11 +325,9 @@ export class SessionManager {
         ? seedText.replace(/\s+/g, " ").slice(0, 60) || "New thread"
         : "New session");
 
-    // Remember the main project for the next "New task" dialog (not the worktree).
     if (this.settings.lastProjectCwd !== mainCwd) {
       this.settings = saveSettings(this.store, { lastProjectCwd: mainCwd });
     }
-    // Re-using a project restores it if it was removed from recents.
     this.undismissRecentProject(mainCwd);
 
     const stored = this.store.createSession({
@@ -296,43 +338,45 @@ export class SessionManager {
       agentId,
     });
 
-    this.live.set(id, {
-      summary: stored,
-      handle: null,
-      commands: [],
-      mode: "default",
-      configOptions: [],
-      prompting: false,
-      usage: null,
-      contextSeed: seedText || null,
-      contextSeedPurpose: seedText
-        ? (opts.seedContext?.purpose ?? "continue")
-        : undefined,
-    });
+    this.live.set(
+      id,
+      emptyLive(stored, {
+        contextSeed: seedText || null,
+        contextSeedPurpose: seedText
+          ? (opts.seedContext?.purpose ?? "continue")
+          : undefined,
+      }),
+    );
     this.activeSessionId = id;
     this.emitSessionList();
-
-    // Ensure agent connected.
-    const conn = await this.connectAgent(agentId, cwd);
-    if (!conn.ok) {
-      return { ok: false as const, error: conn.error };
-    }
-
-    try {
-      // For demo client, openSession generates id; we want local id.
-      // Open and if demo, wrap to use our id for updates already keyed by demo id.
-      // Simpler: dispose and use a custom path.
-      await this.ensureHandle(id, cwd);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      return { ok: false as const, error: message };
-    }
 
     const seedUpdates = seedText
       ? [seedUpdateForRole(seedText, opts.seedContext?.role ?? "agent")]
       : [];
     for (const u of seedUpdates) {
       this.store.appendEvent(id, u);
+    }
+
+    // Always spawn a dedicated agent for this chat (other chats keep running).
+    const conn = await this.conn.connectSessionAgent(
+      id,
+      this.agents,
+      agentId,
+      cwd,
+      () => this.emitSessionList(),
+    );
+    if (!conn.ok) {
+      // Session still exists so the user can retry; surface the error.
+      const live = this.live.get(id);
+      this.events.onSessionLoaded(
+        stored,
+        seedUpdates,
+        live?.mode ?? "default",
+        live?.commands ?? [],
+        live?.configOptions ?? [],
+        live?.usage ?? null,
+      );
+      return { ok: false as const, error: conn.error };
     }
 
     const live = this.live.get(id);
@@ -344,9 +388,9 @@ export class SessionManager {
       live?.configOptions ?? [],
       live?.usage ?? null,
     );
-    this.conn.setConnection({
-      ...this.conn.connectionState,
+    this.conn.setSessionConnection(id, {
       status: "ready",
+      agentName: this.agents.find((a) => a.id === agentId)?.name,
       sessionId: id,
     });
 
@@ -360,8 +404,6 @@ export class SessionManager {
     this.activeSessionId = sessionId;
     const updates = this.store.loadEvents(sessionId);
 
-    // Push history to the UI immediately. Agent connect + openSession can take
-    // several seconds; reading chat should not wait on that.
     this.events.onSessionLoaded(
       live.summary,
       updates,
@@ -370,16 +412,16 @@ export class SessionManager {
       live.configOptions,
       live.usage,
     );
+    this.conn.emitActiveConnection();
     this.emitSessionList();
+    this.conn.startMemoryPolling();
 
-    // Prepare agent in the background so the RPC returns as soon as history is
-    // loaded (and rapid switches don't queue behind agent spawn/openSession).
+    // Ensure this chat has its own agent; never steals another chat's process.
     this.schedulePrepareSession(sessionId);
 
     return { ok: true as const, session: live.summary };
   }
 
-  /** Queue background agent prep (connect + open handle). */
   private schedulePrepareSession(sessionId: string) {
     this.prepareChain = this.prepareChain
       .then(() => this.prepareSessionAgent(sessionId))
@@ -388,53 +430,23 @@ export class SessionManager {
       });
   }
 
-  /**
-   * After a mid-turn finishes/cancels, open the agent handle for the chat the
-   * user is currently viewing (if different from the one that just finished).
-   */
-  private schedulePrepareActiveIfIdle() {
-    const id = this.activeSessionId;
-    if (!id) return;
-    const active = this.live.get(id);
-    if (!active || active.prompting || active.handle) return;
-    if (this.findPromptingSessionId()) return;
-    this.schedulePrepareSession(id);
-  }
-
-  /** First live session currently mid-prompt (optionally excluding one id). */
-  private findPromptingSessionId(exceptId?: string): string | null {
-    for (const [id, live] of this.live) {
-      if (exceptId && id === exceptId) continue;
-      if (live.prompting) return id;
-    }
-    return null;
-  }
-
-  /** Connect agent + open handle for a session; no-ops if user switched away. */
+  /** Connect this chat's agent + open handle; no-ops if user switched away. */
   private async prepareSessionAgent(sessionId: string) {
     const live = this.live.get(sessionId);
     if (!live) return;
     if (this.activeSessionId !== sessionId) return;
 
-    // Single ACP client = one live handle. Opening this chat would dispose the
-    // other session's handle and cancel its in-flight prompt. Defer until idle.
-    const busyOther = this.findPromptingSessionId(sessionId);
-    if (busyOther) {
-      this.emitSessionList();
-      return;
-    }
-
-    await this.connectAgent(live.summary.agentId, live.summary.cwd);
-
+    const conn = await this.conn.connectSessionAgent(
+      sessionId,
+      this.agents,
+      live.summary.agentId,
+      live.summary.cwd,
+      () => this.emitSessionList(),
+    );
+    if (!conn.ok) return;
     if (this.activeSessionId !== sessionId) return;
 
-    // Re-check after await: another chat may have started prompting.
-    if (this.findPromptingSessionId(sessionId)) {
-      this.emitSessionList();
-      return;
-    }
-
-    if (!live.handle && this.conn.client) {
+    if (!live.handle && live.client) {
       try {
         await this.ensureHandle(sessionId);
       } catch (err) {
@@ -444,19 +456,11 @@ export class SessionManager {
 
     if (this.activeSessionId !== sessionId) return;
 
-    // Re-push config options after the agent handle is ready (may have been
-    // empty on the initial history load).
     const refreshed = this.live.get(sessionId);
     if (refreshed && refreshed.configOptions.length > 0) {
       this.events.onConfigOptions(sessionId, refreshed.configOptions);
     }
-
-    this.conn.setConnection({
-      ...this.conn.connectionState,
-      sessionId,
-    });
-    // Ensure sidebar gets agentRunning even if ensureHandle was a no-op
-    // (handle already present from a prior open).
+    this.conn.emitActiveConnection();
     this.emitSessionList();
   }
 
@@ -473,19 +477,13 @@ export class SessionManager {
     const live = this.live.get(id);
     if (!live) return { ok: false as const, error: "Session not found" };
 
-    // Opening a new handle would cancel another chat mid-turn.
-    if (!live.handle && this.findPromptingSessionId(id)) {
-      return {
-        ok: false as const,
-        error:
-          "Another chat is still processing. Wait for it to finish before changing settings here.",
-      };
-    }
-
-    if (!this.conn.client || this.conn.connectedAgentId !== live.summary.agentId) {
-      const conn = await this.connectAgent(
+    if (!live.client || live.connectedAgentId !== live.summary.agentId) {
+      const conn = await this.conn.connectSessionAgent(
+        id,
+        this.agents,
         live.summary.agentId,
         live.summary.cwd,
+        () => this.emitSessionList(),
       );
       if (!conn.ok) return { ok: false as const, error: conn.error };
     }
@@ -515,7 +513,7 @@ export class SessionManager {
   async deleteSession(sessionId: string) {
     const live = this.live.get(sessionId);
     if (live) {
-      live.handle?.dispose();
+      await this.conn.killSessionAgent(sessionId, { emit: false });
       this.live.delete(sessionId);
     }
     this.store.deleteSession(sessionId);
@@ -523,6 +521,7 @@ export class SessionManager {
       this.activeSessionId = null;
       const next = this.listSessions().sessions[0];
       if (next) await this.switchSession(next.id);
+      else this.conn.emitActiveConnection();
     }
     this.emitSessionList();
     return { ok: true };
@@ -530,8 +529,7 @@ export class SessionManager {
 
   /**
    * Free agent memory for a session without deleting chat history.
-   * Disposes the session handle and kills the shared ACP agent process when
-   * nothing else is mid-turn. The agent respawns on next prompt / switch.
+   * Kills only this chat's ACP process; other sessions keep running.
    */
   async offloadSession(sessionId: string): Promise<
     | { ok: true; killed: boolean }
@@ -549,34 +547,13 @@ export class SessionManager {
       live.prompting = false;
     }
 
-    live.handle?.dispose();
-    live.handle = null;
-    for (const [agentSessionId, localId] of [...this.conn.agentToLocal.entries()]) {
-      if (localId === sessionId) this.conn.agentToLocal.delete(agentSessionId);
-    }
+    const killed = await this.conn.killSessionAgent(sessionId, { emit: false });
 
-    // Keep the agent alive if another session is actively prompting.
-    const otherPrompting = [...this.live.entries()].some(
-      ([id, l]) => id !== sessionId && l.prompting,
-    );
-    if (otherPrompting || !this.conn.client) {
-      if (this.activeSessionId === sessionId) {
-        this.conn.setConnection({
-          status: this.conn.client ? "ready" : "idle",
-          agentName: this.conn.connectionState.agentName,
-          sessionId,
-        });
-      }
-      this.emitSessionList();
-      return { ok: true as const, killed: false };
+    if (this.activeSessionId === sessionId) {
+      this.conn.emitActiveConnection();
     }
-
-    await this.conn.killAgent();
-    // Drop unresolved permission prompts tied to the dead agent.
-    this.pendingPermissions.clear();
-    this.conn.setConnection({ status: "idle" });
     this.emitSessionList();
-    return { ok: true as const, killed: true };
+    return { ok: true as const, killed };
   }
 
   async sendPrompt(
@@ -595,23 +572,24 @@ export class SessionManager {
     const live = this.live.get(id);
     if (!live) return { ok: false as const, error: "Session not found" };
 
-    // ACP is one live session at a time — do not steal the handle mid-turn.
-    const busyOther = this.findPromptingSessionId(id);
-    if (busyOther && !live.handle) {
-      return {
-        ok: false as const,
-        error:
-          "Another chat is still processing. Wait for it to finish, or open that chat and stop it.",
-      };
-    }
-
-    if (!this.conn.client || this.conn.connectedAgentId !== live.summary.agentId) {
-      const conn = await this.connectAgent(live.summary.agentId, live.summary.cwd);
+    if (!live.client || live.connectedAgentId !== live.summary.agentId) {
+      const conn = await this.conn.connectSessionAgent(
+        id,
+        this.agents,
+        live.summary.agentId,
+        live.summary.cwd,
+        () => this.emitSessionList(),
+      );
       if (!conn.ok) return conn;
     }
 
     if (!live.handle) {
-      await this.ensureHandle(id);
+      try {
+        await this.ensureHandle(id);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return { ok: false as const, error: message };
+      }
     }
     if (!live.handle) return { ok: false as const, error: "No session handle" };
 
@@ -623,24 +601,20 @@ export class SessionManager {
     }
 
     live.prompting = true;
-    this.conn.setConnection({
+    this.conn.setSessionConnection(id, {
       status: "prompting",
-      agentName: this.conn.connectionState.agentName,
+      agentName:
+        this.agents.find((a) => a.id === live.summary.agentId)?.name ??
+        live.connection.agentName,
       sessionId: id,
     });
 
-    // Persist the user's own message ourselves. We can't rely on the agent
-    // echoing it back via user_message_chunk — many don't, which meant user
-    // messages vanished on reload. The UI already shows this optimistically
-    // (handlePrompt), so we only persist here — not re-emit — to avoid a
-    // duplicate that the reducer would concatenate into "hellohello".
     const userUpdate: SessionUpdate = {
       sessionUpdate: "user_message_chunk",
       content: { type: "text", text },
     };
     this.store.appendEvent(id, userUpdate);
 
-    // Seeded threads: give the agent the prior message as context once.
     let promptText = text;
     if (live.contextSeed) {
       promptText = formatSeededPrompt(
@@ -652,8 +626,6 @@ export class SessionManager {
       live.contextSeedPurpose = undefined;
     }
 
-    // Inject project browser tokens into the agent prompt only (UI/history keep
-    // the clean user text). Lets multi-step OAuth tokens skip re-login.
     try {
       const tokens = this.store.listBrowserTokens(live.summary.cwd);
       promptText = injectBrowserTokensIntoPrompt(promptText, tokens);
@@ -661,58 +633,44 @@ export class SessionManager {
       console.warn("[session-manager] browser token inject failed:", err);
     }
 
-    // Don't await the full turn — stream via events. But we should catch errors.
     void live.handle
       .prompt(promptText)
       .then((result) => {
         live.prompting = false;
-        // If the session was disposed mid-prompt, stopUpdatePump resolves with
-        // cancelled and onTurnEnd may not run — restore a non-error state.
         if (
           result.stopReason === "cancelled" &&
-          this.conn.connectionState.status === "prompting" &&
-          (this.conn.connectionState.sessionId === id ||
-            this.activeSessionId === id)
+          live.connection.status === "prompting"
         ) {
-          this.conn.setConnection({
-            status: this.conn.client ? "ready" : "idle",
-            agentName: this.conn.connectionState.agentName,
-            sessionId: this.activeSessionId,
+          this.conn.setSessionConnection(id, {
+            status: live.client ? "ready" : "idle",
+            agentName: live.connection.agentName,
+            sessionId: id,
           });
         }
-        // User may have switched away mid-turn; open the viewed chat now.
-        this.schedulePrepareActiveIfIdle();
       })
       .catch((err) => {
         live.prompting = false;
         const message = err instanceof Error ? err.message : String(err);
-        // Benign lifecycle races (switch/offload/dispose while prompting).
-        // Do not paint the connection banner as if the agent binary is broken.
         if (
           /session disposed|session is not active|a prompt is already in progress/i.test(
             message,
           )
         ) {
           console.warn("[session-manager] prompt interrupted:", message);
-          if (
-            this.conn.connectionState.status === "prompting" &&
-            (this.conn.connectionState.sessionId === id ||
-              this.activeSessionId === id)
-          ) {
-            this.conn.setConnection({
-              status: this.conn.client ? "ready" : "idle",
-              agentName: this.conn.connectionState.agentName,
-              sessionId: this.activeSessionId,
+          if (live.connection.status === "prompting") {
+            this.conn.setSessionConnection(id, {
+              status: live.client ? "ready" : "idle",
+              agentName: live.connection.agentName,
+              sessionId: id,
             });
           }
-          this.schedulePrepareActiveIfIdle();
           return;
         }
         console.error("[session-manager] prompt failed:", message);
-        this.conn.setConnection({
+        this.conn.setSessionConnection(id, {
           status: "error",
           error: message,
-          agentName: this.conn.connectionState.agentName,
+          agentName: live.connection.agentName,
           sessionId: id,
         });
       });
@@ -727,13 +685,11 @@ export class SessionManager {
     if (!live?.handle) return { ok: false };
     await live.handle.cancel();
     live.prompting = false;
-    this.conn.setConnection({
+    this.conn.setSessionConnection(id, {
       status: "ready",
-      agentName: this.conn.connectionState.agentName,
-      sessionId: this.activeSessionId,
+      agentName: live.connection.agentName,
+      sessionId: id,
     });
-    // If the user was viewing another chat, attach its agent now.
-    this.schedulePrepareActiveIfIdle();
     return { ok: true };
   }
 
@@ -747,6 +703,27 @@ export class SessionManager {
     });
   }
 
+  private queueUserQuestion(
+    params: GrokAskUserQuestionParsed & { requestId: string },
+  ): Promise<GrokAskUserQuestionResponse> {
+    const requestId = params.requestId;
+    return new Promise((resolve) => {
+      this.pendingUserQuestions.set(requestId, { resolve, params });
+      const agentSid = params.sessionId;
+      const localId = agentSid
+        ? (this.conn.agentToLocal.get(agentSid) ?? agentSid)
+        : (this.activeSessionId ?? agentSid);
+      const req: UserQuestionRequest = {
+        requestId,
+        sessionId: localId,
+        toolCallId: params.toolCallId,
+        questions: params.questions,
+        annotations: params.annotations,
+      };
+      this.events.onUserQuestionRequest(req);
+    });
+  }
+
   respondPermission(requestId: string, optionId: string) {
     const pending = this.pendingPermissions.get(requestId);
     if (!pending) return { ok: false };
@@ -754,12 +731,48 @@ export class SessionManager {
 
     const opt = pending.params.options.find((o) => o.optionId === optionId);
     if (opt?.kind === "allow_always" && pending.params.toolCall.kind) {
-      this.conn.client?.rememberAlways(pending.params.toolCall.kind);
+      const agentSid = pending.params.sessionId;
+      const localId = agentSid
+        ? (this.conn.agentToLocal.get(agentSid) ?? agentSid)
+        : this.activeSessionId;
+      if (localId) {
+        this.conn
+          .clientForSession(localId)
+          ?.rememberAlways(pending.params.toolCall.kind);
+      }
     }
 
     pending.resolve({
       outcome: { outcome: "selected", optionId },
     });
+    return { ok: true };
+  }
+
+  respondUserQuestion(decision: UserQuestionDecision) {
+    const pending = this.pendingUserQuestions.get(decision.requestId);
+    if (!pending) return { ok: false };
+    this.pendingUserQuestions.delete(decision.requestId);
+
+    if (decision.action === "accepted") {
+      pending.resolve(
+        toGrokAskUserQuestionResponse({
+          action: "accepted",
+          answers: decision.answers,
+          partialAnswers: decision.partialAnswers,
+        }),
+      );
+    } else if (decision.action === "skip_interview") {
+      pending.resolve(
+        toGrokAskUserQuestionResponse({ action: "skip_interview" }),
+      );
+    } else {
+      pending.resolve(
+        toGrokAskUserQuestionResponse({
+          action: "chat_about_this",
+          message: decision.message,
+        }),
+      );
+    }
     return { ok: true };
   }
 
@@ -773,10 +786,8 @@ export class SessionManager {
   }
 
   async dispose() {
-    for (const live of this.live.values()) {
-      live.handle?.dispose();
-    }
     await this.conn.dispose();
+    this.live.clear();
     this.store.close();
   }
 }

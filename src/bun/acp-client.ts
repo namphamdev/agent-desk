@@ -33,10 +33,22 @@ import {
 } from "./translate";
 import type { SessionUpdate } from "../session/types";
 import { buildBrowserMcpServers } from "./browser-mcp";
+import {
+  GROK_ASK_USER_QUESTION_METHOD,
+  normalizeGrokAskUserQuestion,
+  parseGrokAskUserQuestionParams,
+  toGrokAskUserQuestionResponse,
+  type GrokAskUserQuestionParsed,
+  type GrokAskUserQuestionResponse,
+} from "./user-question";
 
 export type PermissionHandler = (
   req: RequestPermissionRequest & { requestId: string },
 ) => Promise<RequestPermissionResponse>;
+
+export type UserQuestionHandler = (
+  req: GrokAskUserQuestionParsed & { requestId: string },
+) => Promise<GrokAskUserQuestionResponse>;
 
 export type AcpClientHandlers = {
   onUpdate: (sessionId: string, update: SessionUpdate) => void;
@@ -51,6 +63,8 @@ export type AcpClientHandlers = {
   onTurnEnd?: (sessionId: string, stopReason: string) => void;
   onError?: (error: unknown) => void;
   onPermission: PermissionHandler;
+  /** Grok `_x.ai/ask_user_question` extension (optional). */
+  onUserQuestion?: UserQuestionHandler;
   enableFs?: boolean;
   /** Inject in-app browser MCP on session/new (default false if omitted). */
   enableBrowserMcp?: boolean;
@@ -267,6 +281,14 @@ export class AcpClient {
         return self.handlePermission(c.params);
       });
 
+    if (this.handlers.onUserQuestion) {
+      app.onRequest(
+        GROK_ASK_USER_QUESTION_METHOD,
+        parseGrokAskUserQuestionParams,
+        async (c) => self.handleUserQuestion(c.params),
+      );
+    }
+
     if (this.handlers.enableFs) {
       app
         .onRequest(acp.methods.client.fs.readTextFile, async (c) => {
@@ -308,6 +330,11 @@ export class AcpClient {
         session: {
           configOptions: {
             boolean: {},
+          },
+        },
+        _meta: {
+          "x.ai": {
+            ask_user_question: !!this.handlers.onUserQuestion,
           },
         },
       },
@@ -810,6 +837,26 @@ export class AcpClient {
     }
 
     return response;
+  }
+
+  private async handleUserQuestion(
+    params: ReturnType<typeof parseGrokAskUserQuestionParams>,
+  ): Promise<GrokAskUserQuestionResponse> {
+    const handler = this.handlers.onUserQuestion;
+    if (!handler) {
+      return toGrokAskUserQuestionResponse({ action: "skip_interview" });
+    }
+    const parsed = normalizeGrokAskUserQuestion(params);
+    if (parsed.questions.length === 0) {
+      return toGrokAskUserQuestionResponse({ action: "skip_interview" });
+    }
+    const requestId = `uq-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    try {
+      return await handler({ ...parsed, requestId });
+    } catch (err) {
+      console.warn("[acp] user question handler failed:", err);
+      return toGrokAskUserQuestionResponse({ action: "skip_interview" });
+    }
   }
 
   rememberAlways(kind: string) {

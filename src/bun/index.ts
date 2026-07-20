@@ -361,6 +361,9 @@ const terminalRPC = BrowserView.defineRPC<TerminalRPC>({
       respondPermission: async ({ requestId, optionId }) => {
         return manager.respondPermission(requestId, optionId);
       },
+      respondUserQuestion: async (decision) => {
+        return manager.respondUserQuestion(decision);
+      },
       openFile: async ({ path, line }) => {
         return manager.openFile(path, line);
       },
@@ -642,6 +645,14 @@ manager = new SessionManager(
     }
     remoteAccess?.onPermissionRequest(req);
   },
+  onUserQuestionRequest: (req) => {
+    try {
+      rpc()?.send.onUserQuestionRequest(req);
+    } catch (err) {
+      console.warn("[rpc] onUserQuestionRequest failed:", err);
+    }
+    remoteAccess?.onUserQuestionRequest(req);
+  },
   onSessionList: (sessions, activeSessionId) => {
     try {
       rpc()?.send.onSessionList({ sessions, activeSessionId });
@@ -804,6 +815,8 @@ remoteAccess = new RemoteAccessServer({
   offloadSession: (sessionId) => manager.offloadSession(sessionId),
   respondPermission: async (requestId, optionId) =>
     manager.respondPermission(requestId, optionId),
+  respondUserQuestion: async (decision) =>
+    manager.respondUserQuestion(decision),
   openFile: (path, line) => manager.openFile(path, line),
   getSettings: () => manager.getSettings(),
   saveSettings: (patch) => manager.saveSettings(patch),

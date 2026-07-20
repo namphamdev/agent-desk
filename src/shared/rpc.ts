@@ -68,6 +68,53 @@ export type PermissionDecision = {
   optionId: string;
 };
 
+/** One selectable choice in a Grok `ask_user_question` prompt. */
+export type UserQuestionOption = {
+  label: string;
+  description?: string;
+  /** Optional rich preview shown when focused (single-select only). */
+  preview?: string;
+};
+
+/** One question from Grok ACP `_x.ai/ask_user_question`. */
+export type UserQuestionItem = {
+  question: string;
+  header?: string;
+  options: UserQuestionOption[];
+  multiSelect?: boolean;
+};
+
+/**
+ * Grok ACP extension: agent asks clarifying questions and waits for answers.
+ * Method: `_x.ai/ask_user_question`.
+ */
+export type UserQuestionRequest = {
+  requestId: string;
+  sessionId: string;
+  toolCallId?: string | null;
+  questions: UserQuestionItem[];
+  /** Opaque annotation map from the agent (echoed when present). */
+  annotations?: Record<string, unknown> | null;
+};
+
+/**
+ * User response for `_x.ai/ask_user_question`.
+ * Answers are keyed by full question text (Grok wire format).
+ */
+export type UserQuestionDecision =
+  | {
+      requestId: string;
+      action: "accepted";
+      answers: Record<string, string>;
+      partialAnswers?: boolean;
+    }
+  | { requestId: string; action: "skip_interview" }
+  | {
+      requestId: string;
+      action: "chat_about_this";
+      message?: string;
+    };
+
 export type AvailableCommand = {
   name: string;
   description?: string;
@@ -464,6 +511,10 @@ export type TerminalRPC = {
         params: PermissionDecision;
         response: { ok: boolean };
       };
+      respondUserQuestion: {
+        params: UserQuestionDecision;
+        response: { ok: boolean };
+      };
       openFile: {
         params: { path: string; line?: number };
         response: { ok: boolean; error?: string };
@@ -753,6 +804,7 @@ export type TerminalRPC = {
       onTurnEnd: TurnEndPayload;
       onConnectionState: ConnectionStatePayload;
       onPermissionRequest: PermissionRequest;
+      onUserQuestionRequest: UserQuestionRequest;
       onSessionList: SessionListPayload;
       onSessionLoaded: SessionLoadedPayload;
       onCommands: { sessionId: string; commands: AvailableCommand[] };
