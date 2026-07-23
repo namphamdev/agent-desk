@@ -12,6 +12,12 @@
       "name": "Grok Build (ACP)",
       "command": "grok",
       "args": ["agent", "stdio"]
+    },
+    {
+      "id": "factory-droid",
+      "name": "Factory Droid (ACP)",
+      "command": "droid",
+      "args": ["exec", "--output-format", "acp"]
     }
   ]
 }

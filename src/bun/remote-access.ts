@@ -145,6 +145,11 @@ export type RemoteAccessHandlers = {
     | { ok: true; subject: string; body: string; raw: string }
     | { ok: false; error: string }
   >;
+  transcribeAudio: (
+    audioBase64: string,
+    mimeType: string,
+    fileName?: string,
+  ) => Promise<{ ok: true; text: string } | { ok: false; error: string }>;
   setConfigOption: (
     configId: string,
     value: string | boolean,
@@ -805,6 +810,12 @@ export class RemoteAccessServer {
         return h.generateGitCommitMessage(
           String(params.cwd ?? ""),
           params.agentId != null ? String(params.agentId) : undefined,
+        );
+      case "transcribeAudio":
+        return h.transcribeAudio(
+          String(params.audioBase64 ?? ""),
+          String(params.mimeType ?? "application/octet-stream"),
+          params.fileName != null ? String(params.fileName) : undefined,
         );
       case "windowControl":
         return { ok: false as const, error: "No window control on remote" };

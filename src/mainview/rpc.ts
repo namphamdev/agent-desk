@@ -111,6 +111,11 @@ type RpcClient = {
     }) => Promise<{ ok: boolean; error?: string }>;
     getSettings: () => Promise<AppSettings>;
     saveSettings: (p: Partial<AppSettings>) => Promise<AppSettings>;
+    transcribeAudio: (p: {
+      audioBase64: string;
+      mimeType: string;
+      fileName?: string;
+    }) => Promise<{ ok: true; text: string } | { ok: false; error: string }>;
     getConnectionState: () => Promise<ConnectionStatePayload>;
     connectAgent: (p?: {
       agentId?: string;
@@ -624,6 +629,10 @@ function createRemoteWsClient(code: string): RpcClient {
       getSettings: () => request("getSettings"),
       saveSettings: (p) =>
         request("saveSettings", p as Record<string, unknown>),
+      transcribeAudio: (p) =>
+        request("transcribeAudio", p as Record<string, unknown>) as Promise<
+          { ok: true; text: string } | { ok: false; error: string }
+        >,
       getConnectionState: () => request("getConnectionState"),
       connectAgent: (p) =>
         request("connectAgent", (p ?? {}) as Record<string, unknown>),
@@ -892,6 +901,12 @@ function createBrowserMock(): RpcClient {
           enableBrowserMcp: true,
           enableNotifications: true,
           enableSound: true,
+          stt: {
+            baseUrl: "",
+            apiKey: "",
+            model: "xai/grok-stt",
+            language: "en",
+          },
         };
       },
       async saveSettings(patch) {
@@ -903,7 +918,19 @@ function createBrowserMock(): RpcClient {
           enableBrowserMcp: true,
           enableNotifications: true,
           enableSound: true,
+          stt: {
+            baseUrl: "",
+            apiKey: "",
+            model: "xai/grok-stt",
+            language: "en",
+          },
           ...patch,
+        };
+      },
+      async transcribeAudio() {
+        return {
+          ok: false as const,
+          error: "Speech-to-text only available in the desktop app",
         };
       },
       async getConnectionState() {
@@ -1135,6 +1162,9 @@ async getGitBranch() {
           grokOk: false,
           grokPath: null,
           grokInstallCommand: "curl -fsSL https://x.ai/cli/install.sh | bash",
+          droidOk: false,
+          droidPath: null,
+          droidInstallCommand: "curl -fsSL https://app.factory.ai/cli | sh",
         };
       },
       async ensureAgentSetup() {

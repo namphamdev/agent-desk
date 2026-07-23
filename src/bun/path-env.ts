@@ -13,11 +13,14 @@ export function commonUserBinDirs(home = homedir()): string[] {
   const dirs = [
     join(home, ".bun", "bin"),
     join(home, ".local", "bin"),
+    join(home, "bin"),
     join(home, ".npm-global", "bin"),
     join(home, ".npm", "bin"),
     join(home, "Library", "pnpm"),
     // Grok Build (xAI) installs here: `irm https://x.ai/cli/install.ps1 | iex`
     join(home, ".grok", "bin"),
+    // Factory Droid CLI often lands here (installer / SEA layout)
+    join(home, ".factory", "bin"),
     // Homebrew
     "/opt/homebrew/bin",
     "/opt/homebrew/sbin",
@@ -39,7 +42,9 @@ export function commonUserBinDirs(home = homedir()): string[] {
       join(appData, "npm"),
       join(localAppData, "pnpm"),
       join(home, ".bun", "bin"),
+      join(home, "bin"),
       join(home, ".grok", "bin"),
+      join(home, ".factory", "bin"),
       join(home, ".npm", "bin"),
       // Official Node.js installer — required by npm .cmd shims (`"%_prog%" node …`)
       join(programFiles, "nodejs"),

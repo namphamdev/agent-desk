@@ -63,6 +63,19 @@ curl -fsSL https://x.ai/cli/install.sh | bash
 irm https://x.ai/cli/install.ps1 | iex
 ```
 
+**Factory Droid is ACP-native** (`droid exec --output-format acp`). Install from
+[app.factory.ai/cli](https://app.factory.ai/cli), then log in via `droid` or set
+`FACTORY_API_KEY`. Session MCP servers (including the built-in browser panel)
+are passed on `session/new`.
+
+```bash
+# macOS / Linux
+curl -fsSL https://app.factory.ai/cli | sh
+
+# Windows PowerShell
+irm https://app.factory.ai/cli/windows | iex
+```
+
 ```json
 {
   "defaultAgentId": "claude-code",
@@ -78,6 +91,12 @@ irm https://x.ai/cli/install.ps1 | iex
       "name": "Grok Build (ACP)",
       "command": "grok",
       "args": ["agent", "stdio"]
+    },
+    {
+      "id": "factory-droid",
+      "name": "Factory Droid (ACP)",
+      "command": "droid",
+      "args": ["exec", "--output-format", "acp"]
     }
   ]
 }

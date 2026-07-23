@@ -12,7 +12,12 @@ import type {
   UserQuestionRequest,
 } from "../../shared/rpc";
 import type { SessionUpdate } from "../../session/types";
-import { ensureAgentsConfig, ensureGrokAgentEntry, loadAgents } from "../agents";
+import {
+  ensureAgentsConfig,
+  ensureDroidAgentEntry,
+  ensureGrokAgentEntry,
+  loadAgents,
+} from "../agents";
 import { getGitBranch } from "../git-branch";
 import { generateCommitMessageViaAcp } from "../git-commit-message";
 import {
@@ -163,6 +168,7 @@ export class SessionManager {
   async init() {
     await ensureAgentsConfig();
     await ensureGrokAgentEntry();
+    await ensureDroidAgentEntry();
     const { agents, defaultAgentId } = await loadAgents();
     this.agents = agents;
     this.defaultAgentId =

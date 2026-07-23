@@ -6,7 +6,7 @@
 ## Hot facts
 
 - Stack: Electrobun + Bun main + React/Vite webview; tests via `bun test`
-- Agent protocol: ACP; Claude Code via `claude-agent-acp`; Grok Build via `grok agent stdio`
+- Agent protocol: ACP; Claude Code via `claude-agent-acp`; Grok via `grok agent stdio`; Droid via `droid exec --output-format acp`
 - App data (local, not team memory): `~/.terminal-react/`
 - Architecture home: `docs/architecture/` (arc42) — do not paste full design here
 

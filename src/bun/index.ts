@@ -45,6 +45,7 @@ import {
   updateAgentPackage,
 } from "./agents";
 import { BrowserControlServer } from "./browser-control-server";
+import { transcribeAudio } from "./stt";
 import type {
   BrowserControlRequest,
   BrowserControlResponse,
@@ -472,6 +473,13 @@ const terminalRPC = BrowserView.defineRPC<TerminalRPC>({
       generateGitCommitMessage: async ({ cwd, agentId }) => {
         return manager.generateGitCommitMessage(cwd, agentId);
       },
+      transcribeAudio: async ({ audioBase64, mimeType, fileName }) => {
+        return transcribeAudio(manager.getSettings(), {
+          audioBase64,
+          mimeType,
+          fileName,
+        });
+      },
       setConfigOption: async ({ sessionId, configId, value }) => {
         return manager.setConfigOption(configId, value, sessionId);
       },
@@ -861,6 +869,12 @@ remoteAccess = new RemoteAccessServer({
   pushGit: (cwd) => manager.pushGit(cwd),
   generateGitCommitMessage: (cwd, agentId) =>
     manager.generateGitCommitMessage(cwd, agentId),
+  transcribeAudio: (audioBase64, mimeType, fileName) =>
+    transcribeAudio(manager.getSettings(), {
+      audioBase64,
+      mimeType,
+      fileName,
+    }),
   setConfigOption: (configId, value, sessionId) =>
     manager.setConfigOption(configId, value, sessionId),
   writeClipboard: async (text) => {

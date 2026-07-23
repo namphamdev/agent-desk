@@ -28,13 +28,17 @@ describe("agents", () => {
     expect(compareVersions("v1.2.0", "1.2.0")).toBe(0);
   });
 
-  it("DEFAULT_AGENTS includes Claude and Grok Build entries", () => {
+  it("DEFAULT_AGENTS includes Claude, Grok Build, and Factory Droid entries", () => {
     const ids = DEFAULT_AGENTS.map((a) => a.id);
     expect(ids).toContain("claude-code");
     expect(ids).toContain("grok-build");
+    expect(ids).toContain("factory-droid");
     const grok = DEFAULT_AGENTS.find((a) => a.id === "grok-build")!;
     expect(grok.command).toBe("grok");
     expect(grok.args).toEqual(["agent", "stdio"]);
+    const droid = DEFAULT_AGENTS.find((a) => a.id === "factory-droid")!;
+    expect(droid.command).toBe("droid");
+    expect(droid.args).toEqual(["exec", "--output-format", "acp"]);
   });
   it("exposes config path under the home data dir", () => {
     expect(agentsConfigPath()).toBe(join(agentsConfigDir(), "agents.json"));
@@ -70,6 +74,7 @@ describe("agents", () => {
     expect(status.configExists).toBe(true);
     expect(status.installCommand).toContain("claude-agent-acp");
     expect(status.grokInstallCommand.length).toBeGreaterThan(0);
+    expect(status.droidInstallCommand.length).toBeGreaterThan(0);
     expect(Array.isArray(status.agents)).toBe(true);
     // Each entry has ok + resolvedPath fields (may or may not resolve on CI).
     for (const a of status.agents) {
@@ -81,6 +86,7 @@ describe("agents", () => {
     }
     expect(typeof status.claudeAcpOk).toBe("boolean");
     expect(typeof status.grokOk).toBe("boolean");
+    expect(typeof status.droidOk).toBe("boolean");
     expect(typeof status.ready).toBe("boolean");
   });
 });

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowUp, ChevronDown, Square, X } from "lucide-react";
+import { ArrowUp, ChevronDown, Loader2, Mic, Square, X } from "lucide-react";
 import type {
   AvailableCommand,
   ClaudeModelAlias,
@@ -8,11 +8,18 @@ import type {
   SessionUsage,
 } from "../../shared/rpc";
 import type { QueuedPrompt } from "../promptQueue";
+import { getRpc } from "../rpc";
 import { Button } from "@/components/ui/button";
 import {
   shouldFocusPromptInput,
   type PromptFocusTarget,
 } from "./promptFocus";
+import {
+  appendTranscript,
+  blobToBase64,
+  isSttReady,
+  pickRecorderMimeType,
+} from "./sttRecording";
 
 const MODEL_ALIAS_LABELS: Record<ClaudeModelAlias, string> = {
   haiku: "Haiku",
@@ -40,6 +47,11 @@ type Props = {
   providers?: ProviderConfig[];
   activeProviderId?: string | null;
   activeModelAlias?: ClaudeModelAlias;
+  /**
+   * STT credentials from Settings → Speech. When base URL + key are set,
+   * the mic button is enabled.
+   */
+  stt?: { baseUrl?: string; apiKey?: string } | null;
   onSubmit: (text: string) => void | Promise<void>;
   onCancel?: () => void | Promise<void>;
   onRemoveQueued?: (id: string) => void;
@@ -57,6 +69,8 @@ type Props = {
     alias: ClaudeModelAlias,
   ) => void | Promise<void>;
 };
+
+type MicState = "idle" | "recording" | "transcribing";
 
 const MODEL_ALIASES: ClaudeModelAlias[] = ["haiku", "sonnet", "opus"];
 
@@ -126,6 +140,7 @@ export function PromptInput({
   providers = [],
   activeProviderId = null,
   activeModelAlias = "sonnet",
+  stt = null,
   onSubmit,
   onCancel,
   onRemoveQueued,
@@ -137,9 +152,155 @@ export function PromptInput({
   const [showCommands, setShowCommands] = useState(false);
   const [selectedCommandIndex, setSelectedCommandIndex] = useState(0);
   const [settingConfig, setSettingConfig] = useState(false);
+  const [micState, setMicState] = useState<MicState>("idle");
+  const [micError, setMicError] = useState<string | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   /** Prevents Enter+click or repeated keydown from double-submitting. */
   const submittingRef = useRef(false);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const sttConfigured = isSttReady(stt);
+
+  const stopMediaTracks = () => {
+    const stream = mediaStreamRef.current;
+    mediaStreamRef.current = null;
+    if (!stream) return;
+    for (const track of stream.getTracks()) {
+      try {
+        track.stop();
+      } catch {
+        /* ignore */
+      }
+    }
+  };
+
+  useEffect(() => {
+    return () => {
+      const rec = mediaRecorderRef.current;
+      mediaRecorderRef.current = null;
+      if (rec && rec.state !== "inactive") {
+        try {
+          rec.stop();
+        } catch {
+          /* ignore */
+        }
+      }
+      stopMediaTracks();
+    };
+  }, []);
+
+  const finishRecordingAndTranscribe = async (blob: Blob, mimeType: string) => {
+    setMicState("transcribing");
+    setMicError(null);
+    try {
+      if (blob.size === 0) {
+        setMicError("No audio captured. Try again.");
+        setMicState("idle");
+        return;
+      }
+      const audioBase64 = await blobToBase64(blob);
+      const res = await getRpc().request.transcribeAudio({
+        audioBase64,
+        mimeType: mimeType || blob.type || "application/octet-stream",
+      });
+      if (!res.ok) {
+        setMicError(res.error || "Transcription failed");
+        setMicState("idle");
+        return;
+      }
+      setValue((prev) => appendTranscript(prev, res.text));
+      setMicState("idle");
+      inputRef.current?.focus();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setMicError(message || "Transcription failed");
+      setMicState("idle");
+    }
+  };
+
+  const stopRecording = () => {
+    const rec = mediaRecorderRef.current;
+    if (!rec || rec.state === "inactive") {
+      setMicState("idle");
+      stopMediaTracks();
+      return;
+    }
+    try {
+      rec.stop();
+    } catch {
+      setMicState("idle");
+      stopMediaTracks();
+    }
+  };
+
+  const startRecording = async () => {
+    if (disabled || micState !== "idle") return;
+    setMicError(null);
+    if (!sttConfigured) {
+      setMicError("Configure speech-to-text in Settings → Speech.");
+      return;
+    }
+    if (
+      typeof navigator === "undefined" ||
+      !navigator.mediaDevices?.getUserMedia ||
+      typeof MediaRecorder === "undefined"
+    ) {
+      setMicError("Microphone recording is not supported in this environment.");
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      mediaStreamRef.current = stream;
+      audioChunksRef.current = [];
+      const mimeType = pickRecorderMimeType();
+      const recorder = mimeType
+        ? new MediaRecorder(stream, { mimeType })
+        : new MediaRecorder(stream);
+      mediaRecorderRef.current = recorder;
+      const chosenMime = recorder.mimeType || mimeType || "audio/webm";
+
+      recorder.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) audioChunksRef.current.push(e.data);
+      };
+      recorder.onerror = () => {
+        setMicError("Recording failed.");
+        setMicState("idle");
+        stopMediaTracks();
+        mediaRecorderRef.current = null;
+      };
+      recorder.onstop = () => {
+        mediaRecorderRef.current = null;
+        stopMediaTracks();
+        const chunks = audioChunksRef.current;
+        audioChunksRef.current = [];
+        const blob = new Blob(chunks, { type: chosenMime });
+        void finishRecordingAndTranscribe(blob, chosenMime);
+      };
+
+      recorder.start();
+      setMicState("recording");
+    } catch (err) {
+      stopMediaTracks();
+      const name = err instanceof DOMException ? err.name : "";
+      if (name === "NotAllowedError" || name === "PermissionDeniedError") {
+        setMicError("Microphone permission denied.");
+      } else {
+        const message = err instanceof Error ? err.message : String(err);
+        setMicError(message || "Could not access microphone.");
+      }
+      setMicState("idle");
+    }
+  };
+
+  const toggleMic = () => {
+    if (micState === "recording") {
+      stopRecording();
+      return;
+    }
+    if (micState === "transcribing") return;
+    void startRecording();
+  };
 
   /**
    * Focus the prompt when safe: not disabled, no modal/dialog open, and the
@@ -380,10 +541,18 @@ export function PromptInput({
           </div>
         )}
         <div className="relative px-4 py-3">
+          {micError && (
+            <p
+              className="mb-2 text-[11px] text-destructive"
+              role="alert"
+            >
+              {micError}
+            </p>
+          )}
           <textarea
             ref={inputRef}
             value={value}
-            disabled={disabled}
+            disabled={disabled || micState === "transcribing"}
             rows={1}
             onChange={(e) => setValue(e.target.value)}
             onKeyDown={(e) => {
@@ -432,9 +601,13 @@ export function PromptInput({
             placeholder={
               disabled
                 ? "Connecting to agent…"
-                : prompting
-                  ? "Queue a follow-up… (Enter to queue, Shift+Enter for newline, Esc to stop)"
-                  : "Ask anything — or / for commands (Shift+Enter for newline)"
+                : micState === "recording"
+                  ? "Listening… click the mic again to stop"
+                  : micState === "transcribing"
+                    ? "Transcribing…"
+                    : prompting
+                      ? "Queue a follow-up… (Enter to queue, Shift+Enter for newline, Esc to stop)"
+                      : "Ask anything — or / for commands (Shift+Enter for newline)"
             }
             aria-label="Prompt input"
             aria-autocomplete="list"
@@ -564,10 +737,46 @@ export function PromptInput({
             )}
             <Button
               type="button"
+              variant={micState === "recording" ? "destructive" : "ghost"}
+              size="icon-sm"
+              onClick={() => toggleMic()}
+              disabled={disabled || micState === "transcribing"}
+              aria-label={
+                micState === "recording"
+                  ? "Stop recording"
+                  : micState === "transcribing"
+                    ? "Transcribing"
+                    : "Dictate with microphone"
+              }
+              title={
+                !sttConfigured
+                  ? "Configure speech-to-text in Settings → Speech"
+                  : micState === "recording"
+                    ? "Stop recording"
+                    : micState === "transcribing"
+                      ? "Transcribing…"
+                      : "Dictate"
+              }
+              className={
+                micState === "recording"
+                  ? "animate-pulse"
+                  : !sttConfigured
+                    ? "text-muted-foreground/50"
+                    : undefined
+              }
+            >
+              {micState === "transcribing" ? (
+                <Loader2 className="size-4 animate-spin" aria-hidden />
+              ) : (
+                <Mic className="size-4" aria-hidden />
+              )}
+            </Button>
+            <Button
+              type="button"
               variant="secondary"
               size="icon-sm"
               onClick={() => void submit()}
-              disabled={!canSend}
+              disabled={!canSend || micState === "transcribing"}
               aria-label={prompting ? "Queue prompt" : "Send prompt"}
               title={prompting ? "Queue follow-up (sends when agent finishes)" : "Send"}
             >

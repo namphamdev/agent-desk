@@ -10,7 +10,8 @@ export type SettingsTab =
   | "claude"
   | "remote"
   | "alerts"
-  | "workflows";
+  | "workflows"
+  | "speech";
 
 export type SettingsPanelProps = {
   settings: AppSettings;

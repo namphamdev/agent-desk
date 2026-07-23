@@ -199,6 +199,21 @@ export type ProviderConfig = {
   };
 };
 
+/**
+ * Speech-to-text provider (OpenAI-compatible `/v1/audio/transcriptions`).
+ * Used by the prompt-bar mic button. Credentials stay in local app settings.
+ */
+export type SttSettings = {
+  /** API base URL (e.g. https://api.example.com or a gateway root). */
+  baseUrl: string;
+  /** Bearer token for Authorization. */
+  apiKey: string;
+  /** Model id (e.g. xai/grok-stt). */
+  model: string;
+  /** BCP-47 / ISO language hint (e.g. en). Empty = provider default. */
+  language: string;
+};
+
 export type AppSettings = {
   editorCommand: string;
   theme: "dark" | "light" | "system";
@@ -254,6 +269,8 @@ export type AppSettings = {
    * when present and non-empty.
    */
   workflows?: WorkflowDefinition[];
+  /** Speech-to-text credentials for the prompt-bar microphone. */
+  stt?: SttSettings;
 };
 
 /** Options for opening a new session inside a git worktree. */
@@ -363,12 +380,17 @@ export type AgentSetupStatus = {
   grokPath: string | null;
   /** Platform install command for Grok Build. */
   grokInstallCommand: string;
+  /** `droid` binary (or agents.json entry for Factory Droid ACP) resolves. */
+  droidOk: boolean;
+  droidPath: string | null;
+  /** Platform install command for Factory Droid CLI. */
+  droidInstallCommand: string;
 };
 
 /** Which external ACP agent package Settings can check/update. */
-export type AgentPackageId = "claude" | "grok";
+export type AgentPackageId = "claude" | "grok" | "droid";
 
-/** Result of checking whether Claude ACP or Grok CLI has an update. */
+/** Result of checking whether Claude ACP, Grok, or Droid CLI has an update. */
 export type AgentPackageUpdateStatus = {
   package: AgentPackageId;
   /** Binary / package is present on this machine. */
@@ -379,7 +401,7 @@ export type AgentPackageUpdateStatus = {
   error?: string | null;
 };
 
-/** Result of installing/updating Claude ACP or Grok CLI. */
+/** Result of installing/updating Claude ACP, Grok, or Droid CLI. */
 export type AgentPackageUpdateResult =
   | {
       ok: true;
@@ -662,6 +684,23 @@ export type TerminalRPC = {
           | { ok: true; subject: string; body: string; raw: string }
           | { ok: false; error: string };
       };
+      /**
+       * Transcribe recorded audio via the configured STT provider
+       * (POST {baseUrl}/v1/audio/transcriptions).
+       */
+      transcribeAudio: {
+        params: {
+          /** Base64-encoded audio bytes (no data: URL prefix). */
+          audioBase64: string;
+          /** MIME type from MediaRecorder (e.g. audio/webm). */
+          mimeType: string;
+          /** Optional filename hint for the multipart part. */
+          fileName?: string;
+        };
+        response:
+          | { ok: true; text: string }
+          | { ok: false; error: string };
+      };
       windowControl: {
         params: { action: "close" | "minimize" | "maximize" };
         response: { ok: true } | { ok: false; error?: string };
@@ -728,14 +767,14 @@ export type TerminalRPC = {
         response: AgentSetupStatus;
       };
       /**
-       * Check npm (Claude ACP adapter) or `grok update --check` for a newer version.
+       * Check npm (Claude ACP adapter), `grok update --check`, or Droid CLI for a newer version.
        */
       checkAgentPackageUpdate: {
         params: { package: AgentPackageId };
         response: AgentPackageUpdateStatus;
       };
       /**
-       * Install/update Claude ACP (`npm i -g …`) or Grok CLI (`grok update`).
+       * Install/update Claude ACP (`npm i -g …`), Grok (`grok update`), or Droid CLI.
        */
       updateAgentPackage: {
         params: { package: AgentPackageId };

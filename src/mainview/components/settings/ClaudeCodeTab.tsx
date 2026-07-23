@@ -1,6 +1,6 @@
 /**
  * Settings → Claude Code / Agents: diagnose ACP agent binaries
- * (claude-agent-acp + Grok Build) and agents.json.
+ * (claude-agent-acp, Grok Build, Factory Droid) and agents.json.
  */
 import { useCallback, useEffect, useState } from "react";
 import type {
@@ -36,12 +36,14 @@ export function ClaudeCodeTab() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [copiedInstall, setCopiedInstall] = useState<"claude" | "grok" | null>(
-    null,
-  );
+  const [copiedInstall, setCopiedInstall] = useState<
+    "claude" | "grok" | "droid" | null
+  >(null);
   const [claudeUpdate, setClaudeUpdate] =
     useState<AgentPackageUpdateStatus | null>(null);
   const [grokUpdate, setGrokUpdate] =
+    useState<AgentPackageUpdateStatus | null>(null);
+  const [droidUpdate, setDroidUpdate] =
     useState<AgentPackageUpdateStatus | null>(null);
   const [checking, setChecking] = useState<AgentPackageId | "all" | null>(null);
   const [updating, setUpdating] = useState<AgentPackageId | null>(null);
@@ -89,9 +91,13 @@ export function ClaudeCodeTab() {
     }
   };
 
-  const copyInstall = async (kind: "claude" | "grok") => {
+  const copyInstall = async (kind: "claude" | "grok" | "droid") => {
     const cmd =
-      kind === "claude" ? status?.installCommand : status?.grokInstallCommand;
+      kind === "claude"
+        ? status?.installCommand
+        : kind === "grok"
+          ? status?.grokInstallCommand
+          : status?.droidInstallCommand;
     if (!cmd) return;
     try {
       await navigator.clipboard?.writeText(cmd);
@@ -108,7 +114,8 @@ export function ClaudeCodeTab() {
     try {
       const next = await getRpc().request.checkAgentPackageUpdate({ package: pkg });
       if (pkg === "claude") setClaudeUpdate(next);
-      else setGrokUpdate(next);
+      else if (pkg === "grok") setGrokUpdate(next);
+      else setDroidUpdate(next);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -120,12 +127,14 @@ export function ClaudeCodeTab() {
     setChecking("all");
     setError(null);
     try {
-      const [claude, grok] = await Promise.all([
+      const [claude, grok, droid] = await Promise.all([
         getRpc().request.checkAgentPackageUpdate({ package: "claude" }),
         getRpc().request.checkAgentPackageUpdate({ package: "grok" }),
+        getRpc().request.checkAgentPackageUpdate({ package: "droid" }),
       ]);
       setClaudeUpdate(claude);
       setGrokUpdate(grok);
+      setDroidUpdate(droid);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -140,7 +149,8 @@ export function ClaudeCodeTab() {
       const result = await getRpc().request.updateAgentPackage({ package: pkg });
       if (result.status) {
         if (pkg === "claude") setClaudeUpdate(result.status);
-        else setGrokUpdate(result.status);
+        else if (pkg === "grok") setGrokUpdate(result.status);
+        else setDroidUpdate(result.status);
       }
       if (!result.ok) {
         setError(result.error);
@@ -163,7 +173,9 @@ export function ClaudeCodeTab() {
         Claude Code uses the adapter{" "}
         <code className="text-muted-foreground">claude-agent-acp</code>; Grok Build speaks
         ACP natively via{" "}
-        <code className="text-muted-foreground">grok agent stdio</code>.
+        <code className="text-muted-foreground">grok agent stdio</code>; Factory Droid via{" "}
+        <code className="text-muted-foreground">droid exec --output-format acp</code>.
+        Built-in browser MCP is registered on session/new for all of them.
       </p>
 
       {error && (
@@ -257,6 +269,21 @@ export function ClaudeCodeTab() {
               </li>
               <li className="flex flex-col gap-0.5">
                 <StatusDot
+                  ok={status.droidOk}
+                  label={
+                    status.droidOk
+                      ? "droid found"
+                      : "droid not found on PATH (~/bin, ~/.local/bin)"
+                  }
+                />
+                {status.droidPath && (
+                  <code className="ml-3.5 break-all font-mono text-[10px] text-muted-foreground">
+                    {status.droidPath}
+                  </code>
+                )}
+              </li>
+              <li className="flex flex-col gap-0.5">
+                <StatusDot
                   ok={status.configExists}
                   label={
                     status.configExists
@@ -345,11 +372,50 @@ export function ClaudeCodeTab() {
                   </Button>
                 </div>
               </li>
+              <li className="flex flex-col gap-2 border-t border-border pt-2 sm:flex-row sm:items-center sm:justify-between">
+                <div className="min-w-0">
+                  <div className="font-medium text-foreground">Factory Droid</div>
+                  <div className="text-[11px] text-muted-foreground">
+                    {versionLine(droidUpdate)}
+                  </div>
+                </div>
+                <div className="flex shrink-0 flex-wrap gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={actionBusy || !status.droidOk}
+                    onClick={() => void checkUpdate("droid")}
+                  >
+                    {checking === "droid" ? "Checking…" : "Check"}
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    disabled={
+                      actionBusy ||
+                      !status.droidOk ||
+                      (droidUpdate != null &&
+                        !droidUpdate.updateAvailable &&
+                        droidUpdate.installed)
+                    }
+                    onClick={() => void runUpdate("droid")}
+                  >
+                    {updating === "droid"
+                      ? "Updating…"
+                      : droidUpdate?.installed
+                        ? "Update"
+                        : "Install / update"}
+                  </Button>
+                </div>
+              </li>
             </ul>
             <p className="text-[11px] text-muted-foreground">
               Claude uses{" "}
               <code className="text-muted-foreground">npm i -g …claude-agent-acp</code>
               . Grok uses <code className="text-muted-foreground">grok update</code>.
+              Droid uses <code className="text-muted-foreground">droid update</code>{" "}
+              (or <code className="text-muted-foreground">npm i -g @factory/cli</code>).
             </p>
           </div>
 
@@ -399,6 +465,37 @@ export function ClaudeCodeTab() {
             </p>
           </div>
 
+          <div className="space-y-2">
+            <span className="block text-xs font-medium uppercase tracking-wider text-muted-foreground">
+              Install Factory Droid
+            </span>
+            <div className="flex items-stretch gap-2">
+              <code className="min-w-0 flex-1 break-all rounded-md border border-border bg-background px-2.5 py-2 font-mono text-[11px] text-foreground">
+                {status.droidInstallCommand}
+              </code>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => void copyInstall("droid")}
+                className="shrink-0"
+              >
+                {copiedInstall === "droid" ? "Copied" : "Copy"}
+              </Button>
+            </div>
+            <p className="text-[11px] text-muted-foreground">
+              Then run <code className="text-muted-foreground">droid</code> once to log in
+              (or set <code className="text-muted-foreground">FACTORY_API_KEY</code>). ACP
+              command:{" "}
+              <code className="text-muted-foreground">
+                droid exec --output-format acp
+              </code>
+              . GUI apps may not see shell PATH — ~/bin and ~/.local/bin are auto-added.
+              Session MCP (including the in-app browser) is passed via ACP{" "}
+              <code className="text-muted-foreground">session/new mcpServers</code>.
+            </p>
+          </div>
+
           <div className="flex flex-wrap gap-2">
             {!status.configExists && (
               <Button
@@ -420,7 +517,8 @@ export function ClaudeCodeTab() {
                 >
                   Open agents.json
                 </Button>
-                {!status.agents.some((a) => a.id === "grok-build") && (
+                {(!status.agents.some((a) => a.id === "grok-build") ||
+                  !status.agents.some((a) => a.id === "factory-droid")) && (
                   <Button
                     type="button"
                     variant="outline"
@@ -428,7 +526,11 @@ export function ClaudeCodeTab() {
                     disabled={busy}
                     onClick={() => void ensureConfig()}
                   >
-                    {busy ? "Updating…" : "Add Grok Build to agents.json"}
+                    {busy
+                      ? "Updating…"
+                      : !status.agents.some((a) => a.id === "factory-droid")
+                        ? "Add Factory Droid to agents.json"
+                        : "Add Grok Build to agents.json"}
                   </Button>
                 )}
               </>

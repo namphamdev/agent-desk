@@ -151,6 +151,9 @@ function mockHandlers() {
       grokOk: false,
       grokPath: null,
       grokInstallCommand: "irm https://x.ai/cli/install.ps1 | iex",
+      droidOk: false,
+      droidPath: null,
+      droidInstallCommand: "irm https://app.factory.ai/cli/windows | iex",
     }),
     ensureAgentSetup: async () => ({
       configPath: "/tmp/agents.json",
@@ -166,8 +169,11 @@ function mockHandlers() {
       grokOk: false,
       grokPath: null,
       grokInstallCommand: "irm https://x.ai/cli/install.ps1 | iex",
+      droidOk: false,
+      droidPath: null,
+      droidInstallCommand: "irm https://app.factory.ai/cli/windows | iex",
     }),
-    checkAgentPackageUpdate: async (pkg: "claude" | "grok") => ({
+    checkAgentPackageUpdate: async (pkg: "claude" | "grok" | "droid") => ({
       package: pkg,
       installed: false,
       currentVersion: null,
@@ -175,7 +181,7 @@ function mockHandlers() {
       updateAvailable: false,
       error: null,
     }),
-    updateAgentPackage: async (pkg: "claude" | "grok") => ({
+    updateAgentPackage: async (pkg: "claude" | "grok" | "droid") => ({
       ok: false as const,
       package: pkg,
       error: "n/a",

@@ -12,6 +12,7 @@ import {
   normalizeSymlinkPaths,
 } from "../shared/worktree-paths";
 import { normalizeWorkflowList } from "../session/workflows";
+import { DEFAULT_STT_SETTINGS, normalizeSttSettings } from "./stt";
 
 export const DEFAULT_SETTINGS: AppSettings = {
   editorCommand: process.env.EDITOR || process.env.VISUAL || "code",
@@ -35,6 +36,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   worktreeSymlinkPaths: [...DEFAULT_WORKTREE_SYMLINK_PATHS],
   /** Empty = built-in New-task workflows. */
   workflows: [],
+  stt: { ...DEFAULT_STT_SETTINGS },
 };
 
 const SETTINGS_KEY = "app_settings";
@@ -89,6 +91,7 @@ function normalizeSettings(parsed: Partial<AppSettings>): AppSettings {
       parsed.worktreeSymlinkPaths ?? DEFAULT_SETTINGS.worktreeSymlinkPaths,
     ),
     workflows: normalizeWorkflowList(parsed.workflows ?? []),
+    stt: normalizeSttSettings(parsed.stt ?? DEFAULT_SETTINGS.stt),
   };
 }
 

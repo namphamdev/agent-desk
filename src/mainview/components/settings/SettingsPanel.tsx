@@ -26,6 +26,7 @@ import { BASE_TABS, newProviderLocal } from "./constants";
 import { ClaudeCodeTab } from "./ClaudeCodeTab";
 import { GeneralTab } from "./GeneralTab";
 import { ProvidersTab } from "./ProvidersTab";
+import { SpeechTab } from "./SpeechTab";
 import type { SettingsPanelProps, SettingsTab } from "./types";
 
 export type { SettingsPanelProps } from "./types";
@@ -50,6 +51,9 @@ export function SettingsPanel({
     ...settings,
     providers: settings.providers ? [...settings.providers] : [],
     workflows: settings.workflows ? settings.workflows.map((w) => ({ ...w })) : [],
+    stt: settings.stt
+      ? { ...settings.stt }
+      : { baseUrl: "", apiKey: "", model: "xai/grok-stt", language: "en" },
   }));
   const [worktreePathsText, setWorktreePathsText] = useState(() =>
     formatSymlinkPathsText(settings.worktreeSymlinkPaths ?? ["node_modules"]),
@@ -293,6 +297,10 @@ export function SettingsPanel({
                 onImport={importProviders}
                 importMessage={providersImportMessage}
               />
+            )}
+
+            {tab === "speech" && (
+              <SpeechTab draft={draft} setDraft={setDraft} />
             )}
 
             {tab === "claude" && <ClaudeCodeTab />}

@@ -1,6 +1,7 @@
 /**
  * Agent discovery: read `~/.terminal-react/agents.json` (or the app data dir)
- * so users can point at ACP agent binaries (Claude Code adapter, Grok Build, …).
+ * so users can point at ACP agent binaries (Claude Code adapter, Grok Build,
+ * Factory Droid, …).
  */
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
@@ -34,6 +35,14 @@ const GROK_INSTALL_COMMAND_WIN = "irm https://x.ai/cli/install.ps1 | iex";
 /** Official Grok Build install (macOS / Linux / Git Bash). */
 const GROK_INSTALL_COMMAND_UNIX =
   "curl -fsSL https://x.ai/cli/install.sh | bash";
+/** Official Factory Droid install (Windows PowerShell). */
+const DROID_INSTALL_COMMAND_WIN =
+  "irm https://app.factory.ai/cli/windows | iex";
+/** Official Factory Droid install (macOS / Linux). */
+const DROID_INSTALL_COMMAND_UNIX =
+  "curl -fsSL https://app.factory.ai/cli | sh";
+/** npm package when Droid was installed via npm (auto-update unavailable). */
+const DROID_NPM_PACKAGE = "@factory/cli";
 
 const CMD_TIMEOUT_MS = 120_000;
 
@@ -127,6 +136,14 @@ export const DEFAULT_AGENTS: AgentsFile["agents"] = [
     command: "grok",
     args: ["agent", "stdio"],
   },
+  {
+    id: "factory-droid",
+    name: "Factory Droid (ACP)",
+    // Native ACP: https://docs.factory.ai/integrations/zed
+    // Install: https://app.factory.ai/cli — often ~/bin or ~/.local/bin
+    command: "droid",
+    args: ["exec", "--output-format", "acp"],
+  },
 ];
 
 function slugify(name: string): string {
@@ -157,10 +174,31 @@ function isGrokCommand(command: string, args: string[] = []): boolean {
   return args[0] === "agent" && (args[1] === "stdio" || args.length === 1);
 }
 
+function isDroidCommand(command: string, args: string[] = []): boolean {
+  const base = command.replace(/\\/g, "/").split("/").pop() ?? command;
+  const name = base.replace(/\.exe$/i, "").toLowerCase();
+  if (name !== "droid") return false;
+  // Bare `droid` is the TUI; ACP needs `exec --output-format acp`.
+  if (args.length === 0) return true;
+  if (args[0] !== "exec") return false;
+  const fmtIdx = args.findIndex(
+    (a) => a === "--output-format" || a === "-o",
+  );
+  if (fmtIdx >= 0 && args[fmtIdx + 1] === "acp") return true;
+  // Still treat as Droid agent entry even if format flag is incomplete.
+  return true;
+}
+
 function grokInstallCommand(): string {
   return process.platform === "win32"
     ? GROK_INSTALL_COMMAND_WIN
     : GROK_INSTALL_COMMAND_UNIX;
+}
+
+function droidInstallCommand(): string {
+  return process.platform === "win32"
+    ? DROID_INSTALL_COMMAND_WIN
+    : DROID_INSTALL_COMMAND_UNIX;
 }
 
 export async function loadAgents(): Promise<{
@@ -207,7 +245,7 @@ export function agentsConfigDir(): string {
 
 /**
  * Write a starter agents.json if none exists, so users know where to put
- * ACP agent binaries (Claude Code adapter and Grok Build).
+ * ACP agent binaries (Claude Code adapter, Grok Build, Factory Droid).
  */
 export async function ensureAgentsConfig(): Promise<void> {
   const file = Bun.file(AGENTS_PATH);
@@ -227,10 +265,12 @@ export async function ensureAgentsConfig(): Promise<void> {
 }
 
 /**
- * If agents.json exists but lacks Grok Build, append it (idempotent).
- * Does not change defaultAgentId.
+ * Append a missing default agent entry (idempotent). Does not change defaultAgentId.
  */
-export async function ensureGrokAgentEntry(): Promise<boolean> {
+async function ensureDefaultAgentEntry(
+  agentId: "grok-build" | "factory-droid",
+  isMatch: (command: string, args: string[]) => boolean,
+): Promise<boolean> {
   const file = Bun.file(AGENTS_PATH);
   if (!(await file.exists())) return false;
 
@@ -242,23 +282,39 @@ export async function ensureGrokAgentEntry(): Promise<boolean> {
   }
 
   const list = Array.isArray(raw.agents) ? [...raw.agents] : [];
-  const hasGrok = list.some(
+  const has = list.some(
     (a) =>
-      a?.id === "grok-build" ||
-      (a?.command && isGrokCommand(a.command, a.args ?? [])),
+      a?.id === agentId ||
+      (a?.command && isMatch(a.command, a.args ?? [])),
   );
-  if (hasGrok) return false;
+  if (has) return false;
 
-  const grok = DEFAULT_AGENTS.find((a) => a.id === "grok-build")!;
-  list.push({ ...grok, args: [...(grok.args ?? [])] });
+  const entry = DEFAULT_AGENTS.find((a) => a.id === agentId)!;
+  list.push({ ...entry, args: [...(entry.args ?? [])] });
   raw.agents = list;
   await Bun.write(AGENTS_PATH, `${JSON.stringify(raw, null, 2)}\n`);
-  console.log(`[agents] added grok-build to ${AGENTS_PATH}`);
+  console.log(`[agents] added ${agentId} to ${AGENTS_PATH}`);
   return true;
 }
 
 /**
- * Diagnose Claude Code / Grok / ACP agent setup for the Settings UI.
+ * If agents.json exists but lacks Grok Build, append it (idempotent).
+ * Does not change defaultAgentId.
+ */
+export async function ensureGrokAgentEntry(): Promise<boolean> {
+  return ensureDefaultAgentEntry("grok-build", isGrokCommand);
+}
+
+/**
+ * If agents.json exists but lacks Factory Droid, append it (idempotent).
+ * Does not change defaultAgentId.
+ */
+export async function ensureDroidAgentEntry(): Promise<boolean> {
+  return ensureDefaultAgentEntry("factory-droid", isDroidCommand);
+}
+
+/**
+ * Diagnose Claude Code / Grok / Droid ACP agent setup for the Settings UI.
  * Resolves each agents.json command against the augmented PATH used for spawn.
  */
 export async function getAgentSetupStatus(): Promise<AgentSetupStatus> {
@@ -293,6 +349,12 @@ export async function getAgentSetupStatus(): Promise<AgentSetupStatus> {
   const grokPath =
     grokFromConfig?.resolvedPath ?? resolveExecutable("grok");
 
+  const droidFromConfig = entries.find(
+    (e) => e.ok && isDroidCommand(e.command, e.args),
+  );
+  const droidPath =
+    droidFromConfig?.resolvedPath ?? resolveExecutable("droid");
+
   const ready = configExists && entries.some((e) => e.ok);
 
   return {
@@ -309,13 +371,17 @@ export async function getAgentSetupStatus(): Promise<AgentSetupStatus> {
     grokOk: grokPath != null,
     grokPath,
     grokInstallCommand: grokInstallCommand(),
+    droidOk: droidPath != null,
+    droidPath,
+    droidInstallCommand: droidInstallCommand(),
   };
 }
 
-/** Ensure starter agents.json exists (with Grok entry), then return diagnostics. */
+/** Ensure starter agents.json exists (with Grok + Droid entries), then return diagnostics. */
 export async function ensureAgentSetup(): Promise<AgentSetupStatus> {
   await ensureAgentsConfig();
   await ensureGrokAgentEntry();
+  await ensureDroidAgentEntry();
   return getAgentSetupStatus();
 }
 
@@ -327,6 +393,11 @@ async function resolveClaudeAcpPath(): Promise<string | null> {
 async function resolveGrokPath(): Promise<string | null> {
   const status = await getAgentSetupStatus();
   return status.grokPath;
+}
+
+async function resolveDroidPath(): Promise<string | null> {
+  const status = await getAgentSetupStatus();
+  return status.droidPath;
 }
 
 async function checkClaudePackageUpdate(): Promise<AgentPackageUpdateStatus> {
@@ -450,12 +521,135 @@ async function checkGrokPackageUpdate(): Promise<AgentPackageUpdateStatus> {
   }
 }
 
-/** Check whether Claude ACP adapter or Grok CLI has a newer release. */
+async function checkDroidPackageUpdate(): Promise<AgentPackageUpdateStatus> {
+  const base: AgentPackageUpdateStatus = {
+    package: "droid",
+    installed: false,
+    currentVersion: null,
+    latestVersion: null,
+    updateAvailable: false,
+    error: null,
+  };
+
+  const path = await resolveDroidPath();
+  if (!path) {
+    return {
+      ...base,
+      error: "droid not found on PATH",
+    };
+  }
+  base.installed = true;
+
+  const ver = await runCmd([path, "--version"], { timeoutMs: 15_000 });
+  base.currentVersion =
+    parseVersionToken(ver.stdout) ?? parseVersionToken(ver.stderr);
+
+  const check = await runCmd([path, "update", "--check"], {
+    timeoutMs: 45_000,
+  });
+  const text = (check.stdout || check.stderr).trim();
+
+  // Official SEA installer reports structured availability; npm installs print a hint.
+  if (/not available for npm/i.test(text) || /npm update -g/i.test(text)) {
+    const npm = resolveExecutable("npm");
+    if (!npm) {
+      return {
+        ...base,
+        error:
+          text.slice(0, 400) ||
+          "npm Droid install: npm not found to check latest version",
+      };
+    }
+    const latestCmd = await runCmd(
+      [npm, "view", DROID_NPM_PACKAGE, "version"],
+      { timeoutMs: 30_000 },
+    );
+    if (latestCmd.exitCode !== 0) {
+      const detail = (latestCmd.stderr || latestCmd.stdout).trim();
+      return {
+        ...base,
+        error:
+          detail.slice(0, 400) ||
+          text.slice(0, 400) ||
+          "npm view @factory/cli failed",
+      };
+    }
+    const latest =
+      parseVersionToken(latestCmd.stdout) ??
+      (latestCmd.stdout.trim() || null);
+    base.latestVersion = latest;
+    if (base.currentVersion && latest) {
+      base.updateAvailable = compareVersions(base.currentVersion, latest) < 0;
+    } else if (!base.currentVersion && latest) {
+      base.updateAvailable = true;
+    }
+    return base;
+  }
+
+  try {
+    const jsonStart = text.indexOf("{");
+    const jsonEnd = text.lastIndexOf("}");
+    if (jsonStart >= 0 && jsonEnd > jsonStart) {
+      const parsed = JSON.parse(text.slice(jsonStart, jsonEnd + 1)) as {
+        currentVersion?: string;
+        latestVersion?: string;
+        updateAvailable?: boolean;
+        error?: string | null;
+      };
+      if (parsed.currentVersion) {
+        base.currentVersion =
+          parseVersionToken(parsed.currentVersion) ?? parsed.currentVersion;
+      }
+      base.latestVersion = parsed.latestVersion
+        ? parseVersionToken(parsed.latestVersion) ?? parsed.latestVersion
+        : null;
+      base.updateAvailable = Boolean(parsed.updateAvailable);
+      if (parsed.error) base.error = String(parsed.error);
+      return base;
+    }
+  } catch {
+    /* fall through */
+  }
+
+  // Plain text: "Update available: 0.1.0 → 0.2.0" or "Already up to date"
+  const arrow = text.match(
+    /(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)\s*(?:→|->)\s*(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)/,
+  );
+  if (arrow) {
+    base.currentVersion = arrow[1] ?? base.currentVersion;
+    base.latestVersion = arrow[2] ?? null;
+    if (base.currentVersion && base.latestVersion) {
+      base.updateAvailable =
+        compareVersions(base.currentVersion, base.latestVersion) < 0;
+    }
+    return base;
+  }
+
+  if (/up to date|already latest|no update/i.test(text)) {
+    base.latestVersion = base.currentVersion;
+    base.updateAvailable = false;
+    return base;
+  }
+
+  if (/update available/i.test(text)) {
+    base.updateAvailable = true;
+  }
+
+  if (check.exitCode !== 0 && !base.updateAvailable) {
+    base.error =
+      text.slice(0, 400) || "droid update --check failed";
+  }
+
+  return base;
+}
+
+/** Check whether Claude ACP adapter, Grok, or Droid CLI has a newer release. */
 export async function checkAgentPackageUpdate(
   pkg: AgentPackageId,
 ): Promise<AgentPackageUpdateStatus> {
   if (pkg === "claude") return checkClaudePackageUpdate();
   if (pkg === "grok") return checkGrokPackageUpdate();
+  if (pkg === "droid") return checkDroidPackageUpdate();
   return {
     package: pkg,
     installed: false,
@@ -531,12 +725,90 @@ async function updateGrokPackage(): Promise<AgentPackageUpdateResult> {
   };
 }
 
-/** Install or update Claude ACP adapter or Grok CLI. */
+async function updateDroidPackage(): Promise<AgentPackageUpdateResult> {
+  const path = await resolveDroidPath();
+  if (!path) {
+    return {
+      ok: false,
+      package: "droid",
+      error: "droid not found on PATH — install Factory Droid CLI first",
+    };
+  }
+
+  // Prefer SEA self-update; fall back to npm when the binary says so.
+  const check = await runCmd([path, "update", "--check"], {
+    timeoutMs: 45_000,
+  });
+  const checkText = (check.stdout || check.stderr).trim();
+  const npmInstall = /not available for npm/i.test(checkText) ||
+    /npm update -g/i.test(checkText);
+
+  if (npmInstall) {
+    const npm = resolveExecutable("npm");
+    if (!npm) {
+      return {
+        ok: false,
+        package: "droid",
+        error:
+          "npm not found on PATH (Droid was installed via npm; need npm to update)",
+      };
+    }
+    const result = await runCmd(
+      [npm, "i", "-g", DROID_NPM_PACKAGE],
+      { timeoutMs: 180_000 },
+    );
+    const status = await checkDroidPackageUpdate();
+    if (result.exitCode !== 0) {
+      const detail = (result.stderr || result.stdout).trim();
+      return {
+        ok: false,
+        package: "droid",
+        error:
+          detail.slice(0, 800) ||
+          `npm install ${DROID_NPM_PACKAGE} failed (exit ${result.exitCode})`,
+        status,
+      };
+    }
+    return {
+      ok: true,
+      package: "droid",
+      message: status.currentVersion
+        ? `Updated to ${status.currentVersion}`
+        : "Updated droid",
+      status,
+    };
+  }
+
+  const result = await runCmd([path, "update"], { timeoutMs: 180_000 });
+  const status = await checkDroidPackageUpdate();
+  if (result.exitCode !== 0) {
+    const detail = (result.stderr || result.stdout).trim();
+    return {
+      ok: false,
+      package: "droid",
+      error:
+        detail.slice(0, 800) ||
+        `droid update failed (exit ${result.exitCode})`,
+      status,
+    };
+  }
+  return {
+    ok: true,
+    package: "droid",
+    message: status.currentVersion
+      ? `Updated to ${status.currentVersion}`
+      : "Updated droid",
+    status,
+  };
+}
+
+/** Install or update Claude ACP adapter, Grok, or Droid CLI. */
 export async function updateAgentPackage(
   pkg: AgentPackageId,
 ): Promise<AgentPackageUpdateResult> {
   if (pkg === "claude") return updateClaudePackage();
   if (pkg === "grok") return updateGrokPackage();
+  if (pkg === "droid") return updateDroidPackage();
   return {
     ok: false,
     package: pkg,

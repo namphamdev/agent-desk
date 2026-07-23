@@ -249,6 +249,7 @@ export default function App() {
             providers={app.settings?.providers ?? []}
             activeProviderId={app.settings?.activeProviderId ?? null}
             activeModelAlias={app.settings?.activeModelAlias ?? "sonnet"}
+            stt={app.settings?.stt ?? null}
             onSubmit={app.handlePrompt}
             onCancel={app.handleCancel}
             onRemoveQueued={app.handleRemoveQueued}

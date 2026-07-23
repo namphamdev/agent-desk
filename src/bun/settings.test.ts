@@ -44,6 +44,51 @@ describe("settings", () => {
     expect(DEFAULT_SETTINGS.activeModelAlias).toBe("sonnet");
     expect(DEFAULT_SETTINGS.worktreeSymlinkPaths).toEqual(["node_modules"]);
     expect(DEFAULT_SETTINGS.workflows).toEqual([]);
+    expect(DEFAULT_SETTINGS.stt).toEqual({
+      baseUrl: "",
+      apiKey: "",
+      model: "xai/grok-stt",
+      language: "en",
+    });
+  });
+
+  it("persists STT credentials", () => {
+    const store = openStore();
+    const next = saveSettings(store, {
+      stt: {
+        baseUrl: " https://gw.example/ ",
+        apiKey: "sk-stt",
+        model: "xai/grok-stt",
+        language: "en",
+      },
+    });
+    expect(next.stt).toEqual({
+      baseUrl: "https://gw.example",
+      apiKey: "sk-stt",
+      model: "xai/grok-stt",
+      language: "en",
+    });
+    expect(loadSettings(store).stt?.apiKey).toBe("sk-stt");
+    store.close();
+  });
+
+  it("defaults stt when missing from stored JSON", () => {
+    const store = openStore();
+    store.setSetting(
+      "app_settings",
+      JSON.stringify({
+        theme: "light",
+        enableFsCapabilities: false,
+      }),
+    );
+    const s = loadSettings(store);
+    expect(s.stt).toEqual({
+      baseUrl: "",
+      apiKey: "",
+      model: "xai/grok-stt",
+      language: "en",
+    });
+    store.close();
   });
 
   it("normalizes worktree symlink paths on save", () => {

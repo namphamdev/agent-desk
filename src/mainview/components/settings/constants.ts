@@ -37,6 +37,7 @@ export const MODEL_ALIAS_OPTIONS: {
 export const BASE_TABS: { id: SettingsTab; label: string }[] = [
   { id: "general", label: "General" },
   { id: "providers", label: "Providers" },
+  { id: "speech", label: "Speech" },
   { id: "claude", label: "Agents" },
   { id: "workflows", label: "Workflows" },
   { id: "remote", label: "Remote Control" },
