@@ -81,6 +81,23 @@ struct ListModelsParams {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct GetProjectHarnessParams {
+    cwd: String,
+    #[serde(default)]
+    project_name: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ApplyProjectHarnessParams {
+    cwd: String,
+    optimization_id: String,
+    #[serde(default)]
+    project_name: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct QueueCommandParams {
     chat_id: String,
     command: SessionCommandPayload,
@@ -230,6 +247,15 @@ struct ReadAttachmentChunkParams {
 
 /// The Mutate surface (feature-inventory §2 DataRpc), tagged by `op`.
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SeedContextParams {
+    text: String,
+    role: String,
+    purpose: String,
+    created_at: i64,
+}
+
+#[derive(Debug, Deserialize)]
 #[serde(tag = "op", rename_all = "camelCase")]
 enum MutateParams {
     #[serde(rename_all = "camelCase")]
@@ -246,6 +272,8 @@ enum MutateParams {
         /// Cwd override (isolated-worktree path); default = the space's folder.
         #[serde(default)]
         cwd: Option<String>,
+        #[serde(default)]
+        seed_context: Option<SeedContextParams>,
     },
     /// Create a space (device + folder pair). Idempotent by id; a live
     /// duplicate `(deviceId, path)` no-ops. `gitDetected` is seeded from the
@@ -445,6 +473,7 @@ impl EngineRpc {
                 config,
                 branch,
                 cwd,
+                seed_context,
             } => {
                 self.workspace
                     .create_chat(&chat_id, &space_id, config, cwd)
@@ -452,6 +481,17 @@ impl EngineRpc {
                 if let Some(branch) = branch.as_deref().filter(|b| !b.is_empty()) {
                     self.workspace
                         .set_chat_branch(&chat_id, branch)
+                        .map_err(failed)?;
+                }
+                if let Some(seed) = seed_context.filter(|seed| !seed.text.trim().is_empty()) {
+                    self.sessions
+                        .write_seed_context(
+                            &chat_id,
+                            &seed.text,
+                            &seed.role,
+                            &seed.purpose,
+                            seed.created_at,
+                        )
                         .map_err(failed)?;
                 }
                 Ok(())
@@ -556,8 +596,11 @@ fn forwardable(method: &str) -> bool {
     matches!(
         method,
         methods::LIST_HARNESSES
+            | methods::GET_PROJECT_HARNESS
+            | methods::APPLY_PROJECT_HARNESS
             | methods::LIST_MODELS
             | methods::QUEUE_COMMAND
+            | methods::OFFLOAD_SESSION
             | methods::WATCH_DOC_MESSAGES
             // Repos/worktrees/folders are device-local filesystem state.
             | methods::LIST_REPOS
@@ -570,6 +613,16 @@ fn forwardable(method: &str) -> bool {
             | methods::LIST_FOLDERS
             | methods::CREATE_WORKTREE
             | methods::DELETE_WORKTREE
+            | methods::GIT_STATUS
+            | methods::GIT_STAGE
+            | methods::GIT_UNSTAGE
+            | methods::GIT_DISCARD
+            | methods::GIT_IGNORE
+            | methods::GIT_REVEAL
+            | methods::GIT_COMMIT
+            | methods::GIT_FETCH
+            | methods::GIT_PUSH
+            | methods::GIT_GENERATE_COMMIT_MESSAGE
             // Checkout diffs are produced on the device holding the checkout.
             | methods::WATCH_CHECKOUT_DIFFS
             // Terminals live on the chat's host device.
@@ -750,6 +803,21 @@ impl RpcService for EngineRpc {
         }
         match method {
             methods::LIST_HARNESSES => RpcReply::value(&self.registry.descriptors()),
+            methods::GET_PROJECT_HARNESS => {
+                let p: GetProjectHarnessParams = parse_params(params)?;
+                RpcReply::value(&crate::project_harness::get_project_harness(
+                    &p.cwd,
+                    p.project_name.as_deref(),
+                ))
+            }
+            methods::APPLY_PROJECT_HARNESS => {
+                let p: ApplyProjectHarnessParams = parse_params(params)?;
+                RpcReply::value(&crate::project_harness::apply_project_harness(
+                    &p.cwd,
+                    &p.optimization_id,
+                    p.project_name.as_deref(),
+                ))
+            }
             methods::LIST_MODELS => {
                 let p: ListModelsParams = parse_params(params)?;
                 let harness = self
@@ -769,6 +837,15 @@ impl RpcService for EngineRpc {
                     .queue_command(&p.chat_id, p.command)
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
                 RpcReply::value(&serde_json::json!({ "commandId": command_id }))
+            }
+            methods::OFFLOAD_SESSION => {
+                let p: ChatParams = parse_params(params)?;
+                let killed = self
+                    .sessions
+                    .offload(&p.chat_id)
+                    .await
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                RpcReply::value(&serde_json::json!({ "ok": true, "killed": killed }))
             }
             methods::WATCH_DOC_MESSAGES => {
                 let p: ChatParams = parse_params(params)?;
@@ -797,9 +874,7 @@ impl RpcService for EngineRpc {
             methods::LOCAL_DEVICE => {
                 RpcReply::value(&serde_json::json!({ "deviceId": self.doc_host.device_id() }))
             }
-            methods::UPDATE_STATUS => {
-                Ok(RpcReply::Stream(watch_stream(self.updater()?.watch())))
-            }
+            methods::UPDATE_STATUS => Ok(RpcReply::Stream(watch_stream(self.updater()?.watch()))),
             methods::APPLY_UPDATE => {
                 let version = self
                     .updater()?
@@ -911,6 +986,97 @@ impl RpcService for EngineRpc {
                     .await
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
                 RpcReply::value(&serde_json::json!({ "ok": true }))
+            }
+            methods::GIT_STATUS => {
+                #[derive(Deserialize)]
+                struct P {
+                    cwd: String,
+                }
+                let p: P = parse_params(params)?;
+                let status = crate::git::status(std::path::Path::new(&p.cwd))
+                    .await
+                    .map_err(|error| RpcError::Failed(error.to_string()))?;
+                RpcReply::value(&status)
+            }
+            methods::GIT_STAGE | methods::GIT_UNSTAGE => {
+                #[derive(Deserialize)]
+                struct P {
+                    cwd: String,
+                    paths: Vec<String>,
+                }
+                let p: P = parse_params(params)?;
+                let result = if method == methods::GIT_STAGE {
+                    crate::git::stage(std::path::Path::new(&p.cwd), &p.paths).await
+                } else {
+                    crate::git::unstage(std::path::Path::new(&p.cwd), &p.paths).await
+                };
+                result.map_err(|error| RpcError::Failed(error.to_string()))?;
+                RpcReply::value(&serde_json::json!({ "ok": true }))
+            }
+            methods::GIT_DISCARD | methods::GIT_IGNORE | methods::GIT_REVEAL => {
+                #[derive(Deserialize)]
+                struct P {
+                    cwd: String,
+                    path: String,
+                    #[serde(default)]
+                    untracked: bool,
+                }
+                let p: P = parse_params(params)?;
+                let cwd = std::path::Path::new(&p.cwd);
+                let result = match method {
+                    methods::GIT_DISCARD => crate::git::discard(cwd, &p.path, p.untracked).await,
+                    methods::GIT_IGNORE => crate::git::ignore(cwd, &p.path).await,
+                    methods::GIT_REVEAL => crate::git::reveal(cwd, &p.path).await,
+                    _ => unreachable!(),
+                };
+                result.map_err(|error| RpcError::Failed(error.to_string()))?;
+                RpcReply::value(&serde_json::json!({ "ok": true }))
+            }
+            methods::GIT_COMMIT => {
+                #[derive(Deserialize)]
+                struct P {
+                    cwd: String,
+                    subject: String,
+                    body: Option<String>,
+                }
+                let p: P = parse_params(params)?;
+                let hash =
+                    crate::git::commit(std::path::Path::new(&p.cwd), &p.subject, p.body.as_deref())
+                        .await
+                        .map_err(|error| RpcError::Failed(error.to_string()))?;
+                RpcReply::value(&serde_json::json!({ "hash": hash }))
+            }
+            methods::GIT_FETCH | methods::GIT_PUSH => {
+                #[derive(Deserialize)]
+                struct P {
+                    cwd: String,
+                }
+                let p: P = parse_params(params)?;
+                let result = if method == methods::GIT_FETCH {
+                    crate::git::fetch(std::path::Path::new(&p.cwd)).await
+                } else {
+                    crate::git::push(std::path::Path::new(&p.cwd)).await
+                };
+                let summary = result.map_err(|error| RpcError::Failed(error.to_string()))?;
+                RpcReply::value(&serde_json::json!({ "summary": summary }))
+            }
+            methods::GIT_GENERATE_COMMIT_MESSAGE => {
+                #[derive(Deserialize)]
+                struct P {
+                    cwd: String,
+                    harness: HarnessId,
+                    model: Option<String>,
+                }
+                let p: P = parse_params(params)?;
+                let message = crate::git::generate_commit_message(
+                    &self.registry,
+                    std::path::Path::new(&p.cwd),
+                    p.harness,
+                    p.model,
+                )
+                .await
+                .map_err(|error| RpcError::Failed(error.to_string()))?;
+                RpcReply::value(&message)
             }
             methods::OPEN_TERMINAL => {
                 let p: OpenTerminalParams = parse_params(params)?;

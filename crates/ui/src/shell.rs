@@ -37,6 +37,7 @@ use crate::settings::archived::ArchivedPage;
 use crate::settings::context_engine::ContextEnginePage;
 use crate::settings::devices::DevicesPage;
 use crate::settings::shortcuts::{ShortcutsEvent, ShortcutsPage};
+use crate::settings::workflows::{WorkflowsEvent, WorkflowsPage};
 use crate::settings::{
     KeymapConfig, RIGHT_PANE_DEFAULT, RIGHT_PANE_MAX, RIGHT_PANE_MIN, SAVE_DEBOUNCE_MS,
     SIDEBAR_DEFAULT, SIDEBAR_MAX, SIDEBAR_MIN, TERMINAL_DEFAULT_HEIGHT, UiSettings, platform_combo,
@@ -47,7 +48,7 @@ use crate::state::{
 };
 use crate::terminal::panel::{TerminalPanel, ToggleTerminal, clamp_terminal_height};
 use crate::theme::Theme;
-use crate::transcript::{self, Transcript};
+use crate::transcript::{self, Transcript, TranscriptEvent};
 
 mod spaces;
 mod tabs;
@@ -148,16 +149,18 @@ pub enum SettingsSection {
     ContextEngine,
     Shortcuts,
     Archived,
+    Workflows,
 }
 
 impl SettingsSection {
-    pub const ALL: [SettingsSection; 6] = [
+    pub const ALL: [SettingsSection; 7] = [
         SettingsSection::Devices,
         SettingsSection::Agents,
         SettingsSection::AcpAgents,
         SettingsSection::ContextEngine,
         SettingsSection::Shortcuts,
         SettingsSection::Archived,
+        SettingsSection::Workflows,
     ];
 
     /// Sidebar + header label (comet settings-sidebar.tsx SECTIONS / __root.tsx
@@ -170,6 +173,7 @@ impl SettingsSection {
             SettingsSection::ContextEngine => "Code context",
             SettingsSection::Shortcuts => "Shortcuts",
             SettingsSection::Archived => "Archived sessions",
+            SettingsSection::Workflows => "Workflows",
         }
     }
 }
@@ -437,11 +441,13 @@ pub struct Shell {
     nav: NavHistory,
     devices_page: Option<Entity<DevicesPage>>,
     archived_page: Option<Entity<ArchivedPage>>,
+    workflows_page: Option<Entity<WorkflowsPage>>,
     shortcuts_page: Option<Entity<ShortcutsPage>>,
     accounts_page: Option<Entity<AccountsPage>>,
     acp_agents_page: Option<Entity<AcpAgentsPage>>,
     context_engine_page: Option<Entity<ContextEnginePage>>,
     shortcuts_sub: Option<Subscription>,
+    workflows_sub: Option<Subscription>,
     /// Session-row context menu: (chat id, window position).
     chat_menu: Option<(String, Point<Pixels>)>,
     rename_dialog: Option<RenameChatDialog>,
@@ -450,6 +456,8 @@ pub struct Shell {
     /// Space-row context menu: (space id, window position).
     space_menu: Option<(String, Point<Pixels>)>,
     rename_space_dialog: Option<RenameSpaceDialog>,
+    /// Per-project agent setup for a space's folder.
+    project_harness: Option<spaces::ProjectHarnessFlow>,
     /// Space id awaiting delete confirmation (hard delete + session cascade).
     delete_space_confirm: Option<String>,
     /// The add-space palette (⌘K-style; device tabs + folder search), `Some`
@@ -553,6 +561,7 @@ pub struct Shell {
     _ticker: Task<()>,
     _state_observation: Subscription,
     _composer_events: Subscription,
+    _transcript_events: Subscription,
 }
 
 impl Shell {
@@ -572,6 +581,14 @@ impl Shell {
                 }
             }
         });
+        let transcript_events = cx.subscribe(
+            &transcript,
+            |this: &mut Shell, _, event: &TranscriptEvent, cx| match event {
+                TranscriptEvent::NewThread { text, role } => {
+                    this.start_message_thread(text.clone(), *role, cx);
+                }
+            },
+        );
         // Working-indicator heartbeat: notify once a second while a session is
         // live so elapsed time and the flavour word stay fresh.
         let ticker = cx.spawn(async move |this, cx| {
@@ -608,6 +625,7 @@ impl Shell {
             Some("settings/acp") => Route::Settings(SettingsSection::AcpAgents),
             Some("settings/context") => Route::Settings(SettingsSection::ContextEngine),
             Some("settings/shortcuts") => Route::Settings(SettingsSection::Shortcuts),
+            Some("settings/workflows") => Route::Settings(SettingsSection::Workflows),
             Some("settings/archived") => Route::Settings(SettingsSection::Archived),
             // `new` pins the new-chat canvas (suppresses boot auto-select).
             Some("new") => {
@@ -645,16 +663,19 @@ impl Shell {
             nav,
             devices_page: None,
             archived_page: None,
+            workflows_page: None,
             shortcuts_page: None,
             accounts_page: None,
             acp_agents_page: None,
             context_engine_page: None,
             shortcuts_sub: None,
+            workflows_sub: None,
             chat_menu: None,
             rename_dialog: None,
             delete_confirm: None,
             space_menu: None,
             rename_space_dialog: None,
+            project_harness: None,
             delete_space_confirm: None,
             add_space: None,
             space_last_chat: std::collections::HashMap::new(),
@@ -704,16 +725,65 @@ impl Shell {
             _ticker: ticker,
             _state_observation: observation,
             _composer_events: composer_events,
+            _transcript_events: transcript_events,
         }
+    }
+
+    fn start_message_thread(
+        &mut self,
+        text: String,
+        role: comet_doc::MessageRole,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(source) = self.state.read(cx).selected_chat_row().cloned() else {
+            return;
+        };
+        let one_line = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        let title: String = one_line.chars().take(60).collect();
+        self.composer.update(cx, |composer, cx| {
+            composer.start_thread(source, text, role, "continue", title, None, cx);
+        });
+    }
+
+    pub(super) fn start_review_thread(&mut self, cx: &mut Context<Self>) {
+        let (source, entries, project) = {
+            let state = self.state.read(cx);
+            let Some(source) = state.selected_chat_row().cloned() else {
+                return;
+            };
+            let project = state
+                .space_for_chat(&source)
+                .map(|space| space.display_name().to_string());
+            (source, state.transcript.clone(), project)
+        };
+        let summary = comet_engine::session_summary::summarize_session_changes(
+            &entries,
+            source.title.as_deref(),
+            project.as_deref(),
+        );
+        if !summary.has_reviewable_content {
+            return;
+        }
+        let title =
+            comet_engine::session_summary::review_session_title(source.title.as_deref(), 56);
+        self.composer.update(cx, |composer, cx| {
+            composer.start_thread(
+                source,
+                summary.text,
+                comet_doc::MessageRole::Assistant,
+                "review",
+                title,
+                Some(comet_engine::session_summary::DEFAULT_REVIEW_PROMPT.to_string()),
+                cx,
+            );
+        });
     }
 
     // ---- splash ----
 
     fn on_state_changed(&mut self, state: &Entity<AppState>, cx: &mut Context<Self>) {
         // Capture knob: the add-space palette needs only the device registry.
-        if self.debug_dialog.as_deref() == Some("add-space")
-            && !state.read(cx).devices.is_empty()
-        {
+        if self.debug_dialog.as_deref() == Some("add-space") && !state.read(cx).devices.is_empty() {
             self.debug_dialog = None;
             self.open_add_space(cx);
         }
@@ -788,10 +858,12 @@ impl Shell {
         {
             let (selected_space, selected_chat, chat_space) = {
                 let s = state.read(cx);
-                let chat_space = s
-                    .selected_chat_row()
-                    .and_then(|c| c.space_id.clone());
-                (s.selected_space.clone(), s.selected_chat.clone(), chat_space)
+                let chat_space = s.selected_chat_row().and_then(|c| c.space_id.clone());
+                (
+                    s.selected_space.clone(),
+                    s.selected_chat.clone(),
+                    chat_space,
+                )
             };
             if let (Some(space), Some(chat)) = (chat_space, selected_chat) {
                 self.space_last_chat.insert(space, chat);
@@ -1155,8 +1227,7 @@ impl Shell {
             SettingsSection::ContextEngine => {
                 if self.context_engine_page.is_none() {
                     let data_dir = self.data_dir.clone();
-                    self.context_engine_page =
-                        Some(cx.new(|_| ContextEnginePage::new(data_dir)));
+                    self.context_engine_page = Some(cx.new(|_| ContextEnginePage::new(data_dir)));
                 }
                 match &self.context_engine_page {
                     Some(page) => page.clone().into_any_element(),
@@ -1182,6 +1253,27 @@ impl Shell {
                     self.shortcuts_page = Some(page);
                 }
                 match &self.shortcuts_page {
+                    Some(page) => page.clone().into_any_element(),
+                    None => Empty.into_any_element(),
+                }
+            }
+            SettingsSection::Workflows => {
+                if self.workflows_page.is_none() {
+                    let state = self.state.clone();
+                    let workflows = self.settings.workflows.clone();
+                    let page = cx.new(|cx| WorkflowsPage::new(workflows, state, cx));
+                    self.workflows_sub = Some(cx.subscribe(
+                        &page,
+                        |this: &mut Shell, _, event: &WorkflowsEvent, cx| {
+                            let WorkflowsEvent::GlobalChanged(workflows) = event;
+                            this.settings.workflows = workflows.clone();
+                            this.schedule_save(cx);
+                            cx.notify();
+                        },
+                    ));
+                    self.workflows_page = Some(page);
+                }
+                match &self.workflows_page {
                     Some(page) => page.clone().into_any_element(),
                     None => Empty.into_any_element(),
                 }
@@ -1665,6 +1757,7 @@ impl Shell {
             SettingsSection::ContextEngine => icons::MAGNIFER,
             SettingsSection::Shortcuts => icons::KEYBOARD,
             SettingsSection::Archived => icons::ARCHIVE_MINIMALISTIC,
+            SettingsSection::Workflows => icons::DOCUMENT,
         };
         // Match the user's dragged sidebar width — the pane container clips to
         // it, so a hardcoded default here left hover washes stopping short of
@@ -1829,7 +1922,9 @@ impl Shell {
             .py(px(6.0))
             .text_color(motion::hover_blend(&fade_key, rest_text, text))
             .bg(motion::hover_blend(&fade_key, rest_bg, hover))
-            .when(selected, |el| el.shadow(crate::theme::glass_selected_shadows()))
+            .when(selected, |el| {
+                el.shadow(crate::theme::glass_selected_shadows())
+            })
             .on_hover(motion::hover_listener(fade_key))
             .cursor_pointer()
             .on_click(cx.listener(move |this, _, _, cx| {
@@ -2041,48 +2136,42 @@ impl Shell {
                             .flex()
                             .flex_col()
                             .child(spaces_section)
-                    .child(
-                        div()
-                            .px(px(Theme::SPACE_SM))
-                            .pt(px(12.0))
-                            .pb(px(4.0))
-                            .text_size(px(11.0))
-                            .font_weight(gpui::FontWeight::MEDIUM)
-                            .text_color(theme.text_muted.opacity(0.6))
-                            .child(SharedString::from("Sessions")),
-                    )
-                    .child(if !list_items.is_empty() {
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap(px(2.0))
-                            .pb(px(Theme::SPACE_SM))
-                            .children(list_items)
-                            .into_any_element()
-                    } else {
-                        div()
-                            .px(px(Theme::SPACE_SM))
-                            .pb(px(Theme::SPACE_SM))
-                            .text_size(px(12.0))
-                            .text_color(theme.text_faint)
-                            .child(SharedString::from("No sessions yet"))
-                            .into_any_element()
-                    }),
+                            .child(
+                                div()
+                                    .px(px(Theme::SPACE_SM))
+                                    .pt(px(12.0))
+                                    .pb(px(4.0))
+                                    .text_size(px(11.0))
+                                    .font_weight(gpui::FontWeight::MEDIUM)
+                                    .text_color(theme.text_muted.opacity(0.6))
+                                    .child(SharedString::from("Sessions")),
+                            )
+                            .child(if !list_items.is_empty() {
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(2.0))
+                                    .pb(px(Theme::SPACE_SM))
+                                    .children(list_items)
+                                    .into_any_element()
+                            } else {
+                                div()
+                                    .px(px(Theme::SPACE_SM))
+                                    .pb(px(Theme::SPACE_SM))
+                                    .text_size(px(12.0))
+                                    .text_color(theme.text_faint)
+                                    .child(SharedString::from("No sessions yet"))
+                                    .into_any_element()
+                            }),
                     )
                     .when(lists_fade_top && !glass, |el| {
-                        el.child(
-                            div()
-                                .absolute()
-                                .top_0()
-                                .left_0()
-                                .right_0()
-                                .h(px(24.0))
-                                .bg(gpui::linear_gradient(
-                                    180.0,
-                                    gpui::linear_color_stop(sidebar_fade, 0.0),
-                                    gpui::linear_color_stop(sidebar_fade.opacity(0.0), 1.0),
-                                )),
-                        )
+                        el.child(div().absolute().top_0().left_0().right_0().h(px(24.0)).bg(
+                            gpui::linear_gradient(
+                                180.0,
+                                gpui::linear_color_stop(sidebar_fade, 0.0),
+                                gpui::linear_color_stop(sidebar_fade.opacity(0.0), 1.0),
+                            ),
+                        ))
                     })
                     .when(lists_fade_bottom && !glass, |el| {
                         el.child(
@@ -2135,11 +2224,7 @@ impl Shell {
     /// it drives the whole flow — click to download, then click to restart into
     /// the staged bundle. Elsewhere (managed/source installs) it is advisory
     /// (`comet update`); click dismisses it for that version.
-    fn render_update_strip(
-        &mut self,
-        theme: &Theme,
-        cx: &mut Context<Self>,
-    ) -> Option<AnyElement> {
+    fn render_update_strip(&mut self, theme: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
         let status = self.state.read(cx).update.clone()?;
         if !status.update_available {
             return None;
@@ -2155,9 +2240,7 @@ impl Shell {
                 UpdateFlow::Idle => (format!("Update available — v{latest}").into(), true),
                 UpdateFlow::Downloading => (format!("Downloading v{latest}…").into(), false),
                 UpdateFlow::Ready(_) => ("Update ready — restart to apply".into(), true),
-                UpdateFlow::Failed(message) => {
-                    (format!("Update failed: {message}").into(), true)
-                }
+                UpdateFlow::Failed(message) => (format!("Update failed: {message}").into(), true),
             }
         } else {
             (
@@ -2173,10 +2256,7 @@ impl Shell {
         let (chip_bg, chip_bg_hover) = if failed {
             (theme.danger.opacity(0.14), theme.danger.opacity(0.22))
         } else {
-            (
-                crate::theme::wash(0.11),
-                crate::theme::wash(0.16),
-            )
+            (crate::theme::wash(0.11), crate::theme::wash(0.16))
         };
 
         let mut strip = div()
@@ -2712,9 +2792,7 @@ impl Shell {
                             popover::btn_primary(&theme_owned, "Add a space")
                                 .id("onboarding-add-space")
                                 .mt(px(20.0))
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.open_add_space(cx)
-                                })),
+                                .on_click(cx.listener(|this, _, _, cx| this.open_add_space(cx))),
                         ),
                 ))
                 .into_any_element()
@@ -3847,13 +3925,7 @@ impl Render for Shell {
                     .h_full()
                     .flex_none()
                     .relative()
-                    .child(
-                        sidebar_handle
-                            .absolute()
-                            .top_0()
-                            .bottom_0()
-                            .left(px(-2.0)),
-                    );
+                    .child(sidebar_handle.absolute().top_0().bottom_0().left(px(-2.0)));
                 let title_bar = self.render_title_bar(cx);
                 // Sidebar tone: a slightly lighter column behind the sidebar,
                 // spanning the FULL window height (under the traffic lights,

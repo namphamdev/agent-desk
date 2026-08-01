@@ -20,7 +20,7 @@ use agent_client_protocol::schema::v1::{
     SessionId, SessionNotification, SessionUpdate, SetSessionConfigOptionRequest, StopReason,
     TextContent, ToolCall, ToolCallStatus, ToolKind,
 };
-use agent_client_protocol::{AcpAgent, Agent, ConnectionTo};
+use agent_client_protocol::{AcpAgent, AcpAgentConfig, Agent, ConnectionTo};
 use async_trait::async_trait;
 use base64::Engine;
 use futures::StreamExt;
@@ -174,12 +174,23 @@ impl Harness for AcpHarness {
             request_input,
             steering,
             interrupt,
+            report_memory,
         } = controls;
         let request_input = Arc::new(request_input);
         let permission_input = request_input.clone();
         let auto_approve = request.auto_approve;
 
         tokio::spawn(async move {
+            let (agent, pid_file) = instrument_agent_for_memory(agent);
+            let memory_stop = crate::CancellationToken::new();
+            let memory_reporter: Arc<dyn Fn(Option<u64>) + Send + Sync> = report_memory.into();
+            let memory_task = pid_file.clone().map(|path| {
+                let stop = memory_stop.clone();
+                let report = memory_reporter.clone();
+                tokio::spawn(async move {
+                    poll_process_memory(path, stop, report).await;
+                })
+            });
             let connection_tx = event_tx.clone();
             let result = agent_client_protocol::Client
                 .builder()
@@ -211,6 +222,15 @@ impl Harness for AcpHarness {
                 })
                 .await;
 
+            memory_stop.cancel();
+            if let Some(task) = memory_task {
+                let _ = task.await;
+            }
+            memory_reporter(None);
+            if let Some(path) = pid_file {
+                let _ = tokio::fs::remove_file(path).await;
+            }
+
             if let Err(error) = result {
                 let _ = event_tx
                     .send(Ok(AgentEvent::Done {
@@ -228,6 +248,95 @@ impl Harness for AcpHarness {
         })
         .boxed())
     }
+}
+
+#[cfg(unix)]
+fn instrument_agent_for_memory(agent: AcpAgent) -> (AcpAgent, Option<PathBuf>) {
+    let config = agent.into_config();
+    let pid_file = std::env::temp_dir().join(format!("comet-acp-{}.pid", uuid::Uuid::new_v4()));
+    let mut args = vec![
+        "-c".to_string(),
+        "printf '%s' \"$$\" > \"$1\"; shift; exec \"$@\"".to_string(),
+        "comet-acp-memory".to_string(),
+        pid_file.to_string_lossy().to_string(),
+        config.command().to_string_lossy().to_string(),
+    ];
+    args.extend(config.arguments().iter().cloned());
+    let wrapped = AcpAgent::new(
+        AcpAgentConfig::new("/bin/sh")
+            .args(args)
+            .envs(config.environment().clone()),
+    );
+    (wrapped, Some(pid_file))
+}
+
+#[cfg(not(unix))]
+fn instrument_agent_for_memory(agent: AcpAgent) -> (AcpAgent, Option<PathBuf>) {
+    (agent, None)
+}
+
+async fn poll_process_memory(
+    pid_file: PathBuf,
+    stop: crate::CancellationToken,
+    report: Arc<dyn Fn(Option<u64>) + Send + Sync>,
+) {
+    let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tokio::select! {
+            _ = stop.cancelled() => break,
+            _ = interval.tick() => {
+                let Ok(pid) = tokio::fs::read_to_string(&pid_file).await else {
+                    continue;
+                };
+                let Ok(pid) = pid.trim().parse::<u32>() else {
+                    continue;
+                };
+                if let Some(bytes) = sample_process_tree_rss_bytes(pid).await {
+                    report(Some(bytes));
+                }
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
+pub async fn sample_process_tree_rss_bytes(root_pid: u32) -> Option<u64> {
+    let output = tokio::process::Command::new("ps")
+        .args(["-axo", "pid=,ppid=,rss="])
+        .output()
+        .await
+        .ok()?;
+    let rows = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            Some((
+                fields.next()?.parse::<u32>().ok()?,
+                fields.next()?.parse::<u32>().ok()?,
+                fields.next()?.parse::<u64>().ok()?,
+            ))
+        })
+        .collect::<Vec<_>>();
+    let mut queue = VecDeque::from([root_pid]);
+    let mut seen = HashSet::from([root_pid]);
+    let mut total_kib = 0_u64;
+    while let Some(parent) = queue.pop_front() {
+        for &(pid, ppid, rss_kib) in &rows {
+            if pid == parent {
+                total_kib = total_kib.saturating_add(rss_kib);
+            }
+            if ppid == parent && seen.len() < 64 && seen.insert(pid) {
+                queue.push_back(pid);
+            }
+        }
+    }
+    (total_kib > 0).then_some(total_kib.saturating_mul(1024))
+}
+
+#[cfg(not(unix))]
+pub async fn sample_process_tree_rss_bytes(_root_pid: u32) -> Option<u64> {
+    None
 }
 
 async fn run_connection(
@@ -283,6 +392,7 @@ async fn run_connection(
     .await?;
 
     let session_id_string = session_id.to_string();
+    let mut assistant_message_id = uuid::Uuid::new_v4().to_string();
     if event_tx
         .send(Ok(AgentEvent::SessionStarted {
             harness: HarnessId::Acp,
@@ -290,7 +400,7 @@ async fn run_connection(
             tools: vec![],
             cwd: cwd.display().to_string(),
             session_id: session_id_string.clone(),
-            assistant_message_id: uuid::Uuid::new_v4().to_string(),
+            assistant_message_id: assistant_message_id.clone(),
         }))
         .await
         .is_err()
@@ -304,7 +414,23 @@ async fn run_connection(
         let Some(content) = prompts.pop_front() else {
             tokio::select! {
                 steer = steering.recv() => match steer {
-                    Some(steer) => prompts.push_back(vec![ContentBlock::Text(TextContent::new(steer.prompt))]),
+                    Some(steer) => {
+                        let previous = std::mem::replace(
+                            &mut assistant_message_id,
+                            uuid::Uuid::new_v4().to_string(),
+                        );
+                        if event_tx
+                            .send(Ok(AgentEvent::Steered {
+                                assistant_message_id: Some(previous),
+                                next_assistant_message_id: Some(assistant_message_id.clone()),
+                            }))
+                            .await
+                            .is_err()
+                        {
+                            return Ok(());
+                        }
+                        prompts.push_back(vec![ContentBlock::Text(TextContent::new(steer.prompt))]);
+                    }
                     None => return Ok(()),
                 },
                 _ = interrupt.cancelled() => return Ok(()),
@@ -347,16 +473,19 @@ async fn run_connection(
         if status == DoneStatus::Interrupted {
             return Ok(());
         }
-        if !prompts.is_empty()
-            && event_tx
+        if !prompts.is_empty() {
+            let previous =
+                std::mem::replace(&mut assistant_message_id, uuid::Uuid::new_v4().to_string());
+            if event_tx
                 .send(Ok(AgentEvent::Steered {
-                    assistant_message_id: None,
-                    next_assistant_message_id: Some(uuid::Uuid::new_v4().to_string()),
+                    assistant_message_id: Some(previous),
+                    next_assistant_message_id: Some(assistant_message_id.clone()),
                 }))
                 .await
                 .is_err()
-        {
-            return Ok(());
+            {
+                return Ok(());
+            }
         }
     }
 }
@@ -878,5 +1007,40 @@ mod tests {
         .unwrap();
         let harness = AcpHarness::new().with_config_file(config);
         assert_eq!(harness.command().unwrap(), "second-agent --acp");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn samples_current_process_tree_memory() {
+        let bytes = sample_process_tree_rss_bytes(std::process::id()).await;
+        assert!(bytes.is_some_and(|bytes| bytes > 0));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn memory_wrapper_preserves_agent_command_and_environment() {
+        let agent = AcpAgent::new(
+            AcpAgentConfig::new("/tmp/acp-agent")
+                .arg("--stdio")
+                .env("ACP_TEST", "yes"),
+        );
+        let (wrapped, pid_file) = instrument_agent_for_memory(agent);
+        assert_eq!(wrapped.config().command(), Path::new("/bin/sh"));
+        assert!(
+            wrapped
+                .config()
+                .arguments()
+                .iter()
+                .any(|arg| arg == "/tmp/acp-agent")
+        );
+        assert_eq!(
+            wrapped
+                .config()
+                .environment()
+                .get("ACP_TEST")
+                .map(String::as_str),
+            Some("yes")
+        );
+        assert!(pid_file.is_some());
     }
 }

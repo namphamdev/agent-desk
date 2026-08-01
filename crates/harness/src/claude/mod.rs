@@ -468,6 +468,7 @@ async fn run_session(session: Session) {
         request_input,
         mut steering,
         interrupt,
+        report_memory: _,
     } = controls;
     let request_input = Arc::new(request_input);
 

@@ -416,8 +416,8 @@ impl Repos {
                     // platforms where TMPDIR itself is one (macOS
                     // `/var` → `/private/var`) — store the REAL path so it
                     // matches the folder the engine itself created/returns.
-                    let canonical = std::fs::canonicalize(&path)
-                        .unwrap_or_else(|_| PathBuf::from(&path));
+                    let canonical =
+                        std::fs::canonicalize(&path).unwrap_or_else(|_| PathBuf::from(&path));
                     worktrees.insert(branch.to_string(), canonical.to_string_lossy().to_string());
                 }
             }

@@ -34,12 +34,17 @@ pub use server::{serve_connection, serve_ws_listener};
 /// Full surface: docs/research/feature-inventory.md §2.
 pub mod methods {
     pub const LIST_HARNESSES: &str = "ListHarnesses";
+    pub const GET_PROJECT_HARNESS: &str = "GetProjectHarness";
+    pub const APPLY_PROJECT_HARNESS: &str = "ApplyProjectHarness";
     pub const LIST_MODELS: &str = "ListModels";
     pub const QUEUE_COMMAND: &str = "QueueCommand";
     pub const WATCH_DOC_MESSAGES: &str = "WatchDocMessages";
     pub const WATCH_CHATS: &str = "WatchChats";
     pub const WATCH_DEVICES: &str = "WatchDevices";
     pub const WATCH_SESSIONS: &str = "WatchSessions";
+    /// Stop a chat's warm harness process while retaining its transcript and
+    /// resumable harness session id.
+    pub const OFFLOAD_SESSION: &str = "OffloadSession";
     /// Spaces registry (device+folder pairs) from the workspace doc.
     pub const WATCH_SPACES: &str = "WatchSpaces";
     /// Entity mutations against the workspace doc (feature-inventory §2 DataRpc).
@@ -69,6 +74,16 @@ pub mod methods {
     pub const LIST_FOLDERS: &str = "ListFolders";
     pub const CREATE_WORKTREE: &str = "CreateWorktree";
     pub const DELETE_WORKTREE: &str = "DeleteWorktree";
+    pub const GIT_STATUS: &str = "GitStatus";
+    pub const GIT_STAGE: &str = "GitStage";
+    pub const GIT_UNSTAGE: &str = "GitUnstage";
+    pub const GIT_DISCARD: &str = "GitDiscard";
+    pub const GIT_IGNORE: &str = "GitIgnore";
+    pub const GIT_REVEAL: &str = "GitReveal";
+    pub const GIT_COMMIT: &str = "GitCommit";
+    pub const GIT_FETCH: &str = "GitFetch";
+    pub const GIT_PUSH: &str = "GitPush";
+    pub const GIT_GENERATE_COMMIT_MESSAGE: &str = "GitGenerateCommitMessage";
     // Terminals (ControlRpc, relay-forwardable; SubscribeTerminal streams).
     pub const OPEN_TERMINAL: &str = "OpenTerminal";
     pub const SUBSCRIBE_TERMINAL: &str = "SubscribeTerminal";

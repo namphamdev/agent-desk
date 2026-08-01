@@ -18,6 +18,7 @@ pub mod context_engine;
 pub mod devices;
 pub mod shortcuts;
 pub mod widgets;
+pub mod workflows;
 
 /// Sidebar drag-resize bounds (px).
 pub const SIDEBAR_MIN: f32 = 208.0;
@@ -74,6 +75,9 @@ pub struct UiSettings {
     pub terminal_open: bool,
     /// Customizable shortcut combos (feature-inventory §1.4).
     pub keymap: KeymapConfig,
+    /// Global workflow overrides. Empty implies built-ins.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub workflows: Vec<crate::workflows::WorkflowDefinition>,
 }
 
 impl Default for UiSettings {
@@ -91,6 +95,7 @@ impl Default for UiSettings {
             terminal_height: TERMINAL_DEFAULT_HEIGHT,
             terminal_open: false,
             keymap: KeymapConfig::default(),
+            workflows: Vec::new(),
         }
     }
 }
@@ -349,6 +354,7 @@ mod tests {
                 toggle_sidebar: "mod-shift-s".into(),
                 ..KeymapConfig::default()
             },
+            workflows: crate::workflows::builtin_workflows(),
         };
         settings.save(dir.path()).unwrap();
         assert_eq!(UiSettings::load(dir.path()), settings);

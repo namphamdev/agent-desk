@@ -36,6 +36,9 @@ fn run_request(prompt: &str) -> RunRequest {
         auto_approve: true,
         attachments: Vec::new(),
         resume: None,
+        seed: None,
+        seed_role: None,
+        seed_purpose: None,
     }
 }
 
@@ -367,6 +370,51 @@ async fn session_status_transitions_idle_working_idle() {
         }
     }
     assert_eq!(seen, vec![SessionStatus::Working, SessionStatus::Idle]);
+}
+
+#[tokio::test]
+async fn offload_releases_warm_agent_without_deleting_history() {
+    let dir = tempfile::tempdir().unwrap();
+    let core = assemble(
+        dir.path(),
+        Arc::new(ScriptedHarness {
+            script: mock_script(),
+            step_delay: Duration::from_millis(5),
+            hang_until_interrupt: true,
+        }),
+    );
+    let handle = core.doc_host.open(CHAT).unwrap();
+    queue_as_viewer(
+        handle.doc(),
+        "cmd-offload",
+        SessionCommandPayload::Run {
+            request: run_request("go"),
+            message_id: "m-offload".into(),
+        },
+    );
+    wait_for(
+        || {
+            core.sessions.session_status(CHAT).is_some_and(|session| {
+                session.status == SessionStatus::Idle && session.agent_running
+            })
+        },
+        "warm idle session",
+    )
+    .await;
+
+    assert!(core.sessions.offload(CHAT).await.unwrap());
+    assert!(
+        core.sessions
+            .session_status(CHAT)
+            .is_some_and(|session| !session.agent_running && session.memory_rss_bytes.is_none())
+    );
+    assert!(
+        entries(&core)
+            .iter()
+            .any(|entry| entry.role == MessageRole::Assistant
+                && entry.status == Some(MessageStatus::Complete))
+    );
+    assert!(!core.sessions.offload(CHAT).await.unwrap());
 }
 
 #[tokio::test]
@@ -1651,6 +1699,9 @@ async fn real_claude_sees_uploaded_image_inline() {
         auto_approve: false,
         attachments: vec![path],
         resume: None,
+        seed: None,
+        seed_role: None,
+        seed_purpose: None,
     };
     core.doc_host
         .queue_command(

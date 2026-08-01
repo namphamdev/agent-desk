@@ -32,6 +32,7 @@ pub mod state;
 pub mod terminal;
 pub mod theme;
 pub mod transcript;
+pub mod workflows;
 
 use std::borrow::Cow;
 use std::path::PathBuf;

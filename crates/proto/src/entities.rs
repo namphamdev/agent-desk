@@ -178,6 +178,15 @@ pub struct Session {
     pub status: SessionStatus,
     pub started_at: Option<DateTime<Utc>>,
     pub updated_at: DateTime<Utc>,
+    /// Whether this chat still owns a warm harness process.
+    #[serde(default)]
+    pub agent_running: bool,
+    /// Resident set size of the harness process tree, in bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_rss_bytes: Option<u64>,
+    /// Time of the latest memory sample.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_sampled_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -156,6 +156,36 @@ impl SessionsEngine {
         host.open(chat_id)
     }
 
+    pub fn write_seed_context(
+        &self,
+        chat_id: &str,
+        text: &str,
+        role: &str,
+        purpose: &str,
+        created_at: i64,
+    ) -> Result<(), EngineError> {
+        let role = if role == "user" {
+            MessageRole::User
+        } else {
+            MessageRole::Assistant
+        };
+        self.doc_handle(chat_id)?
+            .write_seed_message(
+                &format!(
+                    "seed-{}-{chat_id}",
+                    if purpose == "review" {
+                        "review"
+                    } else {
+                        "continue"
+                    }
+                ),
+                text,
+                role,
+                created_at,
+            )
+            .map_err(EngineError::from)
+    }
+
     /// Status watch: the full session list, re-sent on every transition.
     pub fn watch_sessions(&self) -> watch::Receiver<Vec<Session>> {
         self.inner.sessions_tx.subscribe()
@@ -246,6 +276,7 @@ impl SessionsEngine {
         message_id: Option<String>,
         inject_resume: bool,
     ) -> Result<String, EngineError> {
+        let visible_prompt = request.prompt.clone();
         let routed = lock(&self.inner.runs)
             .get(chat_id)
             .map(|h| (h.run_id.clone(), h.steerable, h.steer_tx.clone()));
@@ -257,14 +288,14 @@ impl SessionsEngine {
             if steerable && steer_tx.try_send(message).is_ok() {
                 let user_id = message_id.unwrap_or_else(new_id);
                 let handle = self.doc_handle(chat_id)?;
-                handle.write_user_message(&user_id, &request.prompt, now_ms())?;
+                handle.write_user_message(&user_id, &visible_prompt, now_ms())?;
                 // Working BEFORE the lastMessageAt bump: both ride the
                 // workspace doc from this one peer, so causal order makes it
                 // impossible for an observer to hold [new message, old status]
                 // — that gap read as unseen-with-no-live-run = a phantom
                 // "completed" flash on every remote send (2026-07-31).
                 self.set_status(chat_id, SessionStatus::Working, false);
-                self.inner.note_message(chat_id, &request.prompt);
+                self.inner.note_message(chat_id, &visible_prompt);
                 return Ok(run_id);
             }
             // Mailbox closed (runtime mid-teardown / non-steering harness): replace it.
@@ -274,7 +305,28 @@ impl SessionsEngine {
         let harness = self.inner.registry.resolve(harness_id)?;
         let handle = self.doc_handle(chat_id)?;
         let user_id = message_id.unwrap_or_else(new_id);
-        handle.write_user_message(&user_id, &request.prompt, now_ms())?;
+        if let Some(seed) = request.seed.take().filter(|seed| !seed.trim().is_empty()) {
+            let purpose = request.seed_purpose.take();
+            let role = match request.seed_role.take().as_deref() {
+                Some("user") => MessageRole::User,
+                _ => MessageRole::Assistant,
+            };
+            handle.write_seed_message(
+                &format!(
+                    "seed-{}-{chat_id}",
+                    if purpose.as_deref() == Some("review") {
+                        "review"
+                    } else {
+                        "continue"
+                    }
+                ),
+                &seed,
+                role,
+                now_ms().saturating_sub(1),
+            )?;
+            request.prompt = format_seeded_prompt(&seed, &visible_prompt, purpose.as_deref());
+        }
+        handle.write_user_message(&user_id, &visible_prompt, now_ms())?;
 
         // Engine-owned resume (comet sessions.ts:736 — every dispatch read the
         // chat's stored harness session): callers always send `resume: None`;
@@ -314,6 +366,11 @@ impl SessionsEngine {
             request_input,
             steering: steer_rx,
             interrupt: interrupt_token.clone(),
+            report_memory: {
+                let inner = self.inner.clone();
+                let chat_id = chat_id.to_string();
+                Box::new(move |bytes| inner.set_memory(&chat_id, bytes))
+            },
         };
 
         lock(&self.inner.runs).insert(
@@ -331,7 +388,7 @@ impl SessionsEngine {
         self.set_status(chat_id, SessionStatus::Working, true);
         // AFTER Working (same causal-order guarantee as the steer path): the
         // lastMessageAt bump must never be observable ahead of the live run.
-        self.inner.note_message(chat_id, &request.prompt);
+        self.inner.note_message(chat_id, &visible_prompt);
 
         // Name the chat NOW, off the first prompt — not after the first
         // exchange completes ("called New session for a long time for no
@@ -339,7 +396,7 @@ impl SessionsEngine {
         // the Done-time call below stays as the retry for a failed
         // generation).
         if let Some(titles) = self.inner.titles.get() {
-            titles.maybe_generate(chat_id, harness_id, &request.prompt, &request.cwd);
+            titles.maybe_generate(chat_id, harness_id, &visible_prompt, &request.cwd);
         }
 
         tokio::spawn(drive_run(
@@ -428,6 +485,10 @@ impl SessionsEngine {
 
     /// Resolve a pending `request_input` question set. Returns `false` when no such
     /// request is pending (unknown id, or the run already settled).
+
+    pub async fn offload(&self, chat_id: &str) -> Result<bool, EngineError> {
+        self.interrupt(chat_id).await
+    }
     pub fn respond_input(
         &self,
         chat_id: &str,
@@ -550,6 +611,9 @@ impl SessionsEngine {
                             auto_approve: false,
                             attachments: Vec::new(),
                             resume: None,
+                            seed: None,
+                            seed_purpose: None,
+                            seed_role: None,
                         })
                     });
                 let Some(mut request) = request else {
@@ -649,6 +713,7 @@ impl Inner {
 
     fn set_status(&self, chat_id: &str, status: SessionStatus, fresh_start: bool) {
         let now = Utc::now();
+        let agent_running = lock(&self.runs).contains_key(chat_id);
         let session = {
             let mut statuses = lock(&self.statuses);
             let entry = statuses
@@ -659,9 +724,17 @@ impl Inner {
                     status,
                     started_at: None,
                     updated_at: now,
+                    agent_running: false,
+                    memory_rss_bytes: None,
+                    memory_sampled_at: None,
                 });
             entry.status = status;
             entry.updated_at = now;
+            entry.agent_running = agent_running;
+            if !entry.agent_running {
+                entry.memory_rss_bytes = None;
+                entry.memory_sampled_at = None;
+            }
             if fresh_start {
                 entry.started_at = Some(now);
             }
@@ -678,6 +751,22 @@ impl Inner {
         if let Some(ws) = self.workspace() {
             ws.record_session(&session);
         }
+    }
+
+    fn set_memory(&self, chat_id: &str, bytes: Option<u64>) {
+        let now = Utc::now();
+        let mut statuses = lock(&self.statuses);
+        let Some(entry) = statuses.get_mut(chat_id) else {
+            return;
+        };
+        if entry.memory_rss_bytes == bytes {
+            return;
+        }
+        entry.memory_rss_bytes = bytes;
+        entry.memory_sampled_at = bytes.map(|_| now);
+        let mut list: Vec<Session> = statuses.values().cloned().collect();
+        list.sort_by(|a, b| a.chat_id.cmp(&b.chat_id));
+        self.sessions_tx.send_replace(list);
     }
 
     fn workspace(&self) -> Option<&crate::workspace_host::WorkspaceHost> {
@@ -884,6 +973,16 @@ struct RunResumeState {
 }
 
 #[allow(clippy::too_many_arguments)]
+pub(crate) fn format_seeded_prompt(seed: &str, user_text: &str, purpose: Option<&str>) -> String {
+    let lead = if purpose == Some("review") {
+        "The following is a structured summary of changes from a prior coding session.\n\
+         Your job is to review those changes — do not re-implement them unless the user asks."
+    } else {
+        "The following is starting context for this thread (from a prior message). Continue from it."
+    };
+    format!("{lead}\n\n---\n{seed}\n---\n\n{user_text}")
+}
+
 async fn drive_run(
     inner: Arc<Inner>,
     chat_id: String,
@@ -963,6 +1062,12 @@ async fn drive_run(
     // latency. `Some(when)` = idle since then; the 30-min reaper below ends
     // a session nobody comes back to (comet SESSION_IDLE_MS).
     const SESSION_IDLE: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+    const ACP_SESSION_IDLE: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+    let session_idle = if harness_id == HarnessId::Acp {
+        ACP_SESSION_IDLE
+    } else {
+        SESSION_IDLE
+    };
     let mut idle_since: Option<tokio::time::Instant> = None;
     let steerable = harness.supports_steering();
 
@@ -993,7 +1098,7 @@ async fn drive_run(
             // nobody returned to in 30 minutes releases its child. The turn
             // was finalized at Done, so this end is clean — no aborted stamp.
             _ = tokio::time::sleep_until(
-                idle_since.map(|at| at + SESSION_IDLE).unwrap_or_else(tokio::time::Instant::now)
+                idle_since.map(|at| at + session_idle).unwrap_or_else(tokio::time::Instant::now)
             ), if idle_since.is_some() => {
                 tracing::info!(chat = %chat_id, "reaping idle persistent session");
                 if let Some(token) = lock(&inner.runs)
@@ -1255,4 +1360,24 @@ async fn drive_run(
 
     inner.remove_run(&chat_id, &run_id);
     inner.set_status(&chat_id, final_status, false);
+}
+
+#[cfg(test)]
+mod seeded_prompt_tests {
+    use super::format_seeded_prompt;
+
+    #[test]
+    fn continue_seed_frames_context_before_visible_prompt() {
+        let prompt = format_seeded_prompt("prior answer", "What next?", Some("continue"));
+        assert!(prompt.starts_with("The following is starting context"));
+        assert!(prompt.contains("---\nprior answer\n---"));
+        assert!(prompt.ends_with("What next?"));
+    }
+
+    #[test]
+    fn review_seed_sets_review_only_instruction() {
+        let prompt = format_seeded_prompt("# Summary", "Review it", Some("review"));
+        assert!(prompt.contains("do not re-implement"));
+        assert!(prompt.ends_with("Review it"));
+    }
 }

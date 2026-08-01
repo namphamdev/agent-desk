@@ -426,6 +426,9 @@ impl WorkspaceDoc {
         row.insert("status", status_str(session.status))?;
         set_opt_ms(&row, "startedAt", session.started_at)?;
         row.insert("updatedAt", session.updated_at.timestamp_millis())?;
+        row.insert("agentRunning", session.agent_running)?;
+        set_opt_u64(&row, "memoryRssBytes", session.memory_rss_bytes)?;
+        set_opt_ms(&row, "memorySampledAt", session.memory_sampled_at)?;
         self.doc.commit();
         Ok(())
     }
@@ -524,6 +527,14 @@ fn set_opt_str(row: &LoroMap, key: &str, value: Option<&str>) -> Result<(), DocE
 fn set_opt_ms(row: &LoroMap, key: &str, value: Option<DateTime<Utc>>) -> Result<(), DocError> {
     match value {
         Some(at) => row.insert(key, at.timestamp_millis())?,
+        None => row.delete(key)?,
+    }
+    Ok(())
+}
+
+fn set_opt_u64(row: &LoroMap, key: &str, value: Option<u64>) -> Result<(), DocError> {
+    match value {
+        Some(value) => row.insert(key, value.min(i64::MAX as u64) as i64)?,
         None => row.delete(key)?,
     }
     Ok(())
@@ -669,6 +680,12 @@ struct RawSession {
     started_at: Option<i64>,
     #[serde(default)]
     updated_at: i64,
+    #[serde(default)]
+    agent_running: bool,
+    #[serde(default)]
+    memory_rss_bytes: Option<u64>,
+    #[serde(default)]
+    memory_sampled_at: Option<i64>,
 }
 
 impl From<RawSession> for Session {
@@ -679,6 +696,9 @@ impl From<RawSession> for Session {
             status: raw.status,
             started_at: raw.started_at.map(dt),
             updated_at: dt(raw.updated_at),
+            agent_running: raw.agent_running,
+            memory_rss_bytes: raw.memory_rss_bytes,
+            memory_sampled_at: raw.memory_sampled_at.map(dt),
         }
     }
 }
@@ -749,6 +769,9 @@ mod tests {
             status,
             started_at: Some(ts(3_000)),
             updated_at: ts(3_500),
+            agent_running: status != SessionStatus::Idle,
+            memory_rss_bytes: None,
+            memory_sampled_at: None,
         }
     }
 
@@ -770,7 +793,10 @@ mod tests {
         let ws = WorkspaceDoc::new();
         ws.upsert_chat(&chat("chat-1", "dev-a")).unwrap();
         let mut options = serde_json::Map::new();
-        options.insert("contextWindow".into(), serde_json::Value::String("1m".into()));
+        options.insert(
+            "contextWindow".into(),
+            serde_json::Value::String("1m".into()),
+        );
         let config = ChatConfig {
             harness: HarnessId::ClaudeCode,
             model: Some("claude-fable-5".into()),
@@ -955,11 +981,19 @@ mod tests {
         for ws in [&a, &b] {
             let state = ws.read_all().unwrap();
             assert_eq!(
-                state.spaces.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
+                state
+                    .spaces
+                    .iter()
+                    .map(|s| s.id.as_str())
+                    .collect::<Vec<_>>(),
                 vec!["sp-2"]
             );
             assert_eq!(
-                state.chats.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
+                state
+                    .chats
+                    .iter()
+                    .map(|c| c.id.as_str())
+                    .collect::<Vec<_>>(),
                 vec!["chat-2"]
             );
             assert!(state.sessions.is_empty());
@@ -1007,9 +1041,15 @@ mod tests {
     #[test]
     fn schema_version_stamp_is_idempotent() {
         let ws = WorkspaceDoc::new();
-        assert_eq!(ws.ensure_schema_version().unwrap(), WORKSPACE_SCHEMA_VERSION);
+        assert_eq!(
+            ws.ensure_schema_version().unwrap(),
+            WORKSPACE_SCHEMA_VERSION
+        );
         let before = ws.doc().oplog_vv();
-        assert_eq!(ws.ensure_schema_version().unwrap(), WORKSPACE_SCHEMA_VERSION);
+        assert_eq!(
+            ws.ensure_schema_version().unwrap(),
+            WORKSPACE_SCHEMA_VERSION
+        );
         assert_eq!(ws.doc().oplog_vv(), before);
     }
 

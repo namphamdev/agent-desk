@@ -411,6 +411,7 @@ async fn run_session(session: Session) {
         request_input,
         mut steering,
         interrupt,
+        report_memory: _,
     } = controls;
     let request_input = Arc::new(request_input);
 
@@ -1187,7 +1188,10 @@ mod tests {
             std::fs::write(admin.join("HEAD"), format!("ref: refs/heads/{branch}\n")).unwrap();
             wt.display().to_string()
         };
-        assert!(worktree_on_slashed_branch(&make("slashed", "wing/prd-5645")));
+        assert!(worktree_on_slashed_branch(&make(
+            "slashed",
+            "wing/prd-5645"
+        )));
         assert!(!worktree_on_slashed_branch(&make("plain", "brave-ember")));
         // A main checkout (`.git` DIRECTORY) never escalates.
         let main = tmp.path().join("main");

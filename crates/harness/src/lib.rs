@@ -46,6 +46,9 @@ pub struct RunControls {
     /// interrupt, then escalates to SIGTERM/SIGKILL on the child after a grace
     /// period. The run's stream ends with `Done { status: Interrupted }`.
     pub interrupt: CancellationToken,
+    /// Report the resident memory used by the harness process tree. Harnesses
+    /// without a child process do not need to call this.
+    pub report_memory: Box<dyn Fn(Option<u64>) + Send + Sync>,
 }
 
 #[async_trait]
@@ -64,9 +67,9 @@ pub trait Harness: Send + Sync {
     ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError>;
 }
 
+pub mod acp;
 pub mod claude;
 pub mod codex;
-pub mod acp;
 pub mod mock;
 
 /// Bin directories where npm-installed CLIs land under Node version managers.
@@ -131,9 +134,7 @@ pub(crate) fn prepend_exe_dir_to_path(cmd: &mut tokio::process::Command, exe: &s
 /// unexpectedly (<status>): <last stderr lines>" instead of a bare shrug —
 /// the proper background-crash message old comet showed (user requirement).
 #[derive(Clone, Default)]
-pub(crate) struct StderrTail(
-    std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<String>>>,
-);
+pub(crate) struct StderrTail(std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<String>>>);
 
 impl StderrTail {
     const KEEP_LINES: usize = 6;
@@ -144,7 +145,10 @@ impl StderrTail {
         if line.is_empty() {
             return;
         }
-        let mut tail = self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut tail = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         tail.push_back(line.chars().take(Self::KEEP_BYTES).collect());
         while tail.len() > Self::KEEP_LINES {
             tail.pop_front();
@@ -153,7 +157,10 @@ impl StderrTail {
 
     /// The captured tail as one display string, `None` when nothing arrived.
     pub(crate) fn snapshot(&self) -> Option<String> {
-        let tail = self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let tail = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if tail.is_empty() {
             return None;
         }
@@ -195,6 +202,6 @@ pub(crate) fn crash_message(
     }
 }
 
+pub use acp::AcpHarness;
 pub use claude::ClaudeHarness;
 pub use codex::CodexHarness;
-pub use acp::AcpHarness;

@@ -1589,6 +1589,9 @@ pub struct Composer {
     /// In-flight file-picker prompt (paperclip).
     picker_task: Option<Task<()>>,
     current_key: String,
+    selected_workflow_id: Option<String>,
+    workflow_space_id: Option<String>,
+    pr_ref_input: Entity<ComposerInput>,
     sending: bool,
     failure: Option<SharedString>,
     wizard: Option<Wizard>,
@@ -1630,6 +1633,7 @@ pub struct Composer {
     _observe: Subscription,
     _pickers_observe: Subscription,
     _input_events: Subscription,
+    _pr_ref_events: Subscription,
 }
 
 impl EventEmitter<ComposerEvent> for Composer {}
@@ -1637,6 +1641,7 @@ impl EventEmitter<ComposerEvent> for Composer {}
 impl Composer {
     pub fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
         let input = cx.new(|cx| ComposerInput::new("Do anything…", cx));
+        let pr_ref_input = cx.new(|cx| ComposerInput::new("#42 or pull request URL", cx));
         let pickers = cx.new(|cx| Pickers::new(state.clone(), cx));
         // The footer toolbar (checkout kind + ref picker) is rendered INLINE
         // by the composer from picker state — a pickers-side notify (refs
@@ -1655,7 +1660,14 @@ impl Composer {
             }
             ComposerInputEvent::PastedPaths(paths) => this.add_paths(paths.clone(), cx),
         });
+        let pr_ref_events =
+            cx.subscribe(&pr_ref_input, |this: &mut Self, _, event, cx| match event {
+                ComposerInputEvent::Submitted => this.on_submit(cx),
+                ComposerInputEvent::Edited => cx.notify(),
+                ComposerInputEvent::PastedImages(_) | ComposerInputEvent::PastedPaths(_) => {}
+            });
         let current_key = state.read(cx).selected_chat.clone().unwrap_or_default();
+        let workflow_space_id = state.read(cx).selected_space.clone();
         let mut composer = Self {
             state,
             input,
@@ -1665,6 +1677,9 @@ impl Composer {
             preview: None,
             picker_task: None,
             current_key,
+            selected_workflow_id: None,
+            workflow_space_id,
+            pr_ref_input,
             sending: false,
             failure: None,
             wizard: None,
@@ -1686,6 +1701,7 @@ impl Composer {
             _observe: observe,
             _pickers_observe: pickers_observe,
             _input_events: input_events,
+            _pr_ref_events: pr_ref_events,
         };
         // Dev knob: pre-stage attachments (drop/paste can't be synthesized on
         // a rig) — `COMET_ATTACH=/path/a.png[,/path/b.png]`, and
@@ -1723,15 +1739,15 @@ impl Composer {
         composer
     }
 
+    pub fn is_sending(&self) -> bool {
+        self.sending
+    }
+
     /// Capture-knob passthrough (`COMET_OPEN_DIALOG=model`): open the
     /// combined harness/model menu.
     pub fn debug_open_model_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.pickers
             .update(cx, |pickers, cx| pickers.open_model_menu(window, cx));
-    }
-
-    pub fn is_sending(&self) -> bool {
-        self.sending
     }
 
     // ---- attachment staging (use-attachments.ts) ----
@@ -1878,13 +1894,22 @@ impl Composer {
     }
 
     fn on_state_changed(&mut self, cx: &mut Context<Self>) {
-        let (key, pending) = {
+        let (key, space_id, pending) = {
             let s = self.state.read(cx);
             (
                 s.selected_chat.clone().unwrap_or_default(),
+                s.selected_space.clone(),
                 pending_input_request(&s.transcript),
             )
         };
+        if space_id != self.workflow_space_id {
+            self.workflow_space_id = space_id;
+            self.selected_workflow_id = None;
+            self.pr_ref_input
+                .update(cx, |input, cx| input.set_text("", cx));
+            self.input
+                .update(cx, |input, cx| input.set_placeholder("Do anything…", cx));
+        }
 
         // Draft swap on chat navigation — the input entity itself survives.
         if key != self.current_key {
@@ -1896,6 +1921,8 @@ impl Composer {
             }
             let draft = self.drafts.get(&key).cloned().unwrap_or_default();
             self.current_key = key;
+            self.selected_workflow_id = None;
+            self.pr_ref_input.update(cx, |i, cx| i.set_text("", cx));
             self.failure = None;
             self.wizard = None;
             // Attachments stay stashed under their chat key (the map swap IS
@@ -1910,7 +1937,10 @@ impl Composer {
             self.flip_morph = None;
             self.last_rendered_height = 0.0;
             self.route_snap_until = Some(Instant::now() + Duration::from_millis(ROUTE_SNAP_MS));
-            self.input.update(cx, |input, cx| input.set_text(draft, cx));
+            self.input.update(cx, |input, cx| {
+                input.set_placeholder("Do anything…", cx);
+                input.set_text(draft, cx);
+            });
         }
 
         // Question panel lifecycle (wizard state cached per request id).
@@ -1970,7 +2000,12 @@ impl Composer {
     fn button_mode(&self, cx: &App) -> SendButtonMode {
         // A staged image counts as content: image-only sends are legal
         // (the prompt body becomes "See the attached image(s).").
-        let has_text = !self.input.read(cx).text().trim().is_empty() || !self.staged().is_empty();
+        let has_pr_ref = self.state.read(cx).selected_chat.is_none()
+            && self.selected_workflow_id.is_some()
+            && !self.pr_ref_input.read(cx).text().trim().is_empty();
+        let has_text = !self.input.read(cx).text().trim().is_empty()
+            || has_pr_ref
+            || !self.staged().is_empty();
         send_button_mode(self.run_live(cx), has_text)
     }
 
@@ -1985,12 +2020,142 @@ impl Composer {
             return;
         }
         let text = self.input.read(cx).text().trim().to_string();
+        let pr_ref_only = self.state.read(cx).selected_chat.is_none()
+            && self.selected_workflow_id.is_some()
+            && !self.pr_ref_input.read(cx).text().trim().is_empty();
         match self.button_mode(cx) {
             SendButtonMode::Stop => self.interrupt(cx),
-            _ if text.is_empty() && self.staged().is_empty() => {}
+            _ if text.is_empty() && self.staged().is_empty() && !pr_ref_only => {}
             SendButtonMode::Send => self.send(text, false, cx),
             SendButtonMode::Steer => self.send(text, true, cx),
         }
+    }
+
+    /// Create a chat in the source session's space with starting context.
+    /// Review threads optionally dispatch their first requirement immediately;
+    /// message forks wait for the user to type.
+    pub fn start_thread(
+        &mut self,
+        source: comet_proto::Chat,
+        seed_text: String,
+        seed_role: MessageRole,
+        purpose: &'static str,
+        title: String,
+        initial_prompt: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.sending {
+            return;
+        }
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            self.failure = Some("Engine not connected".into());
+            cx.notify();
+            return;
+        };
+        let Some(space_id) = source.space_id.clone() else {
+            self.failure = Some("This session is not attached to a space".into());
+            cx.notify();
+            return;
+        };
+        let chat_id = uuid::Uuid::new_v4().to_string();
+        let created_at = chrono::Utc::now();
+        let mut chat = source.clone();
+        chat.id = chat_id.clone();
+        chat.title = Some(title.clone());
+        chat.archived = false;
+        chat.last_message_preview = None;
+        chat.last_message_at = None;
+        chat.created_at = created_at;
+        chat.harness_session_id = None;
+        chat.harness_session_cwd = None;
+        chat.last_seen_at = Some(created_at);
+
+        self.state.update(cx, |state, cx| {
+            state.chats.push(chat);
+            state.set_thread_seed(
+                chat_id.clone(),
+                crate::state::ThreadSeed {
+                    text: seed_text.clone(),
+                    role: seed_role,
+                    purpose,
+                    created_at: created_at.timestamp_millis(),
+                },
+            );
+            state.select_chat(Some(chat_id.clone()), cx);
+            cx.notify();
+        });
+        self.failure = None;
+        self.sending = true;
+        cx.notify();
+
+        let source_id = source.id;
+        let cwd = source.cwd;
+        let branch = source.branch;
+        let config = source.config;
+        self.send_task = Some(cx.spawn(async move |this, cx| {
+            let mut create = serde_json::json!({
+                "op": "createChat",
+                "chatId": chat_id,
+                "spaceId": space_id,
+                "seedContext": {
+                    "text": seed_text,
+                    "role": if seed_role == MessageRole::User { "user" } else { "assistant" },
+                    "purpose": purpose,
+                    "createdAt": created_at.timestamp_millis(),
+                },
+            });
+            if let Some(object) = create.as_object_mut() {
+                if let Some(cwd) = cwd {
+                    object.insert("cwd".into(), serde_json::Value::String(cwd));
+                }
+                if let Some(branch) = branch {
+                    object.insert("branch".into(), serde_json::Value::String(branch));
+                }
+                if let Some(config) = config.and_then(|value| serde_json::to_value(value).ok()) {
+                    object.insert("config".into(), config);
+                }
+            }
+            let result: Result<(), String> = async {
+                engine
+                    .client()
+                    .call(methods::MUTATE, create)
+                    .await
+                    .map_err(|err| format!("New thread failed: {err}"))?;
+                let _ = engine
+                    .client()
+                    .call(
+                        methods::MUTATE,
+                        serde_json::json!({
+                            "op": "renameChat",
+                            "chatId": chat_id,
+                            "title": title,
+                        }),
+                    )
+                    .await;
+                Ok(())
+            }
+            .await;
+            this.update(cx, |composer, cx| {
+                composer.sending = false;
+                match result {
+                    Ok(()) => {
+                        if let Some(prompt) = initial_prompt {
+                            composer.send(prompt, false, cx);
+                        }
+                    }
+                    Err(message) => {
+                        composer.failure = Some(message.into());
+                        composer.state.update(cx, |state, cx| {
+                            state.chats.retain(|chat| chat.id != chat_id);
+                            state.take_thread_seed(&chat_id);
+                            state.select_chat(Some(source_id), cx);
+                        });
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
     }
 
     /// Queue a Run (or Steer) doc command with an optimistic echo. New chats
@@ -2075,10 +2240,54 @@ impl Composer {
 
         // Image-only sends echo the same body `with_attachments` will use, so
         // the bubble never renders empty (refs are upserted in post-upload).
-        let echo_text = if text.is_empty() && !staged.is_empty() {
+        let mut final_text = text.clone();
+        let mut chat_title: Option<String> = None;
+        if is_new {
+            use crate::workflows::{
+                build_workflow_prompt, load_project_workflows, resolve_workflows,
+                workflow_session_title,
+            };
+            let shell_settings = self
+                .state
+                .read(cx)
+                .data_dir
+                .as_deref()
+                .map(crate::settings::UiSettings::load)
+                .unwrap_or_default();
+            let project_workflows = space
+                .as_ref()
+                .filter(|space| local_device_id.as_deref() == Some(space.device_id.as_str()))
+                .map(|space| load_project_workflows(std::path::Path::new(&space.path)))
+                .unwrap_or_default();
+            let resolved = resolve_workflows(&shell_settings.workflows, &project_workflows);
+            if let Some(w_id) = &self.selected_workflow_id {
+                if let Some(w) = resolved.workflows.iter().find(|w| &w.id == w_id) {
+                    let pr_ref = self.pr_ref_input.read(cx).text();
+                    final_text = build_workflow_prompt(
+                        w,
+                        &text,
+                        if pr_ref.is_empty() {
+                            None
+                        } else {
+                            Some(pr_ref)
+                        },
+                    );
+                    chat_title = Some(workflow_session_title(
+                        w,
+                        &text,
+                        if pr_ref.is_empty() {
+                            None
+                        } else {
+                            Some(pr_ref)
+                        },
+                    ));
+                }
+            }
+        }
+        let echo_text = if final_text.is_empty() && !staged.is_empty() {
             attachments::ATTACHMENT_ONLY_TEXT.to_string()
         } else {
-            text.clone()
+            final_text.clone()
         };
 
         // Optimistic echo (client-minted id doubles as the persisted message id,
@@ -2113,6 +2322,13 @@ impl Composer {
         cx.notify();
 
         let steer_cmd = steer && !is_new;
+        let thread_seed = if steer_cmd {
+            None
+        } else {
+            self.state
+                .update(cx, |state, _| state.take_thread_seed(&chat_id))
+        };
+        let retry_seed = thread_seed.clone();
         let restore_text = text.clone();
         let err_chat_id = chat_id.clone();
         let err_message_id = message_id.clone();
@@ -2196,6 +2412,9 @@ impl Composer {
                                 serde_json::Value::String(branch.clone()),
                             );
                         }
+                        if let Some(title) = &chat_title {
+                            object.insert("title".into(), serde_json::Value::String(title.clone()));
+                        }
                         if let Some(config) = resolved.chat_config()
                             && let Ok(config) = serde_json::to_value(&config)
                         {
@@ -2205,13 +2424,26 @@ impl Composer {
                     if let Err(err) = engine.client().call(methods::MUTATE, mutate).await {
                         tracing::debug!(error = %err, "CreateChat mutate unavailable; doc host will materialize the chat");
                     }
+                    if let Some(title) = &chat_title {
+                        let _ = engine
+                            .client()
+                            .call(
+                                methods::MUTATE,
+                                serde_json::json!({
+                                    "op": "renameChat",
+                                    "chatId": chat_id,
+                                    "title": title
+                                }),
+                            )
+                            .await;
+                    }
                 }
 
                 // Stage every attachment on the host device (sequential — the
                 // chunks share one channel), then thread the refs into the
                 // prompt text (`with_attachments`, the persisted transport)
                 // and the paths onto the Run request (inline image blocks).
-                let mut content = text.clone();
+                let mut content = final_text.clone();
                 let mut attachment_paths: Vec<String> = Vec::new();
                 if !staged.is_empty() {
                     for att in &staged {
@@ -2243,7 +2475,7 @@ impl Composer {
                             attachments::seed_attachment(&device_id, path, &att.name, att.image.clone());
                         }
                     }
-                    content = attachments::with_attachments(&text, &attachment_paths);
+                    content = attachments::with_attachments(&final_text, &attachment_paths);
                     // Refresh the echo in place with the attachment refs
                     // (same id, same clock — the bubble grows its thumbnails
                     // without flickering).
@@ -2286,6 +2518,18 @@ impl Composer {
                             sandbox: SandboxLevel::WorkspaceWrite,
                             auto_approve: false,
                             resume: None,
+                            seed: thread_seed.as_ref().map(|seed| seed.text.clone()),
+                            seed_purpose: thread_seed
+                                .as_ref()
+                                .map(|seed| seed.purpose.to_string()),
+                            seed_role: thread_seed.as_ref().map(|seed| {
+                                if seed.role == MessageRole::User {
+                                    "user"
+                                } else {
+                                    "assistant"
+                                }
+                                .to_string()
+                            }),
                             attachments: attachment_paths,
                         },
                         message_id: message_id.clone(),
@@ -2310,6 +2554,9 @@ impl Composer {
                     composer.failure = Some(message.into());
                     composer.state.update(cx, |s, cx| {
                         s.remove_echo(&err_chat_id, &err_message_id);
+                        if let Some(seed) = retry_seed.clone() {
+                            s.restore_thread_seed(err_chat_id.clone(), seed);
+                        }
                         cx.notify();
                     });
                     composer.input.update(cx, |input, cx| input.set_text(restore_text, cx));
@@ -3129,6 +3376,11 @@ impl Render for Composer {
         // The file dropzone lives in the shell (the whole conversation column,
         // not just the pill — shell.rs `chat-dropzone`); drops land back here
         // via `add_paths`.
+        let container = if new_chat {
+            container.child(self.render_workflows_canvas(&theme, cx))
+        } else {
+            container
+        };
         let container = container.child(motion::fade_quick("composer-input", body));
         // Branch/worktree toolbar under the pill (t3code BranchToolbar): the
         // checkout-kind selector + ref picker for new sessions, read-only
@@ -3611,5 +3863,152 @@ mod tests {
         let t = vec![entry(Some(MessageStatus::Streaming), vec![resolved])];
         assert!(input_request_resolved(&t, "r1"));
         assert!(!input_request_resolved(&t, "other"));
+    }
+}
+
+impl Composer {
+    fn render_workflows_canvas(
+        &self,
+        theme: &crate::theme::Theme,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        use crate::settings::UiSettings;
+        use crate::workflows::{load_project_workflows, resolve_workflows};
+        use gpui::prelude::*;
+        use gpui::{div, px};
+
+        let shell_settings = self
+            .state
+            .read(cx)
+            .data_dir
+            .as_deref()
+            .map(UiSettings::load)
+            .unwrap_or_default();
+        let project_workflows = {
+            let state = self.state.read(cx);
+            state
+                .selected_space_row()
+                .filter(|space| state.local_device_id.as_deref() == Some(space.device_id.as_str()))
+                .map(|space| load_project_workflows(std::path::Path::new(&space.path)))
+                .unwrap_or_default()
+        };
+
+        let resolved = resolve_workflows(&shell_settings.workflows, &project_workflows);
+
+        let mut row = div().flex().flex_row().flex_wrap().gap(px(8.0));
+
+        let free_chat_selected = self.selected_workflow_id.is_none();
+
+        row = row.child(
+            div()
+                .id("workflow-free-chat")
+                .p(px(8.0))
+                .rounded_md()
+                .border_1()
+                .border_color(if free_chat_selected {
+                    theme.accent
+                } else {
+                    theme.border
+                })
+                .bg(if free_chat_selected {
+                    theme.accent.opacity(0.1)
+                } else {
+                    theme.surface
+                })
+                .cursor_pointer()
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.selected_workflow_id = None;
+                    this.pr_ref_input.update(cx, |i, cx| i.set_text("", cx));
+                    this.input
+                        .update(cx, |input, cx| input.set_placeholder("Do anything…", cx));
+                    cx.notify();
+                }))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .child(div().text_size(px(12.0)).child("Free chat"))
+                        .child(
+                            div()
+                                .mt(px(2.0))
+                                .text_size(px(10.0))
+                                .text_color(theme.text_muted)
+                                .child("Send the message as written"),
+                        ),
+                ),
+        );
+
+        for w in &resolved.workflows {
+            let is_selected = self.selected_workflow_id.as_ref() == Some(&w.id);
+            let id = w.id.clone();
+            let label = w.label.clone();
+            let description = w.description.clone();
+            let needs_pr_ref = w.needs_pr_ref;
+            let placeholder = w.task_placeholder.clone();
+
+            row = row.child(
+                div()
+                    .id(SharedString::from(format!("workflow-{id}")))
+                    .p(px(8.0))
+                    .rounded_md()
+                    .border_1()
+                    .border_color(if is_selected {
+                        theme.accent
+                    } else {
+                        theme.border
+                    })
+                    .bg(if is_selected {
+                        theme.accent.opacity(0.1)
+                    } else {
+                        theme.surface
+                    })
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.selected_workflow_id = Some(id.clone());
+                        if !needs_pr_ref {
+                            this.pr_ref_input.update(cx, |i, cx| i.set_text("", cx));
+                        }
+                        this.input.update(cx, |input, cx| {
+                            input.set_placeholder(placeholder.clone(), cx)
+                        });
+                        cx.notify();
+                    }))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .child(div().text_size(px(12.0)).child(label))
+                            .child(
+                                div()
+                                    .mt(px(2.0))
+                                    .text_size(px(10.0))
+                                    .text_color(theme.text_muted)
+                                    .child(description),
+                            ),
+                    ),
+            );
+        }
+
+        let mut container = div().flex().flex_col().gap(px(8.0)).child(row);
+
+        if let Some(workflow_id) = &self.selected_workflow_id {
+            if let Some(w) = resolved.workflows.iter().find(|w| &w.id == workflow_id) {
+                if w.needs_pr_ref {
+                    container = container.child(
+                        div()
+                            .w_full()
+                            .mt(px(8.0))
+                            .p(px(8.0))
+                            .border_1()
+                            .border_color(theme.border)
+                            .rounded_md()
+                            .bg(theme.surface)
+                            .child(self.pr_ref_input.clone()),
+                    );
+                }
+            }
+        }
+
+        container
     }
 }

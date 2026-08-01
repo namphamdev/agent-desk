@@ -13,17 +13,20 @@ pub use comet_proto::HarnessId;
 
 use comet_sync::DocsStore;
 
-pub mod agent_accounts;
 pub mod acp_agents;
+pub mod agent_accounts;
 pub mod auth;
 pub mod context_engine;
 pub mod diff_sync;
 pub mod doc_host;
+pub mod git;
 pub mod instance_lock;
+pub mod project_harness;
 pub mod registry;
 pub mod repos;
 pub mod rpc;
 pub mod run_journal;
+pub mod session_summary;
 pub mod sessions;
 pub mod spaces;
 pub mod terminals;
@@ -31,8 +34,8 @@ pub mod titles;
 pub mod uploads;
 pub mod workspace_host;
 
-pub use agent_accounts::{AgentAccounts, AgentAccountsConfig};
 pub use acp_agents::{ACP_CONFIG_FILE, AcpAgents};
+pub use agent_accounts::{AgentAccounts, AgentAccountsConfig};
 pub use auth::{Auth, AuthConfig, AuthState, AuthUser, OrgMembership};
 pub use diff_sync::{CheckoutDiffSync, DiffSidecar, DiffSnapshot, capture_diff};
 pub use doc_host::{ChatDocHandle, DocHost, DocHostConfig, EdgeConfig};
@@ -532,7 +535,8 @@ impl Engine {
 async fn shutdown_signal() -> std::io::Result<()> {
     #[cfg(unix)]
     {
-        let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+        let mut sigterm =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
         tokio::select! {
             result = tokio::signal::ctrl_c() => result,
             _ = sigterm.recv() => Ok(()),

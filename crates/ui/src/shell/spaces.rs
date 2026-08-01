@@ -10,7 +10,9 @@ use super::*;
 use crate::motion::TAB_SLIDE;
 use crate::pickers::{breadcrumbs, browser_rows, is_absolute_path, parent_path};
 use crate::terminal::panel::{drop_index, reorder_tabs, slide_offset};
-use comet_proto::{ChatIndicator, Device, FolderListing, Space};
+use comet_proto::{
+    ApplyHarnessResult, ChatIndicator, Device, FolderListing, ProjectHarness, Space,
+};
 use gpui::FocusHandle;
 
 /// Space-row slot height for drag drop-index math: py(6)×2 + 17px line ≈ 29,
@@ -111,6 +113,18 @@ pub(super) struct RenameSpaceDialog {
     pub _events: Subscription,
 }
 
+pub(super) struct ProjectHarnessFlow {
+    space_id: String,
+    project: String,
+    cwd: String,
+    device_id: String,
+    status: Loadable<ProjectHarness>,
+    busy_id: Option<String>,
+    flash: Option<SharedString>,
+    error: Option<SharedString>,
+    task: Option<Task<()>>,
+}
+
 /// Dot color for a chat's display status (tab dots + Sessions rows).
 pub(super) fn status_dot_color(status: ChatIndicator, theme: &Theme) -> gpui::Hsla {
     match status {
@@ -170,7 +184,11 @@ impl Shell {
     // ---- sidebar sections ----
 
     /// The "Spaces" section: tracked header + add button, then a row per space.
-    pub(super) fn render_spaces_section(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_spaces_section(
+        &mut self,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         // A drag that ended off-list (no drop event) must not strand the
         // sibling slide offsets.
         if self.space_drag.is_some() && !cx.has_active_drag() {
@@ -384,8 +402,8 @@ impl Shell {
                     .on_drag_move::<SpaceDragPayload>(cx.listener(
                         move |this, event: &gpui::DragMoveEvent<SpaceDragPayload>, _, cx| {
                             let from = event.drag(cx).from;
-                            let rel_y = f32::from(event.event.position.y)
-                                - f32::from(event.bounds.top());
+                            let rel_y =
+                                f32::from(event.event.position.y) - f32::from(event.bounds.top());
                             let over = drop_index(rel_y, SPACE_ROW_SLOT, count);
                             this.update_space_drag_over(from, over, cx);
                         },
@@ -492,7 +510,9 @@ impl Shell {
             .py(px(6.0))
             .text_color(motion::hover_blend(&fade_key, rest_text, theme.text))
             .bg(motion::hover_blend(&fade_key, rest_bg, theme.element_hover))
-            .when(selected, |el| el.shadow(crate::theme::glass_selected_shadows()))
+            .when(selected, |el| {
+                el.shadow(crate::theme::glass_selected_shadows())
+            })
             .on_hover(motion::hover_listener(fade_key))
             .cursor_pointer()
             .on_click(cx.listener(move |this, _, _, cx| {
@@ -520,13 +540,9 @@ impl Shell {
             // stable — appearing/disappearing at the right edge made the row
             // jitter (user request). Faint at rest, colored under attention.
             .child(
-                div()
-                    .size(px(6.0))
-                    .rounded_full()
-                    .flex_none()
-                    .bg(attention
-                        .map(|status| status_dot_color(status, theme))
-                        .unwrap_or_else(|| crate::theme::white_alpha(0.14))),
+                div().size(px(6.0)).rounded_full().flex_none().bg(attention
+                    .map(|status| status_dot_color(status, theme))
+                    .unwrap_or_else(|| crate::theme::white_alpha(0.14))),
             )
             .child(
                 icon(icons::FOLDER)
@@ -636,7 +652,8 @@ impl Shell {
         // "PaletteSearch" context: navigation keys stay unbound so ↑↓/←/→/⏎
         // bubble to the palette frame (`add_space_key`) instead of moving the
         // text caret — Enter and ⌘Enter are both handled there.
-        let search = cx.new(|cx| ComposerInput::with_context("Search folders…", "PaletteSearch", cx));
+        let search =
+            cx.new(|cx| ComposerInput::with_context("Search folders…", "PaletteSearch", cx));
         let search_events = cx.subscribe(&search, |this: &mut Shell, _, event, cx| {
             if matches!(event, ComposerInputEvent::Edited) {
                 let direct_path = this
@@ -969,8 +986,7 @@ impl Shell {
                 let count = self.add_space_filtered(cx).len();
                 let delta = if key == popover::MenuKey::Up { -1 } else { 1 };
                 if let Some(flow) = self.add_space.as_mut() {
-                    flow.active =
-                        popover::menu_step(Some(flow.active), count, delta).unwrap_or(0);
+                    flow.active = popover::menu_step(Some(flow.active), count, delta).unwrap_or(0);
                     // Keep the highlighted row in view as the cursor walks
                     // past the viewport (user-reported: the list didn't
                     // follow the keyboard).
@@ -1015,7 +1031,19 @@ impl Shell {
                 window.focus(&handle, cx);
             }
         }
-        let (device, search, error, submit_busy, active, loading, load_error, listing, focus, list_scroll, home) = {
+        let (
+            device,
+            search,
+            error,
+            submit_busy,
+            active,
+            loading,
+            load_error,
+            listing,
+            focus,
+            list_scroll,
+            home,
+        ) = {
             let flow = self.add_space.as_ref()?;
             (
                 flow.device.clone(),
@@ -1040,7 +1068,10 @@ impl Shell {
         // signal the sidebar space rows use.
         let device_presence: Vec<bool> = {
             let state = self.state.read(cx);
-            devices.iter().map(|d| state.device_online(&d.id, now)).collect()
+            devices
+                .iter()
+                .map(|d| state.device_online(&d.id, now))
+                .collect()
         };
         let device_name: SharedString = device
             .as_ref()
@@ -1111,7 +1142,11 @@ impl Shell {
             .border_color(hairline)
             .child(
                 key_chip(&theme)
-                    .child(icon(icons::COMMAND).size(px(11.0)).text_color(theme.text_muted.opacity(0.7)))
+                    .child(
+                        icon(icons::COMMAND)
+                            .size(px(11.0))
+                            .text_color(theme.text_muted.opacity(0.7)),
+                    )
                     .child(SharedString::from("K")),
             )
             .child(
@@ -1148,9 +1183,7 @@ impl Shell {
                 let at_home = home.as_deref() == Some(listing.path.as_str());
                 let folded = 1 + home
                     .as_deref()
-                    .filter(|h| {
-                        listing.path == *h || listing.path.starts_with(&format!("{h}/"))
-                    })
+                    .filter(|h| listing.path == *h || listing.path.starts_with(&format!("{h}/")))
                     .map(|h| h.split('/').filter(|s| !s.is_empty()).count())
                     .unwrap_or(0);
                 div()
@@ -1172,7 +1205,9 @@ impl Shell {
                         if at_home {
                             // Standing at home — the device crumb IS the
                             // current folder.
-                            crumb.text_color(theme.text.opacity(0.85)).into_any_element()
+                            crumb
+                                .text_color(theme.text.opacity(0.85))
+                                .into_any_element()
                         } else {
                             crumb
                                 .text_color(theme.text_muted.opacity(0.55))
@@ -1187,57 +1222,46 @@ impl Shell {
                                 .into_any_element()
                         }
                     })
-                    .children(
-                        segments
-                            .into_iter()
-                            .enumerate()
-                            .skip(folded)
-                            .map(|(ix, (label, full))| {
-                                let is_last = ix == last;
-                                div()
-                                    .flex()
-                                    .flex_row()
-                                    .items_center()
-                                    .child(
-                                        div()
-                                            .text_color(theme.text_faint.opacity(0.7))
-                                            .child(SharedString::from("/")),
-                                    )
-                                    .child({
-                                        let crumb = div()
-                                            .id(("add-space-crumb", ix))
-                                            .px(px(3.0))
-                                            .rounded(px(4.0))
-                                            .text_color(if is_last {
-                                                theme.text.opacity(0.85)
-                                            } else {
-                                                theme.text_muted.opacity(0.55)
-                                            })
-                                            .child(SharedString::from(label));
-                                        if is_last {
-                                            crumb.into_any_element()
+                    .children(segments.into_iter().enumerate().skip(folded).map(
+                        |(ix, (label, full))| {
+                            let is_last = ix == last;
+                            div()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .child(
+                                    div()
+                                        .text_color(theme.text_faint.opacity(0.7))
+                                        .child(SharedString::from("/")),
+                                )
+                                .child({
+                                    let crumb = div()
+                                        .id(("add-space-crumb", ix))
+                                        .px(px(3.0))
+                                        .rounded(px(4.0))
+                                        .text_color(if is_last {
+                                            theme.text.opacity(0.85)
                                         } else {
-                                            crumb
-                                                .cursor_pointer()
-                                                .hover(|s| s.text_color(Theme::dark().text))
-                                                .on_click(cx.listener(
-                                                    move |this, _, _, cx| {
-                                                        if let Some(flow) =
-                                                            this.add_space.as_mut()
-                                                        {
-                                                            flow.browser_repo = false;
-                                                        }
-                                                        this.load_space_folders(
-                                                            Some(full.clone()),
-                                                            cx,
-                                                        );
-                                                    },
-                                                ))
-                                                .into_any_element()
-                                        }
-                                    })
-                            }),
-                    )
+                                            theme.text_muted.opacity(0.55)
+                                        })
+                                        .child(SharedString::from(label));
+                                    if is_last {
+                                        crumb.into_any_element()
+                                    } else {
+                                        crumb
+                                            .cursor_pointer()
+                                            .hover(|s| s.text_color(Theme::dark().text))
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                if let Some(flow) = this.add_space.as_mut() {
+                                                    flow.browser_repo = false;
+                                                }
+                                                this.load_space_folders(Some(full.clone()), cx);
+                                            }))
+                                            .into_any_element()
+                                    }
+                                })
+                        },
+                    ))
                     .into_any_element()
             }
             None => div().pt(px(6.0)).into_any_element(),
@@ -1309,37 +1333,42 @@ impl Shell {
                         .flex_col()
                         // The app-wide list rhythm (sidebar rows, menu rows): 2px.
                         .gap(px(2.0))
-                .children(rows.into_iter().enumerate().map(|(ix, entry)| {
-                    let name: SharedString = entry.name.clone().into();
-                    let full = crate::pickers::child_path(&base_path, &entry.name);
-                    let is_repo = entry.is_repo;
-                    popover::menu_row_nav(&theme, false, ix == active, format!("add-space-folder-{ix}"))
-                        // The active-tab/session selection language: the wash
-                        // plus the ring-only inset outline.
-                        .when(ix == active, |el| {
-                            el.shadow(crate::theme::glass_selected_shadows())
-                        })
-                        .id(("add-space-folder", ix))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.add_space_descend(full.clone(), is_repo, cx);
-                        }))
-                        .child(
-                            icon(icons::FOLDER)
-                                .size(px(15.0))
-                                .flex_none()
-                                .text_color(theme.text_muted.opacity(0.8)),
-                        )
-                        .child(div().flex_1().min_w_0().truncate().child(name))
-                        // Repos get a quiet trailing branch glyph — the row
-                        // you're usually hunting for announces itself.
-                        .when(is_repo, |el| {
-                            el.child(
-                                icon(icons::GIT_BRANCH)
-                                    .size(px(13.0))
-                                    .flex_none()
-                                    .text_color(theme.text_muted.opacity(0.5)),
+                        .children(rows.into_iter().enumerate().map(|(ix, entry)| {
+                            let name: SharedString = entry.name.clone().into();
+                            let full = crate::pickers::child_path(&base_path, &entry.name);
+                            let is_repo = entry.is_repo;
+                            popover::menu_row_nav(
+                                &theme,
+                                false,
+                                ix == active,
+                                format!("add-space-folder-{ix}"),
                             )
-                        })
+                            // The active-tab/session selection language: the wash
+                            // plus the ring-only inset outline.
+                            .when(ix == active, |el| {
+                                el.shadow(crate::theme::glass_selected_shadows())
+                            })
+                            .id(("add-space-folder", ix))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.add_space_descend(full.clone(), is_repo, cx);
+                            }))
+                            .child(
+                                icon(icons::FOLDER)
+                                    .size(px(15.0))
+                                    .flex_none()
+                                    .text_color(theme.text_muted.opacity(0.8)),
+                            )
+                            .child(div().flex_1().min_w_0().truncate().child(name))
+                            // Repos get a quiet trailing branch glyph — the row
+                            // you're usually hunting for announces itself.
+                            .when(is_repo, |el| {
+                                el.child(
+                                    icon(icons::GIT_BRANCH)
+                                        .size(px(13.0))
+                                        .flex_none()
+                                        .text_color(theme.text_muted.opacity(0.5)),
+                                )
+                            })
                         })),
                 )
                 .into_any_element()
@@ -1413,19 +1442,23 @@ impl Shell {
                     )
                     .child(div().flex_1().min_w_0().truncate().child(name))
                     .child(
-                        div().size(px(5.0)).rounded_full().flex_none().when(online, |el| {
-                            // The Devices-page presence emerald, soft glow
-                            // included.
-                            let emerald = crate::theme::oklch(0.765, 0.177, 163.223);
-                            el.bg(emerald.opacity(0.9)).shadow(vec![gpui::BoxShadow {
-                                color: emerald.opacity(0.55),
-                                offset: gpui::point(px(0.0), px(0.0)),
-                                blur_radius: px(6.0),
-                                spread_radius: px(0.0),
-                                inset: false,
-                            }])
-                        })
-                        .when(!online, |el| el.bg(crate::theme::white_alpha(0.22))),
+                        div()
+                            .size(px(5.0))
+                            .rounded_full()
+                            .flex_none()
+                            .when(online, |el| {
+                                // The Devices-page presence emerald, soft glow
+                                // included.
+                                let emerald = crate::theme::oklch(0.765, 0.177, 163.223);
+                                el.bg(emerald.opacity(0.9)).shadow(vec![gpui::BoxShadow {
+                                    color: emerald.opacity(0.55),
+                                    offset: gpui::point(px(0.0), px(0.0)),
+                                    blur_radius: px(6.0),
+                                    spread_radius: px(0.0),
+                                    inset: false,
+                                }])
+                            })
+                            .when(!online, |el| el.bg(crate::theme::white_alpha(0.22))),
                     )
             }))
             .child(div().h(px(1.0)).mx(px(2.0)).my(px(6.0)).bg(hairline))
@@ -1501,42 +1534,43 @@ impl Shell {
                 )
             });
 
-        let card = div()
-            .id("add-space-palette")
-            .w(px(680.0))
-            .rounded(px(14.0))
-            .border_1()
-            .border_color(crate::theme::white_alpha(0.10))
-            // The popover_card glass recipe: a translucent tint over the
-            // frosted backdrop blur (`popover::modal` wraps in `frosted`) —
-            // an opaque fill here killed the vibrancy every other float has.
-            .bg(if Theme::GLASS_ALPHA < 1.0 {
-                crate::theme::grey(0x16).opacity(0.65)
-            } else {
-                crate::theme::grey(0x16)
-            })
-            .shadow_lg()
-            .overflow_hidden()
-            .flex()
-            .flex_col()
-            .text_color(theme.text)
-            // On the keyboard dispatch path (see `AddSpaceFlow::focus`) — the
-            // pickers' proven structure for frame-level keys with a focused
-            // child input.
-            .track_focus(&focus)
-            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
-                this.add_space_key(event, cx)
-            }))
-            // Clicking the scrim dismisses (user requirement) — same close
-            // path as Escape.
-            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                this.add_space = None;
-                cx.notify();
-            }))
-            .child(input_row)
-            .child(body)
-            .child(footer)
-            .into_any_element();
+        let card =
+            div()
+                .id("add-space-palette")
+                .w(px(680.0))
+                .rounded(px(14.0))
+                .border_1()
+                .border_color(crate::theme::white_alpha(0.10))
+                // The popover_card glass recipe: a translucent tint over the
+                // frosted backdrop blur (`popover::modal` wraps in `frosted`) —
+                // an opaque fill here killed the vibrancy every other float has.
+                .bg(if Theme::GLASS_ALPHA < 1.0 {
+                    crate::theme::grey(0x16).opacity(0.65)
+                } else {
+                    crate::theme::grey(0x16)
+                })
+                .shadow_lg()
+                .overflow_hidden()
+                .flex()
+                .flex_col()
+                .text_color(theme.text)
+                // On the keyboard dispatch path (see `AddSpaceFlow::focus`) — the
+                // pickers' proven structure for frame-level keys with a focused
+                // child input.
+                .track_focus(&focus)
+                .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
+                    this.add_space_key(event, cx)
+                }))
+                // Clicking the scrim dismisses (user requirement) — same close
+                // path as Escape.
+                .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                    this.add_space = None;
+                    cx.notify();
+                }))
+                .child(input_row)
+                .child(body)
+                .child(footer)
+                .into_any_element();
         Some(popover::modal("add-space-dialog", viewport, card))
     }
 
@@ -1589,6 +1623,138 @@ impl Shell {
         cx.notify();
     }
 
+    pub(super) fn open_project_harness(&mut self, space_id: String, cx: &mut Context<Self>) {
+        self.space_menu = None;
+        let Some(space) = self.state.read(cx).space_row(&space_id).cloned() else {
+            return;
+        };
+        self.project_harness = Some(ProjectHarnessFlow {
+            space_id,
+            project: space.display_name().to_string(),
+            cwd: space.path,
+            device_id: space.device_id,
+            status: Loadable::Loading,
+            busy_id: None,
+            flash: None,
+            error: None,
+            task: None,
+        });
+        self.load_project_harness(cx);
+        cx.notify();
+    }
+
+    fn project_harness_params(
+        &self,
+        cx: &Context<Self>,
+    ) -> Option<serde_json::Map<String, serde_json::Value>> {
+        let flow = self.project_harness.as_ref()?;
+        let mut params = serde_json::Map::new();
+        params.insert("cwd".into(), flow.cwd.clone().into());
+        params.insert("projectName".into(), flow.project.clone().into());
+        if self.state.read(cx).local_device_id.as_deref() != Some(flow.device_id.as_str()) {
+            params.insert("targetDeviceId".into(), flow.device_id.clone().into());
+        }
+        Some(params)
+    }
+
+    fn load_project_harness(&mut self, cx: &mut Context<Self>) {
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            return;
+        };
+        let Some(params) = self.project_harness_params(cx) else {
+            return;
+        };
+        let Some(flow) = self.project_harness.as_mut() else {
+            return;
+        };
+        flow.status = Loadable::Loading;
+        flow.error = None;
+        let space_id = flow.space_id.clone();
+        flow.task = Some(cx.spawn(async move |this, cx| {
+            let result = engine
+                .client()
+                .call(methods::GET_PROJECT_HARNESS, params.into())
+                .await;
+            this.update(cx, |shell, cx| {
+                let Some(flow) = shell
+                    .project_harness
+                    .as_mut()
+                    .filter(|f| f.space_id == space_id)
+                else {
+                    return;
+                };
+                flow.status = match result {
+                    Ok(value) => serde_json::from_value(value)
+                        .map(Loadable::Ready)
+                        .unwrap_or_else(|err| Loadable::Error(err.to_string())),
+                    Err(err) => Loadable::Error(err.to_string()),
+                };
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
+    fn apply_project_harness(&mut self, optimization_id: String, cx: &mut Context<Self>) {
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            return;
+        };
+        let Some(mut params) = self.project_harness_params(cx) else {
+            return;
+        };
+        let Some(flow) = self.project_harness.as_mut() else {
+            return;
+        };
+        if flow.busy_id.is_some() {
+            return;
+        }
+        params.insert("optimizationId".into(), optimization_id.clone().into());
+        flow.busy_id = Some(optimization_id);
+        flow.flash = None;
+        flow.error = None;
+        let space_id = flow.space_id.clone();
+        flow.task = Some(cx.spawn(async move |this, cx| {
+            let result = engine
+                .client()
+                .call(methods::APPLY_PROJECT_HARNESS, params.into())
+                .await;
+            this.update(cx, |shell, cx| {
+                let Some(flow) = shell.project_harness.as_mut().filter(|f| f.space_id == space_id) else {
+                    return;
+                };
+                flow.busy_id = None;
+                match result {
+                    Ok(value) => match serde_json::from_value::<ApplyHarnessResult>(value) {
+                        Ok(applied) if applied.ok => {
+                            let count = applied.written.as_ref().map_or(0, Vec::len);
+                            if let Some(harness) = applied.harness {
+                                flow.status = Loadable::Ready(harness);
+                            }
+                            flow.flash = Some(if count == 0 {
+                                "Already up to date.".into()
+                            } else {
+                                format!(
+                                    "Applied to {count} project file{}. New sessions pick it up automatically.",
+                                    if count == 1 { "" } else { "s" }
+                                )
+                                .into()
+                            });
+                        }
+                        Ok(applied) => {
+                            flow.error = Some(
+                                applied.error.unwrap_or_else(|| "Could not apply optimization".into()).into(),
+                            );
+                        }
+                        Err(err) => flow.error = Some(err.to_string().into()),
+                    },
+                    Err(err) => flow.error = Some(err.to_string().into()),
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
     /// Space context menu + rename dialog + delete confirm (appended to the
     /// shell's overlay list).
     pub(super) fn render_space_overlays(
@@ -1602,6 +1768,7 @@ impl Shell {
 
         if let Some((space_id, position)) = self.space_menu.clone() {
             let rename_id = space_id.clone();
+            let harness_id = space_id.clone();
             let delete_id = space_id.clone();
             let menu = popover::popover_card(&theme)
                 .w(px(170.0))
@@ -1619,6 +1786,19 @@ impl Shell {
                         }))
                         .child(icon(icons::PEN).size(px(16.0)).text_color(theme.text_muted))
                         .child(SharedString::from("Rename…")),
+                )
+                .child(
+                    popover::menu_row(&theme, false, format!("space-menu-harness-{space_id}"))
+                        .id("space-menu-harness")
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.open_project_harness(harness_id.clone(), cx)
+                        }))
+                        .child(
+                            icon(icons::SETTINGS_MINIMALISTIC)
+                                .size(px(16.0))
+                                .text_color(theme.text_muted),
+                        )
+                        .child(SharedString::from("AI Harness…")),
                 )
                 .child(popover::menu_separator())
                 .child(
@@ -1684,6 +1864,233 @@ impl Shell {
                 )
                 .into_any_element();
             overlays.push(popover::modal("rename-space-dialog", viewport, card));
+        }
+
+        if let Some(flow) = self.project_harness.as_ref() {
+            let project = flow.project.clone();
+            let cwd = flow.cwd.clone();
+            let status = flow.status.clone();
+            let busy_id = flow.busy_id.clone();
+            let flash = flow.flash.clone();
+            let error = flow.error.clone();
+            let harness = status.ready().cloned();
+            let (applied, total) = harness
+                .as_ref()
+                .map(|h| (h.applied_count, h.optimizations.len()))
+                .unwrap_or((0, 0));
+
+            let mut body = div().flex().flex_col().gap(px(10.0));
+            if status.is_loading() {
+                body = body.child(
+                    div()
+                        .py(px(36.0))
+                        .text_color(theme.text_muted)
+                        .text_size(px(13.0))
+                        .text_align(gpui::TextAlign::Center)
+                        .child("Loading harness…"),
+                );
+            }
+            if let Some(message) = status
+                .error()
+                .map(str::to_string)
+                .or_else(|| error.map(|e| e.to_string()))
+            {
+                body = body.child(
+                    div()
+                        .rounded(px(8.0))
+                        .border_1()
+                        .border_color(theme.danger.opacity(0.35))
+                        .bg(theme.danger.opacity(0.08))
+                        .p(px(10.0))
+                        .text_size(px(12.0))
+                        .text_color(theme.danger)
+                        .child(message),
+                );
+            }
+            if let Some(message) = flash {
+                body = body.child(
+                    div()
+                        .rounded(px(8.0))
+                        .bg(crate::theme::oklch(0.765, 0.177, 163.223).opacity(0.10))
+                        .p(px(10.0))
+                        .text_size(px(12.0))
+                        .text_color(crate::theme::oklch(0.765, 0.177, 163.223))
+                        .child(message),
+                );
+            }
+            if let Some(harness) = harness {
+                for optimization in harness.optimizations {
+                    let id = optimization.id.clone();
+                    let is_busy = busy_id.as_deref() == Some(id.as_str());
+                    let button_label = if is_busy {
+                        "Applying…"
+                    } else if optimization.applied {
+                        "Re-apply"
+                    } else {
+                        "Apply"
+                    };
+                    let badge_color = if optimization.applied {
+                        crate::theme::oklch(0.765, 0.177, 163.223)
+                    } else {
+                        theme.text_muted
+                    };
+                    let mut copy = div()
+                        .min_w_0()
+                        .flex_1()
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(8.0))
+                                .child(
+                                    div()
+                                        .font_weight(gpui::FontWeight::MEDIUM)
+                                        .text_size(px(13.0))
+                                        .child(optimization.name),
+                                )
+                                .child(
+                                    div()
+                                        .rounded(px(4.0))
+                                        .px(px(6.0))
+                                        .py(px(2.0))
+                                        .bg(badge_color.opacity(0.10))
+                                        .text_color(badge_color)
+                                        .text_size(px(9.0))
+                                        .child(if optimization.applied {
+                                            "APPLIED"
+                                        } else {
+                                            "NOT APPLIED"
+                                        }),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .mt(px(6.0))
+                                .text_size(px(12.0))
+                                .line_height(gpui::relative(1.45))
+                                .text_color(theme.text_muted)
+                                .child(optimization.description),
+                        )
+                        .child(
+                            div()
+                                .mt(px(7.0))
+                                .text_size(px(10.0))
+                                .text_color(theme.text_faint)
+                                .child(optimization.source_label),
+                        );
+                    if let Some(details) = optimization.details {
+                        copy = copy.child(
+                            div()
+                                .mt(px(7.0))
+                                .text_size(px(10.0))
+                                .text_color(theme.text_faint)
+                                .child(details),
+                        );
+                    }
+                    body = body.child(
+                        div()
+                            .rounded(px(10.0))
+                            .border_1()
+                            .border_color(theme.border)
+                            .bg(theme.surface)
+                            .p(px(14.0))
+                            .flex()
+                            .items_start()
+                            .gap(px(12.0))
+                            .child(copy)
+                            .child(
+                                popover::btn_primary(&theme, button_label)
+                                    .id(SharedString::from(format!("apply-harness-{id}")))
+                                    .opacity(if busy_id.is_some() { 0.55 } else { 1.0 })
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.apply_project_harness(id.clone(), cx)
+                                    })),
+                            ),
+                    );
+                }
+            }
+
+            let card = popover::dialog_card(&theme)
+                .w(px(560.0))
+                .max_h(px(640.0))
+                .on_key_down(cx.listener(|this, ev: &gpui::KeyDownEvent, _, cx| {
+                    if ev.keystroke.key == "escape"
+                        && this.project_harness.as_ref().and_then(|f| f.busy_id.as_ref()).is_none()
+                    {
+                        this.project_harness = None;
+                        cx.notify();
+                    }
+                }))
+                .child(
+                    div()
+                        .flex()
+                        .items_start()
+                        .justify_between()
+                        .gap(px(12.0))
+                        .child(
+                            div()
+                                .min_w_0()
+                                .child(popover::dialog_title(&theme, &format!("AI Harness · {project}")))
+                                .child(
+                                    div()
+                                        .mt(px(4.0))
+                                        .truncate()
+                                        .text_size(px(11.0))
+                                        .text_color(theme.text_faint)
+                                        .child(cwd),
+                                ),
+                        )
+                        .child(
+                            popover::btn_ghost(&theme, "Refresh", "harness-refresh")
+                                .id("harness-refresh")
+                                .opacity(if busy_id.is_some() { 0.55 } else { 1.0 })
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    if this.project_harness.as_ref().and_then(|f| f.busy_id.as_ref()).is_none() {
+                                        this.load_project_harness(cx);
+                                    }
+                                })),
+                        ),
+                )
+                .child(
+                    div()
+                        .mt(px(12.0))
+                        .pb(px(12.0))
+                        .border_b_1()
+                        .border_color(theme.border)
+                        .text_size(px(12.0))
+                        .text_color(theme.text_muted)
+                        .child(format!(
+                            "{applied}/{total} applied · Project-level guidelines, shared memory, architecture docs, commands, and skills."
+                        )),
+                )
+                .child(
+                    div()
+                        .id("project-harness-list")
+                        .mt(px(12.0))
+                        .overflow_y_scroll()
+                        .child(body),
+                )
+                .child(
+                    div()
+                        .mt(px(12.0))
+                        .pt(px(12.0))
+                        .border_t_1()
+                        .border_color(theme.border)
+                        .flex()
+                        .justify_end()
+                        .child(
+                            popover::btn_ghost(&theme, "Close", "harness-close")
+                                .id("harness-close")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    if this.project_harness.as_ref().and_then(|f| f.busy_id.as_ref()).is_none() {
+                                        this.project_harness = None;
+                                        cx.notify();
+                                    }
+                                })),
+                        ),
+                )
+                .into_any_element();
+            overlays.push(popover::modal("project-harness-dialog", viewport, card));
         }
 
         if let Some(space_id) = self.delete_space_confirm.clone() {

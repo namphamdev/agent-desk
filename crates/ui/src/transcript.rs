@@ -30,9 +30,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    AnyElement, ClipboardItem, Context, Entity, ListAlignment, ListScrollEvent, ListState,
-    ObjectFit, SharedString, StyledImage as _, Subscription, Task, Window, div, img, list,
-    prelude::*, px,
+    AnyElement, ClipboardItem, Context, Entity, EventEmitter, ListAlignment, ListScrollEvent,
+    ListState, ObjectFit, SharedString, StyledImage as _, Subscription, Task, Window, div, img,
+    list, prelude::*, px,
 };
 
 use comet_doc::{MessagePart, MessageRole, MessageStatus, SessionMessageEntry};
@@ -248,10 +248,11 @@ pub struct Row {
     /// The owning message entry — hover anywhere on the entry's rows reveals
     /// its timestamp strip (comet chat-view.tsx `group`/`group-hover`).
     pub entry_id: SharedString,
-    /// Epoch-ms for the 16px hover-timestamp strip UNDER this row: set on the
-    /// LAST row of a completed entry (user rows always; assistant rows only
-    /// once streaming ends — "the turn isn't at a time yet", chat-view.tsx).
     pub timestamp: Option<i64>,
+    /// Full raw text for the completed owning message. Present only on the
+    /// entry's last row so message actions render exactly once.
+    pub raw_text: Option<SharedString>,
+    pub role: Option<MessageRole>,
 }
 
 /// Absolute hover-timestamp label, e.g. "Jul 1, 3:45 PM" — the exact
@@ -319,6 +320,7 @@ pub fn rows_for_entry(
         // Attachment refs ride the plain text (the `withAttachments`
         // transport); split them back out for the thumbnail strip.
         let parsed = crate::attachments::parse_user_message_images(&raw);
+        let actions = (!pending && !raw.trim().is_empty()).then(|| raw.clone().into());
         return vec![Row {
             id: entry.id.clone().into(),
             version: (raw.len() as u64) << 1 | pending as u64,
@@ -329,6 +331,8 @@ pub fn rows_for_entry(
                 pending,
             },
             entry_id,
+            raw_text: actions,
+            role: (!pending).then_some(MessageRole::User),
             // User rows always carry the strip (chat-view.tsx: whenever
             // `createdAt` exists — the optimistic echo included).
             timestamp: Some(entry.created_at),
@@ -358,6 +362,8 @@ pub fn rows_for_entry(
                 },
                 entry_id: entry.id.clone().into(),
                 timestamp: None,
+                raw_text: None,
+                role: None,
             });
             *group_ix += 1;
         };
@@ -412,6 +418,8 @@ pub fn rows_for_entry(
                                 turn_start: false,
                                 entry_id: entry_id.clone(),
                                 timestamp: None,
+                                raw_text: None,
+                                role: None,
                                 kind: if streaming {
                                     RowKind::LiveMarkdown {
                                         tree: tree.clone(),
@@ -450,6 +458,8 @@ pub fn rows_for_entry(
                             },
                             entry_id: entry_id.clone(),
                             timestamp: None,
+                            raw_text: None,
+                            role: None,
                         });
                     }
                     MessagePart::Error {
@@ -466,6 +476,8 @@ pub fn rows_for_entry(
                             },
                             entry_id: entry_id.clone(),
                             timestamp: None,
+                            raw_text: None,
+                            role: None,
                         });
                     }
                     // Tools are grouped by the outer arm; nothing reaches here.
@@ -490,6 +502,19 @@ pub fn rows_for_entry(
     // change when streaming flips off (chips).
     if !streaming && let Some(last) = rows.last_mut() {
         last.timestamp = Some(entry.created_at);
+        let raw = entry
+            .parts
+            .iter()
+            .filter_map(|p| match p {
+                MessagePart::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        if !raw.trim().is_empty() {
+            last.raw_text = Some(raw.into());
+            last.role = Some(entry.role.clone());
+        }
         last.version ^= 1 << 62;
     }
     rows
@@ -847,6 +872,11 @@ struct FoldState {
     toggled_at: Option<Instant>,
 }
 
+#[derive(Clone)]
+pub enum TranscriptEvent {
+    NewThread { text: String, role: MessageRole },
+}
+
 pub struct Transcript {
     state: Entity<AppState>,
     list: ListState,
@@ -909,6 +939,9 @@ pub struct Transcript {
     /// the companion task after ~1.2s.
     copied_code: Option<(SharedString, usize)>,
     copied_clear: Option<Task<()>>,
+    /// Message footer showing transient "Copied" feedback.
+    copied_message: Option<SharedString>,
+    copied_message_clear: Option<Task<()>>,
     /// Transcript attachment being viewed full-size (click a user thumbnail).
     attachment_preview: Option<crate::attachments::PreviewImage>,
     /// In-flight ReadAttachmentChunk loads, keyed `(deviceId, path)` — one per
@@ -960,6 +993,8 @@ impl Transcript {
             hovered_entry: None,
             copied_code: None,
             copied_clear: None,
+            copied_message: None,
+            copied_message_clear: None,
             attachment_preview: None,
             attachment_loads: HashMap::new(),
             attachment_retries: HashMap::new(),
@@ -1178,11 +1213,15 @@ impl Transcript {
 
     /// Rebuild rows from app state; splice minimal ranges into the list.
     fn sync(&mut self, cx: &mut Context<Self>) {
-        let (selected, entries, echoes) = {
+        let (selected, entries, seed, echoes) = {
             let s = self.state.read(cx);
+            let selected = s.selected_chat.clone();
             (
-                s.selected_chat.clone(),
+                selected.clone(),
                 s.transcript.clone(),
+                selected
+                    .as_deref()
+                    .and_then(|chat_id| s.thread_seed_entry(chat_id)),
                 s.pending_echoes().to_vec(),
             )
         };
@@ -1208,6 +1247,9 @@ impl Transcript {
         }
 
         let mut new_rows: Vec<Row> = Vec::new();
+        if let Some(seed) = &seed {
+            new_rows.extend(self.rows_for(seed, false));
+        }
         for entry in &entries {
             new_rows.extend(self.rows_for(entry, false));
         }
@@ -1713,6 +1755,95 @@ impl Transcript {
                     ))
                 })
         });
+        let actions = row.raw_text.clone().zip(row.role).map(|(text, role)| {
+            let copied = self
+                .copied_message
+                .as_ref()
+                .is_some_and(|id| id == &row.entry_id);
+            let copy_text = text.clone();
+            let copy_entry = row.entry_id.clone();
+            let thread_text = text;
+            let align_end = role == MessageRole::User;
+            div()
+                .w_full()
+                .mt(px(8.0))
+                .flex()
+                .gap(px(6.0))
+                .when(align_end, |el| el.justify_end())
+                .child(
+                    div()
+                        .id(SharedString::from(format!("message-copy-{}", row.entry_id)))
+                        .h(px(24.0))
+                        .px(px(8.0))
+                        .flex()
+                        .items_center()
+                        .gap(px(4.0))
+                        .rounded(px(Theme::CONTROL_RADIUS))
+                        .border_1()
+                        .border_color(theme.border)
+                        .text_size(px(11.0))
+                        .text_color(theme.text_muted)
+                        .cursor_pointer()
+                        .hover(|el| el.bg(crate::theme::wash(0.11)))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(copy_text.to_string()));
+                            this.copied_message = Some(copy_entry.clone());
+                            this.copied_message_clear = Some(cx.spawn(async move |this, cx| {
+                                cx.background_executor()
+                                    .timer(Duration::from_millis(1500))
+                                    .await;
+                                this.update(cx, |this, cx| {
+                                    this.copied_message = None;
+                                    this.copied_message_clear = None;
+                                    cx.notify();
+                                })
+                                .ok();
+                            }));
+                            cx.notify();
+                        }))
+                        .child(
+                            crate::icons::icon(if copied {
+                                crate::icons::CHECK
+                            } else {
+                                crate::icons::COPY
+                            })
+                            .size(px(12.0))
+                            .text_color(theme.text_muted),
+                        )
+                        .child(if copied { "Copied" } else { "Copy" }),
+                )
+                .child(
+                    div()
+                        .id(SharedString::from(format!(
+                            "message-new-thread-{}",
+                            row.entry_id
+                        )))
+                        .h(px(24.0))
+                        .px(px(8.0))
+                        .flex()
+                        .items_center()
+                        .gap(px(4.0))
+                        .rounded(px(Theme::CONTROL_RADIUS))
+                        .border_1()
+                        .border_color(theme.border)
+                        .text_size(px(11.0))
+                        .text_color(theme.text_muted)
+                        .cursor_pointer()
+                        .hover(|el| el.bg(crate::theme::wash(0.11)))
+                        .on_click(cx.listener(move |_, _, _, cx| {
+                            cx.emit(TranscriptEvent::NewThread {
+                                text: thread_text.to_string(),
+                                role,
+                            });
+                        }))
+                        .child(
+                            crate::icons::icon(crate::icons::CHAT_ROUND_LINE)
+                                .size(px(12.0))
+                                .text_color(theme.text_muted),
+                        )
+                        .child("New thread"),
+                )
+        });
         let entry_id = row.entry_id.clone();
         let row_id = row.id.clone();
         div()
@@ -1755,6 +1886,7 @@ impl Transcript {
                     .max_w(px(MAX_CONTENT_WIDTH))
                     .min_w_0()
                     .child(inner)
+                    .children(actions)
                     .children(strip),
             )
             .into_any_element()
@@ -1924,6 +2056,8 @@ impl Transcript {
             .into_any_element()
     }
 }
+
+impl EventEmitter<TranscriptEvent> for Transcript {}
 
 /// The transcript ErrorChip — an exact port of comet chat-view.tsx
 /// `ErrorChip`: a 34px row (`rounded-[10px] border border-red-400/[0.16]
@@ -2830,6 +2964,10 @@ mod tests {
         let rows = rows_for_entry(&user, true, &mut parse);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].timestamp, Some(ms));
+        assert!(rows[0].raw_text.is_none(), "pending echoes have no actions");
+        let rows = rows_for_entry(&user, false, &mut parse);
+        assert_eq!(rows[0].raw_text.as_deref(), Some("hi"));
+        assert_eq!(rows[0].role, Some(MessageRole::User));
 
         // Assistant entries: strip on the LAST row once settled…
         let done = assistant(
@@ -2841,6 +2979,8 @@ mod tests {
         assert!(rows.len() >= 2);
         assert_eq!(rows.last().unwrap().timestamp, Some(done.created_at));
         assert!(rows[..rows.len() - 1].iter().all(|r| r.timestamp.is_none()));
+        assert_eq!(rows.last().unwrap().raw_text.as_deref(), Some("one\n\ntwo"));
+        assert!(rows[..rows.len() - 1].iter().all(|r| r.raw_text.is_none()));
 
         // …but never mid-stream (chat-view.tsx: no hover under a moving reply).
         let live = assistant(
@@ -2850,6 +2990,7 @@ mod tests {
         );
         let rows = rows_for_entry(&live, false, &mut parse);
         assert!(rows.iter().all(|r| r.timestamp.is_none()));
+        assert!(rows.iter().all(|r| r.raw_text.is_none()));
         // Every row knows its entry (the hover group).
         assert!(rows.iter().all(|r| r.entry_id.as_ref() == live.id));
     }

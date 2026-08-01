@@ -68,6 +68,7 @@ fn controls(
         }),
         steering: steer_rx,
         interrupt: token.clone(),
+        report_memory: Box::new(|_| {}),
     };
     (controls, steer_tx, token)
 }
