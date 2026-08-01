@@ -82,6 +82,7 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 
 # misc
 anyhow = "1"
+dotenvy = "0.15"
 tempfile = "3"
 thiserror = "2"
 tracing = "0.1"

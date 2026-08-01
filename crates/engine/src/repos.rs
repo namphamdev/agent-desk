@@ -412,7 +412,13 @@ impl Repos {
                 } else if let Some(branch) = line.strip_prefix("branch refs/heads/")
                     && let Some(path) = path.take()
                 {
-                    worktrees.insert(branch.to_string(), path);
+                    // git resolves the worktree path through symlinks on
+                    // platforms where TMPDIR itself is one (macOS
+                    // `/var` → `/private/var`) — store the REAL path so it
+                    // matches the folder the engine itself created/returns.
+                    let canonical = std::fs::canonicalize(&path)
+                        .unwrap_or_else(|_| PathBuf::from(&path));
+                    worktrees.insert(branch.to_string(), canonical.to_string_lossy().to_string());
                 }
             }
         }
@@ -531,9 +537,13 @@ impl Repos {
         )
         .await?;
         let checkout = self.checkout_identity(&path).await?;
+        // Resolve any symlink in the worktrees root (macOS TMPDIR maps
+        // `/var` → `/private/var`) so the returned path matches the canonical
+        // one `refs()` derives from `git worktree list`.
+        let canonical = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
         Ok(Worktree {
             repo_path: repo_path.to_string_lossy().to_string(),
-            path: path.to_string_lossy().to_string(),
+            path: canonical.to_string_lossy().to_string(),
             branch: branch_name,
             name,
             checkout_id: Some(checkout.id),

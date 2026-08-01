@@ -17,5 +17,6 @@ comet-update.workspace = true
 tokio.workspace = true
 clap.workspace = true
 anyhow.workspace = true
+dotenvy.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

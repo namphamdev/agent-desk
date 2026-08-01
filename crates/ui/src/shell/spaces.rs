@@ -8,7 +8,7 @@
 
 use super::*;
 use crate::motion::TAB_SLIDE;
-use crate::pickers::{breadcrumbs, browser_rows, parent_path};
+use crate::pickers::{breadcrumbs, browser_rows, is_absolute_path, parent_path};
 use crate::terminal::panel::{drop_index, reorder_tabs, slide_offset};
 use comet_proto::{ChatIndicator, Device, FolderListing, Space};
 use gpui::FocusHandle;
@@ -95,6 +95,8 @@ pub(super) struct AddSpaceFlow {
     /// Folder-list scroll — keyboard navigation keeps the highlighted row in
     /// view (`scroll_to_item`).
     list_scroll: gpui::ScrollHandle,
+    /// Reject late responses from a previous path while the user is typing.
+    load_generation: u64,
     focus_pending: bool,
     load_task: Option<Task<()>>,
     submit_task: Option<Task<()>>,
@@ -637,8 +639,19 @@ impl Shell {
         let search = cx.new(|cx| ComposerInput::with_context("Search folders…", "PaletteSearch", cx));
         let search_events = cx.subscribe(&search, |this: &mut Shell, _, event, cx| {
             if matches!(event, ComposerInputEvent::Edited) {
+                let direct_path = this
+                    .add_space
+                    .as_ref()
+                    .map(|flow| flow.search.read(cx).text().trim().to_string())
+                    .filter(|query| is_absolute_path(query));
                 if let Some(flow) = this.add_space.as_mut() {
                     flow.active = 0;
+                }
+                // An absolute path is navigation input, not a folder-name
+                // filter. Browse it directly so `/Users/.../repo` resolves
+                // even when the current listing has no matching child name.
+                if let Some(path) = direct_path {
+                    this.load_space_folders(Some(path), cx);
                 }
                 cx.notify();
             }
@@ -656,6 +669,7 @@ impl Shell {
             error: None,
             focus: cx.focus_handle(),
             list_scroll: gpui::ScrollHandle::new(),
+            load_generation: 0,
             focus_pending: true,
             load_task: None,
             submit_task: None,
@@ -698,7 +712,18 @@ impl Shell {
             return Vec::new();
         };
         let dirs = browser_rows(listing);
-        let query = flow.search.read(cx).text().to_string();
+        let raw_query = flow.search.read(cx).text().to_string();
+        // Once a direct path has resolved, show that directory's children.
+        // The path remains in the input as navigation context, but must not
+        // be applied as a child-name filter.
+        let query = if is_absolute_path(&raw_query)
+            && (listing.path == raw_query.trim()
+                || listing.path == raw_query.trim().trim_end_matches('/'))
+        {
+            String::new()
+        } else {
+            raw_query
+        };
         let names: Vec<&str> = dirs.iter().map(|e| e.name.as_str()).collect();
         popover::filter_indices(&query, &names)
             .into_iter()
@@ -754,6 +779,8 @@ impl Shell {
         flow.browser = Loadable::Loading;
         flow.active = 0;
         flow.list_scroll.set_offset(gpui::Point::default());
+        flow.load_generation = flow.load_generation.wrapping_add(1);
+        let load_generation = flow.load_generation;
         flow.load_task = Some(cx.spawn(async move |this, cx| {
             let mut params = serde_json::Map::new();
             if let Some(p) = &path {
@@ -774,6 +801,9 @@ impl Shell {
                 .await;
             this.update(cx, |shell, cx| {
                 if let Some(flow) = shell.add_space.as_mut() {
+                    if flow.load_generation != load_generation {
+                        return;
+                    }
                     flow.browser = match result {
                         Ok(value) => match serde_json::from_value::<FolderListing>(value) {
                             Ok(listing) => {

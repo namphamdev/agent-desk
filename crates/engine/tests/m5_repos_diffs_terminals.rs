@@ -140,10 +140,11 @@ async fn repos_round_trip_add_branches_worktrees() {
     );
     assert!(PathBuf::from(&worktree.path).join("a.txt").exists());
     assert!(worktree.checkout_id.is_some());
+    let expected_worktree_root = std::fs::canonicalize(tmp.path().join("data"))
+        .unwrap_or_else(|_| tmp.path().join("data"));
     assert!(
-        worktree
-            .path
-            .starts_with(&*tmp.path().join("data").to_string_lossy())
+        Path::new(&worktree.path)
+            .starts_with(&expected_worktree_root)
     );
     let branches = repos
         .branches(&repo_dir)

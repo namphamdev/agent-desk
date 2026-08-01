@@ -12,7 +12,7 @@
 //! rendered as skeletons / inline errors with Retry.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use gpui::{
@@ -222,6 +222,12 @@ pub fn child_path(base: &str, name: &str) -> String {
     } else {
         format!("{base}/{name}")
     }
+}
+
+/// Whether input should be treated as a direct filesystem path rather than a
+/// name filter for the current folder.
+pub fn is_absolute_path(path: &str) -> bool {
+    Path::new(path.trim()).is_absolute()
 }
 
 /// Breadcrumb segments for a path: `(label, full path)`, root first.
@@ -2659,6 +2665,8 @@ mod tests {
         assert_eq!(parent_path(""), None);
         assert_eq!(child_path("/home", "w"), "/home/w");
         assert_eq!(child_path("/", "home"), "/home");
+        assert!(is_absolute_path("/Users/admin/Documents/NP/antigravity-cursor"));
+        assert!(!is_absolute_path("antigravity-cursor"));
         let crumbs = breadcrumbs("/home/w/dev");
         let labels: Vec<&str> = crumbs.iter().map(|(l, _)| l.as_str()).collect();
         assert_eq!(labels, ["/", "home", "w", "dev"]);

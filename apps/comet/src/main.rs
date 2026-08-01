@@ -88,6 +88,10 @@ fn workos_client_id_from_env(edge_token: &Option<String>) -> Option<String> {
 }
 
 fn main() -> anyhow::Result<()> {
+    // Load optional project-local configuration before CLI parsing. dotenvy
+    // never overwrites variables already exported by the shell, so explicit
+    // environment configuration remains authoritative.
+    let _ = dotenvy::dotenv();
     let cli = Cli::parse();
     // The TUI owns its own tracing (to a file — a line on stdout would land
     // inside the alternate screen and corrupt it), so skip the global stdout
