@@ -12,11 +12,13 @@ use std::sync::{Arc, Mutex};
 
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
-    CancelNotification, ContentBlock, Implementation, InitializeRequest, LoadSessionRequest,
-    NewSessionRequest, PermissionOption, PermissionOptionKind, PromptRequest,
-    RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
-    SelectedPermissionOutcome, SessionNotification, SessionUpdate, StopReason, TextContent,
-    ToolCall, ToolCallStatus, ToolKind,
+    CancelNotification, ClientCapabilities, ClientSessionCapabilities, ContentBlock,
+    Implementation, InitializeRequest, LoadSessionRequest, NewSessionRequest, PermissionOption,
+    PermissionOptionKind, PromptRequest, RequestPermissionOutcome, RequestPermissionRequest,
+    RequestPermissionResponse, SelectedPermissionOutcome, SessionConfigKind, SessionConfigOption,
+    SessionConfigOptionCategory, SessionConfigOptionsCapabilities, SessionConfigSelectOptions,
+    SessionId, SessionNotification, SessionUpdate, SetSessionConfigOptionRequest, StopReason,
+    TextContent, ToolCall, ToolCallStatus, ToolKind,
 };
 use agent_client_protocol::{AcpAgent, Agent, ConnectionTo};
 use async_trait::async_trait;
@@ -131,16 +133,28 @@ impl Harness for AcpHarness {
     }
 
     async fn models(&self) -> Result<Vec<Model>, HarnessError> {
-        self.command()?;
-        // ACP model options are session-scoped and arrive after session/new.
-        // "default" deliberately leaves model selection to the agent.
-        Ok(vec![Model {
-            id: "default".into(),
-            label: "Agent default".into(),
-            description: Some("Model selected by the ACP agent".into()),
-            reasoning_levels: REASONING_LEVELS.to_vec(),
-            options: vec![],
-        }])
+        let command = self.command()?;
+        let agent = AcpAgent::from_str(&command).map_err(|error| {
+            HarnessError::Protocol(format!("invalid ACP agent config: {error}"))
+        })?;
+        let models = agent_client_protocol::Client
+            .builder()
+            .connect_with(agent, |connection: ConnectionTo<Agent>| async move {
+                initialize(&connection).await?;
+                let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
+                let response = connection
+                    .send_request(NewSessionRequest::new(cwd))
+                    .block_task()
+                    .await?;
+                Ok(models_from_config_options(
+                    response.config_options.as_deref(),
+                ))
+            })
+            .await
+            .map_err(|error| {
+                HarnessError::Protocol(format!("could not list ACP models: {error}"))
+            })?;
+        Ok(models)
     }
 
     async fn run(
@@ -223,37 +237,50 @@ async fn run_connection(
     interrupt: crate::CancellationToken,
     event_tx: mpsc::Sender<Result<AgentEvent, HarnessError>>,
 ) -> agent_client_protocol::Result<()> {
-    connection
-        .send_request(InitializeRequest::new(ProtocolVersion::V1).client_info(
-            Implementation::new("comet-native", env!("CARGO_PKG_VERSION")).title("Comet"),
-        ))
-        .block_task()
-        .await?;
+    initialize(&connection).await?;
 
     let cwd = absolute_cwd(&request.cwd);
-    let session_id = if let Some(resume) = &request.resume {
+    let (session_id, config_options) = if let Some(resume) = &request.resume {
         match connection
             .send_request(LoadSessionRequest::new(resume.clone(), cwd.clone()))
             .block_task()
             .await
         {
-            Ok(_) => resume.clone().into(),
+            Ok(response) => (resume.clone().into(), response.config_options),
             Err(error) => {
                 tracing::debug!(target: "comet_harness::acp", %error, "session/load failed; starting a new ACP session");
-                connection
+                let response = connection
                     .send_request(NewSessionRequest::new(cwd.clone()))
                     .block_task()
-                    .await?
-                    .session_id
+                    .await?;
+                (response.session_id, response.config_options)
             }
         }
     } else {
-        connection
+        let response = connection
             .send_request(NewSessionRequest::new(cwd.clone()))
             .block_task()
-            .await?
-            .session_id
+            .await?;
+        (response.session_id, response.config_options)
     };
+    let updated_config_options = set_session_model(
+        &connection,
+        &session_id,
+        request.model.as_deref(),
+        config_options.as_deref(),
+    )
+    .await?;
+    let effective_config_options = updated_config_options
+        .as_deref()
+        .filter(|options| !options.is_empty())
+        .or(config_options.as_deref());
+    set_session_reasoning(
+        &connection,
+        &session_id,
+        request.reasoning,
+        effective_config_options,
+    )
+    .await?;
 
     let session_id_string = session_id.to_string();
     if event_tx
@@ -332,6 +359,249 @@ async fn run_connection(
             return Ok(());
         }
     }
+}
+
+async fn initialize(connection: &ConnectionTo<Agent>) -> agent_client_protocol::Result<()> {
+    let capabilities = ClientCapabilities::new().session(
+        ClientSessionCapabilities::new().config_options(SessionConfigOptionsCapabilities::new()),
+    );
+    connection
+        .send_request(
+            InitializeRequest::new(ProtocolVersion::V1)
+                .client_capabilities(capabilities)
+                .client_info(
+                    Implementation::new("comet-native", env!("CARGO_PKG_VERSION")).title("Comet"),
+                ),
+        )
+        .block_task()
+        .await?;
+    Ok(())
+}
+
+fn model_config_option(options: &[SessionConfigOption]) -> Option<&SessionConfigOption> {
+    options.iter().find(|option| {
+        matches!(option.category, Some(SessionConfigOptionCategory::Model))
+            || option.id.to_string().eq_ignore_ascii_case("model")
+            || option.name.eq_ignore_ascii_case("model")
+    })
+}
+
+fn thought_level_config_option(options: &[SessionConfigOption]) -> Option<&SessionConfigOption> {
+    options.iter().find(|option| {
+        matches!(
+            option.category,
+            Some(SessionConfigOptionCategory::ThoughtLevel)
+        ) || matches!(
+            normalize_config_name(&option.id.to_string()).as_str(),
+            "thoughtlevel" | "reasoning" | "reasoninglevel"
+        ) || matches!(
+            normalize_config_name(&option.name).as_str(),
+            "thoughtlevel" | "reasoning" | "reasoninglevel"
+        )
+    })
+}
+
+fn select_choices(
+    option: &SessionConfigOption,
+) -> Vec<&agent_client_protocol::schema::v1::SessionConfigSelectOption> {
+    let SessionConfigKind::Select(select) = &option.kind else {
+        return vec![];
+    };
+    match &select.options {
+        SessionConfigSelectOptions::Ungrouped(options) => options.iter().collect(),
+        SessionConfigSelectOptions::Grouped(groups) => groups
+            .iter()
+            .flat_map(|group| group.options.iter())
+            .collect(),
+        _ => vec![],
+    }
+}
+
+fn models_from_config_options(options: Option<&[SessionConfigOption]>) -> Vec<Model> {
+    let reasoning_levels = reasoning_levels_from_config_options(options);
+    let Some(option) = options.and_then(model_config_option) else {
+        return vec![default_acp_model(reasoning_levels)];
+    };
+    let SessionConfigKind::Select(select) = &option.kind else {
+        return vec![default_acp_model(reasoning_levels)];
+    };
+    let mut choices = select_choices(option);
+    let current = select.current_value.to_string();
+    choices.sort_by_key(|choice| choice.value.to_string() != current);
+    let models = choices
+        .into_iter()
+        .map(|choice| Model {
+            id: choice.value.to_string(),
+            label: choice.name.clone(),
+            description: choice.description.clone(),
+            reasoning_levels: reasoning_levels.clone(),
+            options: vec![],
+        })
+        .collect::<Vec<_>>();
+    if models.is_empty() {
+        vec![default_acp_model(reasoning_levels)]
+    } else {
+        models
+    }
+}
+
+fn reasoning_levels_from_config_options(
+    options: Option<&[SessionConfigOption]>,
+) -> Vec<ReasoningLevel> {
+    let Some(option) = options.and_then(thought_level_config_option) else {
+        return REASONING_LEVELS.to_vec();
+    };
+    let mut levels = select_choices(option)
+        .into_iter()
+        .filter_map(|choice| {
+            reasoning_level_from_acp(&choice.value.to_string())
+                .or_else(|| reasoning_level_from_acp(&choice.name))
+        })
+        .collect::<Vec<_>>();
+    levels.dedup();
+    if levels.is_empty() {
+        REASONING_LEVELS.to_vec()
+    } else {
+        levels
+    }
+}
+
+fn normalize_config_name(value: &str) -> String {
+    value
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+fn reasoning_level_from_acp(value: &str) -> Option<ReasoningLevel> {
+    match normalize_config_name(value).as_str() {
+        "minimal" | "none" | "off" => Some(ReasoningLevel::Minimal),
+        "low" => Some(ReasoningLevel::Low),
+        "medium" | "med" => Some(ReasoningLevel::Medium),
+        "high" => Some(ReasoningLevel::High),
+        "xhigh" | "extrahigh" => Some(ReasoningLevel::XHigh),
+        "max" | "maximum" => Some(ReasoningLevel::Max),
+        "ultra" => Some(ReasoningLevel::Ultra),
+        "ultracode" => Some(ReasoningLevel::Ultracode),
+        "ultrathink" => Some(ReasoningLevel::Ultrathink),
+        _ => None,
+    }
+}
+
+fn reasoning_level_acp_value(
+    reasoning: ReasoningLevel,
+    option: Option<&SessionConfigOption>,
+) -> String {
+    option
+        .into_iter()
+        .flat_map(select_choices)
+        .find(|choice| {
+            reasoning_level_from_acp(&choice.value.to_string())
+                .or_else(|| reasoning_level_from_acp(&choice.name))
+                == Some(reasoning)
+        })
+        .map(|choice| choice.value.to_string())
+        .unwrap_or_else(|| {
+            match reasoning {
+                ReasoningLevel::Minimal => "minimal",
+                ReasoningLevel::Low => "low",
+                ReasoningLevel::Medium => "medium",
+                ReasoningLevel::High => "high",
+                ReasoningLevel::XHigh => "xhigh",
+                ReasoningLevel::Max => "max",
+                ReasoningLevel::Ultra => "ultra",
+                ReasoningLevel::Ultracode => "ultracode",
+                ReasoningLevel::Ultrathink => "ultrathink",
+            }
+            .into()
+        })
+}
+
+fn default_acp_model(reasoning_levels: Vec<ReasoningLevel>) -> Model {
+    Model {
+        id: "default".into(),
+        label: "Agent default".into(),
+        description: Some("Model selected by the ACP agent".into()),
+        reasoning_levels,
+        options: vec![],
+    }
+}
+
+async fn set_session_model(
+    connection: &ConnectionTo<Agent>,
+    session_id: &SessionId,
+    model: Option<&str>,
+    config_options: Option<&[SessionConfigOption]>,
+) -> agent_client_protocol::Result<Option<Vec<SessionConfigOption>>> {
+    let Some(model) = model.filter(|model| *model != "default") else {
+        return Ok(None);
+    };
+    let config_id = config_options
+        .and_then(model_config_option)
+        .map(|option| option.id.clone())
+        .unwrap_or_else(|| "model".into());
+    let response = connection
+        .send_request(SetSessionConfigOptionRequest::new(
+            session_id.clone(),
+            config_id,
+            model,
+        ))
+        .block_task()
+        .await;
+    match response {
+        Ok(response) => Ok(Some(response.config_options)),
+        Err(error) if is_legacy_config_option_response(&error) => {
+            tracing::debug!(
+                target: "comet_harness::acp",
+                %error,
+                "ACP agent omitted configOptions after setting the model"
+            );
+            Ok(None)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+async fn set_session_reasoning(
+    connection: &ConnectionTo<Agent>,
+    session_id: &SessionId,
+    reasoning: Option<ReasoningLevel>,
+    config_options: Option<&[SessionConfigOption]>,
+) -> agent_client_protocol::Result<()> {
+    let Some(reasoning) = reasoning else {
+        return Ok(());
+    };
+    let Some(option) = config_options.and_then(thought_level_config_option) else {
+        return Ok(());
+    };
+    let value = reasoning_level_acp_value(reasoning, Some(option));
+    let response = connection
+        .send_request(SetSessionConfigOptionRequest::new(
+            session_id.clone(),
+            option.id.clone(),
+            value.as_str(),
+        ))
+        .block_task()
+        .await;
+    match response {
+        Ok(_) => Ok(()),
+        Err(error) if is_legacy_config_option_response(&error) => {
+            tracing::debug!(
+                target: "comet_harness::acp",
+                %error,
+                "ACP agent omitted configOptions after setting reasoning"
+            );
+            Ok(())
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn is_legacy_config_option_response(error: &agent_client_protocol::Error) -> bool {
+    let error = error.to_string();
+    error.contains("missing field 'configOptions'")
+        || error.contains("missing field `configOptions`")
 }
 
 fn absolute_cwd(cwd: &str) -> PathBuf {

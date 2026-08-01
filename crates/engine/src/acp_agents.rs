@@ -191,10 +191,13 @@ impl AcpAgents {
         if let Some(binary) = entry.distribution.binary.get(platform_target()) {
             return self.install_binary(entry, binary).await;
         }
-        if let Some(npx) = &entry.distribution.npx
-            && find_executable("npx").is_some()
-        {
-            return package_agent(entry, "npx", npx, &["--yes"]);
+        if let Some(npx) = &entry.distribution.npx {
+            if let Some(executable) = installed_npx_executable(npx) {
+                return direct_package_agent(entry, npx, executable);
+            }
+            if find_executable("npx").is_some() {
+                return package_agent(entry, "npx", npx, &["--yes"]);
+            }
         }
         if let Some(uvx) = &entry.distribution.uvx
             && find_executable("uvx").is_some()
@@ -310,13 +313,68 @@ fn snapshot(
 fn supported_distribution(distribution: &RegistryDistribution) -> Option<&'static str> {
     if distribution.binary.contains_key(platform_target()) {
         Some("binary")
-    } else if distribution.npx.is_some() && find_executable("npx").is_some() {
-        Some("npx")
+    } else if let Some(npx) = &distribution.npx {
+        if installed_npx_executable(npx).is_some() {
+            Some("direct")
+        } else if find_executable("npx").is_some() {
+            Some("npx")
+        } else {
+            None
+        }
     } else if distribution.uvx.is_some() && find_executable("uvx").is_some() {
         Some("uvx")
     } else {
         None
     }
+}
+
+fn installed_npx_executable(package: &PackageDistribution) -> Option<PathBuf> {
+    npx_executable_name(&package.package).and_then(find_executable)
+}
+
+fn npx_executable_name(package: &str) -> Option<&str> {
+    let package = if package.starts_with('@') {
+        let slash = package.find('/')?;
+        match package.rfind('@') {
+            Some(version) if version > slash => &package[..version],
+            _ => package,
+        }
+    } else {
+        package.split_once('@').map_or(package, |(name, _)| name)
+    };
+    let name = if let Some(scoped) = package.strip_prefix('@') {
+        let (scope, name) = scoped.split_once('/')?;
+        if scope.is_empty() || name.contains('/') {
+            return None;
+        }
+        name
+    } else {
+        if package.contains('/') {
+            return None;
+        }
+        package
+    };
+    (!name.is_empty()
+        && name
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_')))
+    .then_some(name)
+}
+
+fn direct_package_agent(
+    entry: &RegistryEntry,
+    package: &PackageDistribution,
+    executable: PathBuf,
+) -> anyhow::Result<InstalledAcpAgent> {
+    let mut env = package.env.clone();
+    prepend_executable_path(&mut env, &executable);
+    Ok(InstalledAcpAgent {
+        id: entry.id.clone(),
+        name: entry.name.clone(),
+        version: entry.version.clone(),
+        command: launch_json(&executable, &package.args, &env)?,
+        distribution: "direct".into(),
+    })
 }
 
 fn package_agent(
@@ -581,6 +639,47 @@ mod tests {
         let root = Path::new("/tmp/agent");
         assert!(executable_path(root, "../../bin/sh").is_err());
         assert_eq!(safe_component(".."), "_");
+    }
+
+    #[test]
+    fn extracts_direct_executable_from_npx_package_spec() {
+        assert_eq!(npx_executable_name("droid@0.186.0"), Some("droid"));
+        assert_eq!(
+            npx_executable_name("@augmentcode/auggie@0.34.0"),
+            Some("auggie")
+        );
+        assert_eq!(npx_executable_name("invalid/package/name"), None);
+        assert_eq!(npx_executable_name("droid@npm:other"), Some("droid"));
+        assert_eq!(npx_executable_name("https://example.test/a"), None);
+    }
+
+    #[test]
+    fn direct_package_agent_skips_npx_package_argument() {
+        let entry = RegistryEntry {
+            id: "factory-droid".into(),
+            name: "Factory Droid".into(),
+            version: "0.186.0".into(),
+            description: String::new(),
+            repository: None,
+            website: None,
+            distribution: RegistryDistribution::default(),
+        };
+        let package = PackageDistribution {
+            package: "droid@0.186.0".into(),
+            args: vec!["exec".into(), "--output-format".into(), "acp-daemon".into()],
+            env: BTreeMap::from([("DROID_DISABLE_AUTO_UPDATE".into(), "true".into())]),
+        };
+        let installed =
+            direct_package_agent(&entry, &package, PathBuf::from("/usr/local/bin/droid")).unwrap();
+        let launch: serde_json::Value = serde_json::from_str(&installed.command).unwrap();
+
+        assert_eq!(installed.distribution, "direct");
+        assert_eq!(launch["command"], "/usr/local/bin/droid");
+        assert_eq!(
+            launch["args"],
+            serde_json::json!(["exec", "--output-format", "acp-daemon"])
+        );
+        assert_eq!(launch["env"]["DROID_DISABLE_AUTO_UPDATE"], "true");
     }
 
     #[test]

@@ -35,9 +35,10 @@ Comet can launch any CLI that implements the
 [Agent Client Protocol](https://agentclientprotocol.com/). Open
 **Settings → ACP agents** to browse the official registry, add an agent, and
 choose the active one. Binary distributions are downloaded and checksum
-verified when the registry provides a SHA-256 digest. `npx` and `uvx`
-distributions are registered locally and fetched by their package runner when
-first launched.
+verified when the registry provides a SHA-256 digest. For `npx` distributions,
+Comet reuses a matching CLI already installed on the device, or falls back to
+the package runner. `uvx` distributions are fetched by their package runner
+when first launched.
 
 For custom or unpublished agents, configure the official Rust SDK adapter with
 a command (or SDK JSON configuration):

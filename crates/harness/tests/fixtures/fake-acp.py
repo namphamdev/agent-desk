@@ -2,6 +2,9 @@
 import json
 import sys
 
+selected_model = "acp-fast"
+selected_thought_level = "medium"
+
 
 def send(message):
     print(json.dumps(message), flush=True)
@@ -27,7 +30,54 @@ for line in sys.stdin:
         send({
             "jsonrpc": "2.0",
             "id": request_id,
-            "result": {"sessionId": "acp-session-1"},
+            "result": {
+                "sessionId": "acp-session-1",
+                "configOptions": [
+                    {
+                        "id": "model",
+                        "name": "Model",
+                        "category": "model",
+                        "type": "select",
+                        "currentValue": selected_model,
+                        "options": [
+                            {
+                                "value": "acp-fast",
+                                "name": "ACP Fast",
+                                "description": "Fast model",
+                            },
+                            {
+                                "value": "acp-smart",
+                                "name": "ACP Smart",
+                                "description": "Smart model",
+                            },
+                        ],
+                    },
+                    {
+                        "id": "thought-level",
+                        "name": "Reasoning",
+                        "category": "thought_level",
+                        "type": "select",
+                        "currentValue": selected_thought_level,
+                        "options": [
+                            {"value": "low", "name": "Low"},
+                            {"value": "medium", "name": "Medium"},
+                            {"value": "high", "name": "High"},
+                            {"value": "x-high", "name": "Extra High"},
+                        ],
+                    },
+                ],
+            },
+        })
+    elif method == "session/set_config_option":
+        if message["params"]["configId"] == "model":
+            selected_model = message["params"]["value"]
+        elif message["params"]["configId"] == "thought-level":
+            selected_thought_level = message["params"]["value"]
+        send({
+            "jsonrpc": "2.0",
+            "id": request_id,
+            # Older ACP agents apply the option but return an empty result.
+            "result": {},
         })
     elif method == "session/prompt":
         session_id = message["params"]["sessionId"]
@@ -49,7 +99,10 @@ for line in sys.stdin:
                 "sessionId": session_id,
                 "update": {
                     "sessionUpdate": "agent_message_chunk",
-                    "content": {"type": "text", "text": "Hello from ACP"},
+                    "content": {
+                        "type": "text",
+                        "text": f"Hello from ACP ({selected_thought_level})",
+                    },
                 },
             },
         })

@@ -120,6 +120,27 @@ pub fn default_model(models: &[Model]) -> Option<&Model> {
     models.first()
 }
 
+/// Model rows matching a picker query, ranked with the same fuzzy matcher as
+/// the other searchable pickers. IDs and descriptions are searchable too,
+/// since ACP agents may expose a friendly label that omits the provider name.
+pub fn filter_models<'a>(query: &str, models: &'a [Model]) -> Vec<&'a Model> {
+    let labels = models
+        .iter()
+        .map(|model| {
+            format!(
+                "{} {} {}",
+                model.label,
+                model.id,
+                model.description.as_deref().unwrap_or_default()
+            )
+        })
+        .collect::<Vec<_>>();
+    popover::filter_indices(query, &labels)
+        .into_iter()
+        .map(|ix| &models[ix])
+        .collect()
+}
+
 /// A model's default reasoning: X-High when the ladder offers it (comet
 /// `DEFAULT_REASONING = "xhigh"`), else High, else the ladder's first entry.
 /// `None` only for ladder-less models (e.g. Haiku's thinking toggle instead).
@@ -611,6 +632,13 @@ impl Pickers {
                 });
                 window.focus(&handle, cx);
             }
+            PickerKind::HarnessModel => {
+                let handle = self.search.read(cx).focus_handle(cx);
+                self.search.update(cx, |input, cx| {
+                    input.set_placeholder("Search models…", cx);
+                });
+                window.focus(&handle, cx);
+            }
             _ => window.focus(&self.focus, cx),
         }
         match kind {
@@ -994,6 +1022,7 @@ impl Pickers {
         self.config.harness = Some(harness);
         self.defaults.harness = Some(harness);
         self.save_defaults();
+        self.active = 0;
         self.model_scroll.set_offset(gpui::Point::default());
         self.ensure_models(harness, cx);
         cx.notify();
@@ -1178,23 +1207,30 @@ impl Pickers {
         }
     }
 
-    /// The viewed harness's model list, when loaded (keyboard nav rows).
-    fn model_rows_len(&self, cx: &App) -> usize {
-        self.effective_harness(cx)
+    /// The viewed harness's filtered model list, when loaded.
+    fn filtered_model_rows(&self, cx: &App) -> Vec<Model> {
+        let Some(models) = self
+            .effective_harness(cx)
             .and_then(|h| self.models.get(&h))
             .and_then(|l| l.ready())
-            .map(|m| m.len())
-            .unwrap_or(0)
+        else {
+            return Vec::new();
+        };
+        let query = self.search.read(cx).text().to_string();
+        filter_models(&query, models).into_iter().cloned().collect()
+    }
+
+    /// The viewed harness's filtered model list (keyboard nav rows).
+    fn model_rows_len(&self, cx: &App) -> usize {
+        self.filtered_model_rows(cx).len()
     }
 
     /// Enter on the harness/model popover: pick the highlighted model.
     fn activate_model_row(&mut self, cx: &mut Context<Self>) {
         let Some(id) = self
-            .effective_harness(cx)
-            .and_then(|h| self.models.get(&h))
-            .and_then(|l| l.ready())
-            .and_then(|m| m.get(self.active))
-            .map(|m| m.id.clone())
+            .filtered_model_rows(cx)
+            .get(self.active)
+            .map(|model| model.id.clone())
         else {
             return;
         };
@@ -1301,6 +1337,23 @@ impl Pickers {
             && let Some(row) = self.filtered_ref_rows(cx).into_iter().nth(self.active)
         {
             self.pick_ref(row, cx);
+        } else if self.open == Some(PickerKind::HarnessModel) {
+            self.activate_harness_model_row(cx);
+        }
+    }
+
+    fn activate_harness_model_row(&mut self, cx: &mut Context<Self>) {
+        let models = self.model_rows_len(cx);
+        if models == 0 {
+            return;
+        }
+        if self.active < models {
+            self.activate_model_row(cx);
+        } else {
+            let saved = self.active;
+            self.active = saved - models;
+            self.activate_trait_row(cx);
+            self.active = saved;
         }
     }
 
@@ -1343,15 +1396,7 @@ impl Pickers {
             MenuKey::Enter if !search_focused => {
                 if self.open == Some(PickerKind::HarnessModel) {
                     // Combined flat index: models, then ladder/options.
-                    let models = self.model_rows_len(cx);
-                    if self.active < models {
-                        self.activate_model_row(cx);
-                    } else {
-                        let saved = self.active;
-                        self.active = saved - models;
-                        self.activate_trait_row(cx);
-                        self.active = saved;
-                    }
+                    self.activate_harness_model_row(cx);
                 } else if self.open == Some(PickerKind::Checkout) {
                     let kind = if self.active == 0 {
                         CheckoutKind::Local
@@ -1998,59 +2043,72 @@ impl Pickers {
         // direct children so `scroll_to_item(active)` maps 1:1 (the palette's
         // keyboard-follow standard).
         let model_children: Vec<AnyElement> = match effective.map(|h| (h, self.models.get(&h))) {
-            Some((_, Some(Loadable::Ready(models)))) => {
+            Some((_, Some(Loadable::Ready(_)))) => {
                 // The check mirrors the chip: the resolved concrete pick (draft
                 // / chat config / remembered, else the harness default row).
                 let selected = self.selected_model(cx).map(|m| m.id.clone());
                 let active = self.active;
-                let models = models.clone();
-                models
-                    .into_iter()
-                    .enumerate()
-                    .map(|(ix, model)| {
-                        let label: SharedString = model.label.clone().into();
-                        let description: Option<SharedString> =
-                            model.description.clone().map(Into::into);
-                        let id = model.id.clone();
-                        let is_selected = selected.as_deref() == Some(model.id.as_str())
-                            || (selected.is_none() && ix == 0);
-                        popover::menu_row_nav(
-                            &theme,
-                            is_selected,
-                            ix == active,
-                            format!("model-row-{ix}"),
-                        )
-                        .when(is_selected || ix == active, |el| {
-                            el.shadow(crate::theme::glass_selected_shadows())
+                let models = self.filtered_model_rows(cx);
+                if models.is_empty() {
+                    vec![
+                        div()
+                            .px(px(8.0))
+                            .py(px(24.0))
+                            .text_size(px(12.0))
+                            .text_color(theme.text_muted.opacity(0.6))
+                            .text_center()
+                            .child(SharedString::from("No models found."))
+                            .into_any_element(),
+                    ]
+                } else {
+                    models
+                        .into_iter()
+                        .enumerate()
+                        .map(|(ix, model)| {
+                            let label: SharedString = model.label.clone().into();
+                            let description: Option<SharedString> =
+                                model.description.clone().map(Into::into);
+                            let id = model.id.clone();
+                            let is_selected = selected.as_deref() == Some(model.id.as_str())
+                                || (selected.is_none() && ix == 0);
+                            popover::menu_row_nav(
+                                &theme,
+                                is_selected,
+                                ix == active,
+                                format!("model-row-{ix}"),
+                            )
+                            .when(is_selected || ix == active, |el| {
+                                el.shadow(crate::theme::glass_selected_shadows())
+                            })
+                            .id(("model-row", ix))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.pick_model(id.clone(), cx);
+                            }))
+                            .child(
+                                // Name + 11px muted description subline, per
+                                // harness-model-picker.tsx (`min-w-0 flex-1` column).
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .flex()
+                                    .flex_col()
+                                    .child(div().w_full().truncate().child(label))
+                                    .when_some(description, |el, description| {
+                                        el.child(
+                                            div()
+                                                .w_full()
+                                                .truncate()
+                                                .text_size(px(11.0))
+                                                .text_color(theme.text_muted.opacity(0.7))
+                                                .child(description),
+                                        )
+                                    }),
+                            )
+                            .when(is_selected, |el| el.child(popover::menu_check(&theme)))
+                            .into_any_element()
                         })
-                        .id(("model-row", ix))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.pick_model(id.clone(), cx);
-                        }))
-                        .child(
-                            // Name + 11px muted description subline, per
-                            // harness-model-picker.tsx (`min-w-0 flex-1` column).
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .flex()
-                                .flex_col()
-                                .child(div().w_full().truncate().child(label))
-                                .when_some(description, |el, description| {
-                                    el.child(
-                                        div()
-                                            .w_full()
-                                            .truncate()
-                                            .text_size(px(11.0))
-                                            .text_color(theme.text_muted.opacity(0.7))
-                                            .child(description),
-                                    )
-                                }),
-                        )
-                        .when(is_selected, |el| el.child(popover::menu_check(&theme)))
-                        .into_any_element()
-                    })
-                    .collect()
+                        .collect()
+                }
             }
             Some((_, Some(Loadable::Error(message)))) => {
                 let message = message.clone();
@@ -2116,6 +2174,7 @@ impl Pickers {
                                     .pt(px(4.0))
                                     .child(popover::menu_heading(&theme, "Models")),
                             )
+                            .child(div().p(px(4.0)).child(self.search_box(&theme)))
                             .child(
                                 // Models scroll — gutters on the WRAPPER,
                                 // outside the scroll viewport (in-content
@@ -2443,9 +2502,14 @@ impl Render for Pickers {
         // first-paint fallback focuses the composer after our first render).
         if self.boot_focus_pending {
             match self.open {
-                Some(PickerKind::Branch) => {
+                Some(PickerKind::Branch) | Some(PickerKind::HarnessModel) => {
+                    let placeholder = if self.open == Some(PickerKind::HarnessModel) {
+                        "Search models…"
+                    } else {
+                        "Search refs…"
+                    };
                     self.search.update(cx, |input, cx| {
-                        input.set_placeholder("Search refs…", cx);
+                        input.set_placeholder(placeholder, cx);
                     });
                     let handle = self.search.read(cx).focus_handle(cx);
                     if handle.is_focused(window) {
@@ -2736,6 +2800,37 @@ mod tests {
         ];
         assert_eq!(default_model(&models).map(|m| &*m.id), Some("flagship"));
         assert!(default_model(&[]).is_none());
+    }
+
+    #[test]
+    fn model_search_matches_labels_ids_and_descriptions() {
+        let models = vec![
+            Model {
+                id: "claude-sonnet-4-5".into(),
+                label: "Sonnet 4.5".into(),
+                description: Some("Balanced Anthropic model".into()),
+                reasoning_levels: vec![],
+                options: vec![],
+            },
+            Model {
+                id: "gpt-5-codex".into(),
+                label: "GPT-5".into(),
+                description: Some("OpenAI coding model".into()),
+                reasoning_levels: vec![],
+                options: vec![],
+            },
+        ];
+
+        assert_eq!(
+            filter_models("sonnet", &models)
+                .into_iter()
+                .map(|model| model.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["claude-sonnet-4-5"]
+        );
+        assert_eq!(filter_models("codex", &models)[0].id, "gpt-5-codex");
+        assert_eq!(filter_models("anthropic", &models)[0].id, "claude-sonnet-4-5");
+        assert_eq!(filter_models("", &models).len(), 2);
     }
 
     #[test]
