@@ -202,6 +202,7 @@ fn harness_from_env() -> comet_engine::HarnessId {
     match std::env::var("COMET_HARNESS").as_deref().map(str::trim) {
         Ok("mock") => comet_engine::HarnessId::Mock,
         Ok("codex") => comet_engine::HarnessId::Codex,
+        Ok("acp") => comet_engine::HarnessId::Acp,
         Ok("cursor") => comet_engine::HarnessId::Cursor,
         _ => comet_engine::HarnessId::ClaudeCode,
     }

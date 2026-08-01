@@ -119,6 +119,7 @@ fn worktree_on_slashed_branch(cwd: &str) -> bool {
 /// fake app server with [`CodexHarness::with_executable`].
 pub struct CodexHarness {
     executable: Option<PathBuf>,
+    mcp_server_url: Option<String>,
     /// Grace between `turn/interrupt` and SIGTERM.
     interrupt_grace: Duration,
     /// Grace between SIGTERM and SIGKILL.
@@ -129,6 +130,7 @@ impl Default for CodexHarness {
     fn default() -> Self {
         Self {
             executable: None,
+            mcp_server_url: None,
             interrupt_grace: Duration::from_secs(2),
             kill_grace: Duration::from_secs(3),
         }
@@ -143,6 +145,12 @@ impl CodexHarness {
     /// Use a fixed CLI binary instead of PATH/known-location resolution.
     pub fn with_executable(mut self, path: impl Into<PathBuf>) -> Self {
         self.executable = Some(path.into());
+        self
+    }
+
+    /// Add Comet's managed code-context MCP server to this invocation.
+    pub fn with_mcp_server(mut self, url: impl Into<String>) -> Self {
+        self.mcp_server_url = Some(url.into());
         self
     }
 
@@ -165,6 +173,26 @@ impl CodexHarness {
                     .into(),
             )
         })
+    }
+
+    fn build_command(&self, exe: &PathBuf, cwd: &str) -> Command {
+        let mut cmd = Command::new(exe);
+        crate::prepend_exe_dir_to_path(&mut cmd, exe);
+        if let Some(url) = &self.mcp_server_url {
+            cmd.args([
+                "-c",
+                &format!(r#"mcp_servers.codebase-retrieval.url="{url}""#),
+            ]);
+        }
+        cmd.arg("app-server");
+        if !cwd.is_empty() {
+            cmd.current_dir(cwd);
+        }
+        cmd.stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        cmd
     }
 }
 
@@ -224,16 +252,7 @@ impl Harness for CodexHarness {
             );
             request.sandbox = comet_proto::SandboxLevel::DangerFullAccess;
         }
-        let mut cmd = Command::new(&exe);
-        cmd.arg("app-server");
-        crate::prepend_exe_dir_to_path(&mut cmd, &exe);
-        if !request.cwd.is_empty() {
-            cmd.current_dir(&request.cwd);
-        }
-        cmd.stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
+        let mut cmd = self.build_command(&exe, &request.cwd);
         let mut child = cmd.spawn().map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
                 HarnessError::NotInstalled(exe.display().to_string())
@@ -1132,6 +1151,29 @@ fn send_signal(_pid: u32, _signal: Signal) {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn managed_context_engine_is_added_as_http_mcp_server() {
+        let harness = CodexHarness::new().with_mcp_server("http://127.0.0.1:6699/mcp");
+        let command = harness.build_command(&PathBuf::from("codex"), "/tmp");
+        let args = command
+            .as_std()
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            args,
+            vec![
+                "-c",
+                r#"mcp_servers.codebase-retrieval.url="http://127.0.0.1:6699/mcp""#,
+                "app-server",
+            ]
+        );
+        assert_eq!(
+            command.as_std().get_current_dir(),
+            Some(std::path::Path::new("/tmp"))
+        );
+    }
 
     #[test]
     fn slashed_branch_worktrees_are_detected_for_sandbox_escalation() {

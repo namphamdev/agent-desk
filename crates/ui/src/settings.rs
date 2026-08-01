@@ -11,8 +11,10 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 pub mod accounts;
+pub mod acp_agents;
 pub mod archived;
 pub mod composer;
+pub mod context_engine;
 pub mod devices;
 pub mod shortcuts;
 pub mod widgets;

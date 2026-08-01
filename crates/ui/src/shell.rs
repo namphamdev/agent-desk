@@ -32,7 +32,9 @@ use crate::motion::{self, AnimationExt as _, MotionSpec, RESIZE, SPLASH_OUT};
 use crate::popover::{self, Loadable};
 use crate::rail;
 use crate::settings::accounts::AccountsPage;
+use crate::settings::acp_agents::AcpAgentsPage;
 use crate::settings::archived::ArchivedPage;
+use crate::settings::context_engine::ContextEnginePage;
 use crate::settings::devices::DevicesPage;
 use crate::settings::shortcuts::{ShortcutsEvent, ShortcutsPage};
 use crate::settings::{
@@ -142,14 +144,18 @@ pub fn apply_keymap(cx: &mut App, keymap: &KeymapConfig) {
 pub enum SettingsSection {
     Devices,
     Agents,
+    AcpAgents,
+    ContextEngine,
     Shortcuts,
     Archived,
 }
 
 impl SettingsSection {
-    pub const ALL: [SettingsSection; 4] = [
+    pub const ALL: [SettingsSection; 6] = [
         SettingsSection::Devices,
         SettingsSection::Agents,
+        SettingsSection::AcpAgents,
+        SettingsSection::ContextEngine,
         SettingsSection::Shortcuts,
         SettingsSection::Archived,
     ];
@@ -160,6 +166,8 @@ impl SettingsSection {
         match self {
             SettingsSection::Devices => "Devices",
             SettingsSection::Agents => "Accounts",
+            SettingsSection::AcpAgents => "ACP agents",
+            SettingsSection::ContextEngine => "Code context",
             SettingsSection::Shortcuts => "Shortcuts",
             SettingsSection::Archived => "Archived sessions",
         }
@@ -431,6 +439,8 @@ pub struct Shell {
     archived_page: Option<Entity<ArchivedPage>>,
     shortcuts_page: Option<Entity<ShortcutsPage>>,
     accounts_page: Option<Entity<AccountsPage>>,
+    acp_agents_page: Option<Entity<AcpAgentsPage>>,
+    context_engine_page: Option<Entity<ContextEnginePage>>,
     shortcuts_sub: Option<Subscription>,
     /// Session-row context menu: (chat id, window position).
     chat_menu: Option<(String, Point<Pixels>)>,
@@ -595,6 +605,8 @@ impl Shell {
                 Route::Settings(SettingsSection::Devices)
             }
             Some("settings/agents") => Route::Settings(SettingsSection::Agents),
+            Some("settings/acp") => Route::Settings(SettingsSection::AcpAgents),
+            Some("settings/context") => Route::Settings(SettingsSection::ContextEngine),
             Some("settings/shortcuts") => Route::Settings(SettingsSection::Shortcuts),
             Some("settings/archived") => Route::Settings(SettingsSection::Archived),
             // `new` pins the new-chat canvas (suppresses boot auto-select).
@@ -635,6 +647,8 @@ impl Shell {
             archived_page: None,
             shortcuts_page: None,
             accounts_page: None,
+            acp_agents_page: None,
+            context_engine_page: None,
             shortcuts_sub: None,
             chat_menu: None,
             rename_dialog: None,
@@ -1124,6 +1138,27 @@ impl Shell {
                     self.accounts_page = Some(cx.new(|cx| AccountsPage::new(state, cx)));
                 }
                 match &self.accounts_page {
+                    Some(page) => page.clone().into_any_element(),
+                    None => Empty.into_any_element(),
+                }
+            }
+            SettingsSection::AcpAgents => {
+                if self.acp_agents_page.is_none() {
+                    let state = self.state.clone();
+                    self.acp_agents_page = Some(cx.new(|cx| AcpAgentsPage::new(state, cx)));
+                }
+                match &self.acp_agents_page {
+                    Some(page) => page.clone().into_any_element(),
+                    None => Empty.into_any_element(),
+                }
+            }
+            SettingsSection::ContextEngine => {
+                if self.context_engine_page.is_none() {
+                    let data_dir = self.data_dir.clone();
+                    self.context_engine_page =
+                        Some(cx.new(|_| ContextEnginePage::new(data_dir)));
+                }
+                match &self.context_engine_page {
                     Some(page) => page.clone().into_any_element(),
                     None => Empty.into_any_element(),
                 }
@@ -1626,6 +1661,8 @@ impl Shell {
         let section_icon = |item: SettingsSection| match item {
             SettingsSection::Devices => icons::MONITOR,
             SettingsSection::Agents => icons::KEY_MINIMALISTIC,
+            SettingsSection::AcpAgents => icons::WIDGET,
+            SettingsSection::ContextEngine => icons::MAGNIFER,
             SettingsSection::Shortcuts => icons::KEYBOARD,
             SettingsSection::Archived => icons::ARCHIVE_MINIMALISTIC,
         };

@@ -30,6 +30,11 @@ base64 = "0.22"
 libc.workspace = true
 sha2.workspace = true
 reqwest.workspace = true
+tempfile.workspace = true
+zip = { version = "4", default-features = false, features = ["deflate"] }
+tar = "0.4"
+flate2 = "1"
+bzip2 = "0.6"
 
 [dev-dependencies]
 tempfile.workspace = true

@@ -86,6 +86,11 @@ pub mod methods {
     pub const COMPLETE_AGENT_LOGIN: &str = "CompleteAgentLogin";
     pub const POLL_AGENT_LOGIN: &str = "PollAgentLogin";
     pub const CANCEL_AGENT_LOGIN: &str = "CancelAgentLogin";
+    // ACP agent registry (ControlRpc, relay-forwardable and device-local).
+    pub const LIST_ACP_AGENTS: &str = "ListAcpAgents";
+    pub const INSTALL_ACP_AGENT: &str = "InstallAcpAgent";
+    pub const ACTIVATE_ACP_AGENT: &str = "ActivateAcpAgent";
+    pub const REMOVE_ACP_AGENT: &str = "RemoveAcpAgent";
     // Uploads / attachments (ControlRpc, relay-forwardable — target the chat's host device).
     pub const UPLOAD_CHUNK: &str = "UploadChunk";
     pub const UPLOAD_COMMIT: &str = "UploadCommit";

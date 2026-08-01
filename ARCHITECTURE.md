@@ -138,7 +138,7 @@ comet-native/
                                  # ephemeral presence, DocsStore (SQLite snapshots +
                                  # processed-command ledger)
     harness/      comet-harness  # Harness trait + claude-code (stream-json subprocess),
-                                 # codex (app-server JSON-RPC), mock; steering mailbox,
+                                 # codex (app-server JSON-RPC), generic ACP, mock; steering mailbox,
                                  # requestInput, models/reasoning/options catalogs
     engine/       comet-engine   # sessions engine (pub/sub, run journal, recovery, stall
                                  # watchdog), doc host + command executor, repos/worktrees,
@@ -225,7 +225,9 @@ Direct ports of comet behaviors (spec: feature-inventory §3):
 - **Harness** (research pending — `docs/research/harness.md`): trait mirroring comet's
   `HarnessShape`; Claude Code via `claude` CLI stream-json in/out (control protocol for
   permissions/AskUserQuestion→requestInput, resume, steering); Codex via app-server JSON-RPC or
-  `codex exec --json`; model/reasoning/option catalogs ported from `packages/harness`.
+  `codex exec --json`; generic ACP-compatible CLIs via the official Rust SDK;
+  the device-local ACP settings page installs agents from the official registry and selects the
+  active adapter command; model/reasoning/option catalogs ported from `packages/harness`.
 - **Repos/diffs**: git2 or `git` subprocess (subprocess — matches comet, avoids libgit2 edge
   cases); worktrees under `~/.comet-native/worktrees`; fs watchers (`notify`) + 2min repair; diff
   capture (patch + numstat + untracked, 3MiB cap, sha256) → workspace doc summary + DO diff

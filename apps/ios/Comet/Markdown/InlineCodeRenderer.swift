@@ -31,3 +31,14 @@ struct InlineCodeRenderer: TextRenderer {
         }
     }
 }
+
+extension View {
+    @ViewBuilder
+    func roundedInlineCodeBackground() -> some View {
+        if #available(iOS 18.0, *) {
+            textRenderer(InlineCodeRenderer())
+        } else {
+            self
+        }
+    }
+}

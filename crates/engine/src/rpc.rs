@@ -199,6 +199,12 @@ struct CompleteAgentLoginParams {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct AcpAgentParams {
+    agent_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct UploadChunkParams {
     upload_id: String,
     /// Base64 payload chunk.
@@ -322,6 +328,7 @@ pub struct EngineRpc {
     diff_sync: CheckoutDiffSync,
     uploads: Uploads,
     agent_accounts: AgentAccounts,
+    acp_agents: crate::AcpAgents,
     auth: Option<Auth>,
     links: Option<std::sync::Arc<LinkCache>>,
     updater: Option<comet_update::Updater>,
@@ -339,6 +346,7 @@ impl EngineRpc {
         diff_sync: CheckoutDiffSync,
         uploads: Uploads,
         agent_accounts: AgentAccounts,
+        acp_agents: crate::AcpAgents,
     ) -> Self {
         Self {
             sessions,
@@ -350,6 +358,7 @@ impl EngineRpc {
             diff_sync,
             uploads,
             agent_accounts,
+            acp_agents,
             auth: None,
             links: None,
             updater: None,
@@ -578,6 +587,10 @@ fn forwardable(method: &str) -> bool {
             | methods::COMPLETE_AGENT_LOGIN
             | methods::POLL_AGENT_LOGIN
             | methods::CANCEL_AGENT_LOGIN
+            | methods::LIST_ACP_AGENTS
+            | methods::INSTALL_ACP_AGENT
+            | methods::ACTIVATE_ACP_AGENT
+            | methods::REMOVE_ACP_AGENT
             // Uploads/attachments target the chat's host device (the agent reads
             // the committed file from that device's disk).
             | methods::UPLOAD_CHUNK
@@ -1009,6 +1022,41 @@ impl RpcService for EngineRpc {
                 let p: LoginIdParams = parse_params(params)?;
                 self.agent_accounts.cancel_login(&p.login_id);
                 RpcReply::value(&serde_json::json!({ "ok": true }))
+            }
+            methods::LIST_ACP_AGENTS => {
+                let snapshot = self
+                    .acp_agents
+                    .list()
+                    .await
+                    .map_err(|error| RpcError::Failed(error.to_string()))?;
+                RpcReply::value(&snapshot)
+            }
+            methods::INSTALL_ACP_AGENT => {
+                let p: AcpAgentParams = parse_params(params)?;
+                let snapshot = self
+                    .acp_agents
+                    .install(&p.agent_id)
+                    .await
+                    .map_err(|error| RpcError::Failed(error.to_string()))?;
+                RpcReply::value(&snapshot)
+            }
+            methods::ACTIVATE_ACP_AGENT => {
+                let p: AcpAgentParams = parse_params(params)?;
+                let snapshot = self
+                    .acp_agents
+                    .activate(&p.agent_id)
+                    .await
+                    .map_err(|error| RpcError::Failed(error.to_string()))?;
+                RpcReply::value(&snapshot)
+            }
+            methods::REMOVE_ACP_AGENT => {
+                let p: AcpAgentParams = parse_params(params)?;
+                let snapshot = self
+                    .acp_agents
+                    .remove(&p.agent_id)
+                    .await
+                    .map_err(|error| RpcError::Failed(error.to_string()))?;
+                RpcReply::value(&snapshot)
             }
             methods::UPLOAD_CHUNK => {
                 let p: UploadChunkParams = parse_params(params)?;

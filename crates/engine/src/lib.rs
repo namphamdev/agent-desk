@@ -14,7 +14,9 @@ pub use comet_proto::HarnessId;
 use comet_sync::DocsStore;
 
 pub mod agent_accounts;
+pub mod acp_agents;
 pub mod auth;
+pub mod context_engine;
 pub mod diff_sync;
 pub mod doc_host;
 pub mod instance_lock;
@@ -30,11 +32,15 @@ pub mod uploads;
 pub mod workspace_host;
 
 pub use agent_accounts::{AgentAccounts, AgentAccountsConfig};
+pub use acp_agents::{ACP_CONFIG_FILE, AcpAgents};
 pub use auth::{Auth, AuthConfig, AuthState, AuthUser, OrgMembership};
 pub use diff_sync::{CheckoutDiffSync, DiffSidecar, DiffSnapshot, capture_diff};
 pub use doc_host::{ChatDocHandle, DocHost, DocHostConfig, EdgeConfig};
 pub use instance_lock::InstanceLock;
-pub use registry::{HarnessDescriptor, HarnessRegistry, default_registry};
+pub use registry::{
+    HarnessDescriptor, HarnessRegistry, default_registry, default_registry_with_config,
+    default_registry_with_mcp,
+};
 pub use repos::{CheckoutIdentity, Repos, worktree_branch_from_title};
 pub use rpc::EngineRpc;
 pub use run_journal::{JournalError, RunJournal};
@@ -104,6 +110,7 @@ pub struct EngineCore {
     pub spaces_sync: SpacesSync,
     pub uploads: Uploads,
     pub agent_accounts: AgentAccounts,
+    pub acp_agents: AcpAgents,
     pub device_id: String,
     /// Auth service (attached by [`Engine::run`]; a lazy dev-mode instance otherwise).
     auth: std::sync::Mutex<Option<Auth>>,
@@ -187,6 +194,7 @@ impl EngineCore {
         let terminals = Terminals::new();
         let uploads = Uploads::new(data_dir, edge.clone());
         let agent_accounts = AgentAccounts::new(AgentAccountsConfig::detect(data_dir));
+        let acp_agents = AcpAgents::new(data_dir);
         sessions.set_titles(TitleGenerator::new(
             workspace.clone(),
             registry.clone(),
@@ -205,6 +213,7 @@ impl EngineCore {
             spaces_sync,
             uploads,
             agent_accounts,
+            acp_agents,
             device_id,
             auth: std::sync::Mutex::new(None),
             links: std::sync::Mutex::new(None),
@@ -317,6 +326,7 @@ impl EngineCore {
             self.diff_sync.clone(),
             self.uploads.clone(),
             self.agent_accounts.clone(),
+            self.acp_agents.clone(),
         )
         .with_auth(self.auth());
         if let Some(links) = self.links() {
@@ -350,6 +360,7 @@ pub struct Engine {
 pub struct EngineRuntime {
     core: EngineCore,
     _host_relay: Option<comet_rpc::HostRelay>,
+    context_engine: tokio::sync::Mutex<Option<context_engine::ManagedContextEngine>>,
 }
 
 impl EngineRuntime {
@@ -359,6 +370,9 @@ impl EngineRuntime {
 
     pub async fn shutdown(&self) {
         self.core.shutdown().await;
+        if let Some(context_engine) = self.context_engine.lock().await.as_mut() {
+            context_engine.shutdown().await;
+        }
     }
 }
 
@@ -397,6 +411,21 @@ impl Engine {
         config: &EngineConfig,
         auth: Auth,
     ) -> anyhow::Result<EngineRuntime> {
+        let context_engine = if !context_engine::enabled(&config.data_dir) {
+            tracing::info!("managed context engine disabled");
+            None
+        } else {
+            match context_engine::ManagedContextEngine::start(&config.data_dir).await {
+                Ok(engine) => Some(engine),
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        "context engine unavailable; continuing without code-context MCP"
+                    );
+                    None
+                }
+            }
+        };
         let online = (auth.workos_enabled() || config.edge_token.is_some())
             && auth.access_token().await.is_some();
         let edge = online.then(|| EdgeConfig::new(config.edge_url.clone(), Arc::new(auth.clone())));
@@ -419,7 +448,10 @@ impl Engine {
             .unwrap_or_else(|| env_or("COMET_USER_ID", DEFAULT_USER_ID));
         let core = EngineCore::assemble_with_identity(
             &config.data_dir,
-            Arc::new(default_registry()),
+            Arc::new(default_registry_with_config(
+                context_engine.as_ref().map(|_| context_engine::MCP_URL),
+                Some(config.data_dir.join(ACP_CONFIG_FILE)),
+            )),
             config.default_harness,
             edge.clone(),
             &org_id,
@@ -457,6 +489,7 @@ impl Engine {
         Ok(EngineRuntime {
             core,
             _host_relay: host_relay,
+            context_engine: tokio::sync::Mutex::new(context_engine),
         })
     }
 

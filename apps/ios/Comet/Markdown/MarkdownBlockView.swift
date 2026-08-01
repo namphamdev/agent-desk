@@ -144,7 +144,7 @@ struct MarkdownBlockView: View {
         switch block {
         case .paragraph(let runs):
             runs.styled()
-                .textRenderer(InlineCodeRenderer())
+                .roundedInlineCodeBackground()
                 .lineSpacing(MD.lineHeight - MD.textSize - 4)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -153,7 +153,7 @@ struct MarkdownBlockView: View {
         case .heading(let level, let runs):
             let m = MD.headingMetrics(level)
             runs.styled(size: m.size, weight: .semibold)
-                .textRenderer(InlineCodeRenderer())
+                .roundedInlineCodeBackground()
                 .lineSpacing(m.line - m.size - 4)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -385,7 +385,7 @@ struct TableBlockView: View {
             ? (align[column] == .center ? .center : align[column] == .right ? .trailing : .leading)
             : .leading
         return runs.styled(weight: weight)
-            .textRenderer(InlineCodeRenderer())
+            .roundedInlineCodeBackground()
             .lineSpacing(MD.lineHeight - MD.textSize - 4)
             .padding(12)
             .frame(minWidth: 48, maxWidth: .infinity, alignment: alignment)

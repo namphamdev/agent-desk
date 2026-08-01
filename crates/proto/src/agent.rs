@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 pub enum HarnessId {
     ClaudeCode,
     Codex,
+    /// Any Agent Client Protocol compatible CLI configured on this device.
+    Acp,
     Cursor,
     /// Test harness; never shown in production pickers.
     Mock,
@@ -304,5 +306,6 @@ mod tests {
             serde_json::to_string(&HarnessId::ClaudeCode).unwrap(),
             "\"claude-code\""
         );
+        assert_eq!(serde_json::to_string(&HarnessId::Acp).unwrap(), "\"acp\"");
     }
 }

@@ -5,9 +5,11 @@
 //! harness-level passthrough (rate-limit meters), never persisted into docs.
 
 pub mod agent;
+pub mod acp;
 pub mod entities;
 pub mod motion;
 pub mod view;
 
 pub use agent::*;
+pub use acp::*;
 pub use entities::*;

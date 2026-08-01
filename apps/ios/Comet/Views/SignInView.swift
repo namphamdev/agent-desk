@@ -10,8 +10,8 @@ import SwiftUI
 
 /// Production cloud endpoints — mirrors edge/wrangler.jsonc.
 enum Endpoints {
-    static let edgeURL = URL(string: "https://edge.comet.zeron.sh")!
-    static let workosClientId = "client_01KWD0EAKZKD50YCQJNYSRE4BY"
+    static let edgeURL = AppEnvironment.edgeURL
+    static let workosClientId = AppEnvironment.workosClientId
     static let workosAPIBase = "https://api.workos.com"
     static let callbackScheme = "comet"
 
@@ -199,7 +199,7 @@ struct OrgPickerView: View {
                             }
                             .padding(.horizontal, 16)
                             .frame(height: 48)
-                            .glassEffect(.regular.interactive(), in: RoundedRectangle(cornerRadius: 14))
+                            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
                         }
                         .disabled(busy)
                     }

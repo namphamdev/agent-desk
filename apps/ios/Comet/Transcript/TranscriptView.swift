@@ -9,6 +9,30 @@
 
 import SwiftUI
 
+private struct TranscriptContentHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
+private struct TranscriptViewportHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
+private struct TranscriptScrollOffsetKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
 struct TranscriptView: View {
     let store: SessionStore
     let chatId: String
@@ -41,25 +65,69 @@ struct TranscriptView: View {
     @State private var contentHeight: CGFloat = 0
     @State private var distanceFromBottom: CGFloat = 0
     @State private var userScrolling = false
-    @State private var scrollPosition = ScrollPosition(edge: .bottom)
+    @State private var viewportHeight: CGFloat = 0
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private static let scrollSpace = "transcript-scroll"
+    private static let bottomAnchor = "transcript-bottom"
 
     var body: some View {
         let rows = builder.rows(revision: store.revision,
                                 entries: store.entries,
                                 pendingSends: store.pendingSends)
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 0) {
-                ForEach(rows) { row in
-                    rowView(row).id(row.id)
+        ScrollViewReader { scrollProxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    GeometryReader { geometry in
+                        Color.clear.preference(
+                            key: TranscriptScrollOffsetKey.self,
+                            value: geometry.frame(in: .named(Self.scrollSpace)).minY
+                        )
+                    }
+                    .frame(height: 0)
+
+                    ForEach(rows) { row in
+                        rowView(row).id(row.id)
+                    }
+                    Color.clear
+                        .frame(height: 44)  // bottom pad clears the fade + floating status strip
+                        .id(Self.bottomAnchor)
                 }
-                Color.clear.frame(height: 44)  // bottom pad clears the fade + floating status strip
+                .background {
+                    GeometryReader { geometry in
+                        Color.clear.preference(
+                            key: TranscriptContentHeightKey.self,
+                            value: geometry.size.height
+                        )
+                    }
+                }
+                .frame(maxWidth: Self.maxContentWidth)
+                .frame(maxWidth: .infinity)
             }
-            .frame(maxWidth: Self.maxContentWidth)
-            .frame(maxWidth: .infinity)
-        }
-        .scrollPosition($scrollPosition)
-        .defaultScrollAnchor(.bottom)
+            .coordinateSpace(name: Self.scrollSpace)
+            .background {
+                GeometryReader { geometry in
+                    Color.clear.preference(
+                        key: TranscriptViewportHeightKey.self,
+                        value: geometry.size.height
+                    )
+                }
+            }
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 1)
+                    .onChanged { _ in userScrolling = true }
+                    .onEnded { _ in userScrolling = false }
+            )
+            .defaultScrollAnchor(.bottom)
+            .onPreferenceChange(TranscriptContentHeightKey.self) { newHeight in
+                contentHeight = newHeight
+            }
+            .onPreferenceChange(TranscriptViewportHeightKey.self) { newHeight in
+                viewportHeight = newHeight
+            }
+            .onPreferenceChange(TranscriptScrollOffsetKey.self) { topOffset in
+                updateScrollState(topOffset: topOffset)
+            }
         // Held invisible until it has settled at the bottom, then faded in.
         // The settling itself is unavoidable (see settleToBottom) — what is
         // avoidable is WATCHING it: painting mid-settle is what read as the
@@ -67,12 +135,12 @@ struct TranscriptView: View {
         .opacity(settled ? 1 : 0)
         .motionAnimation(Motion.fadeQuick, value: settled)
         .background(Theme.bg)
-        .task {
+            .task {
             // Warm sessions already have rows at first layout, and `onChange`
             // never fires for an initial value — this is the only hook for them.
-            await settleToBottom()
-        }
-        .onChange(of: rows.isEmpty) { _, isEmpty in
+                await settleToBottom(scrollProxy)
+            }
+            .onChange(of: rows.isEmpty) { _, isEmpty in
             // Projection is off-main, so a cached transcript usually lands after
             // the pass above ran on an empty list. Only ever hides a transcript
             // that has never been shown — re-hiding a visible one is what made
@@ -80,39 +148,19 @@ struct TranscriptView: View {
             guard !isEmpty, !hydrated, !store.hasRevealed else { return }
             hydrated = true
             settled = false
-            Task { await settleToBottom() }
-        }
-        .onScrollGeometryChange(for: CGFloat.self) { $0.contentSize.height } action: { _, new in
-            contentHeight = new
-        }
-        .onScrollPhaseChange { _, newPhase in
-            // Desktop rule: the pin breaks only on USER input (wheel-up/drag),
-            // never on streaming growth. Phases track the gesture.
-            userScrolling = newPhase == .interacting || newPhase == .decelerating
-        }
-        .onScrollGeometryChange(for: CGFloat.self) { geo in
-            max(0, geo.contentSize.height + geo.contentInsets.bottom - geo.containerSize.height - geo.contentOffset.y)
-        } action: { old, new in
-            distanceFromBottom = new
-            if userScrolling, new > old + 1, new > 2 {
-                pinned = false
-            } else if !pinned, new <= Self.stickThreshold, new < old {
-                // Re-stick only when moving TOWARD the bottom inside the 70pt
-                // band, else the pin would be unbreakable.
-                pinned = true
+                Task { await settleToBottom(scrollProxy) }
             }
-        }
-        .onChange(of: contentSignature(rows)) {
+            .onChange(of: contentSignature(rows)) {
             guard pinned else { return }
             if reduceMotion {
-                scrollPosition.scrollTo(edge: .bottom)
+                    scrollProxy.scrollTo(Self.bottomAnchor, anchor: .bottom)
             } else {
                 withAnimation(.spring(duration: 0.3)) {
-                    scrollPosition.scrollTo(edge: .bottom)
+                        scrollProxy.scrollTo(Self.bottomAnchor, anchor: .bottom)
+                    }
                 }
             }
-        }
-        .overlay(alignment: .top) {
+            .overlay(alignment: .top) {
             // Soft fade under the nav bar — content dissolves instead of
             // hard-clipping against the header.
             LinearGradient(
@@ -127,7 +175,7 @@ struct TranscriptView: View {
             .ignoresSafeArea(edges: .top)
             .allowsHitTesting(false)
         }
-        .overlay(alignment: .bottom) {
+            .overlay(alignment: .bottom) {
             // Short ramp that reaches FULL bg at the bottom edge — content
             // dissolves completely beneath the floating status strip, but the
             // fade starts low enough that message bottoms stay legible.
@@ -143,13 +191,13 @@ struct TranscriptView: View {
             .frame(height: 44)
             .allowsHitTesting(false)
         }
-        .overlay(alignment: .bottomTrailing) {
+            .overlay(alignment: .bottomTrailing) {
             // Jump-to-bottom floats ABOVE the fades.
             if distanceFromBottom > Self.jumpThreshold {
                 Button {
                     pinned = true
                     withAnimation(.spring(duration: 0.35)) {
-                        scrollPosition.scrollTo(edge: .bottom)
+                        scrollProxy.scrollTo(Self.bottomAnchor, anchor: .bottom)
                     }
                 } label: {
                     Image(systemName: "arrow.down")
@@ -157,13 +205,14 @@ struct TranscriptView: View {
                         .foregroundStyle(Theme.text)
                         .frame(width: 36, height: 36)
                 }
-                .glassEffect(.regular.interactive(), in: Circle())
+                .background(.regularMaterial, in: Circle())
                 .padding(.trailing, 16)
                 .padding(.bottom, 12)
                 .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
         }
-        .motionAnimation(Motion.fadeQuick, value: distanceFromBottom > Self.jumpThreshold)
+            .motionAnimation(Motion.fadeQuick, value: distanceFromBottom > Self.jumpThreshold)
+        }
     }
 
     /// Hold the bottom until layout stops moving, then reveal.
@@ -180,17 +229,30 @@ struct TranscriptView: View {
     /// case) so a pathological reflow can't spin, and it yields the moment the
     /// user takes the scroll view — their drag wins. `settled` flips either way,
     /// so the transcript can never be left invisible.
-    private func settleToBottom() async {
+    private func settleToBottom(_ scrollProxy: ScrollViewProxy) async {
         var lastHeight: CGFloat = -1
         for _ in 0..<16 {
             guard pinned, !userScrolling else { break }
-            scrollPosition.scrollTo(edge: .bottom)
+            scrollProxy.scrollTo(Self.bottomAnchor, anchor: .bottom)
             if contentHeight == lastHeight { break }
             lastHeight = contentHeight
             try? await Task.sleep(nanoseconds: 30_000_000)
         }
         settled = true
         store.hasRevealed = true
+    }
+
+    private func updateScrollState(topOffset: CGFloat) {
+        let oldDistance = distanceFromBottom
+        let newDistance = max(0, contentHeight - viewportHeight + topOffset)
+        distanceFromBottom = newDistance
+
+        if userScrolling, newDistance > oldDistance + 1, newDistance > 2 {
+            pinned = false
+        } else if !pinned, newDistance <= Self.stickThreshold, newDistance < oldDistance {
+            // Re-stick only when moving TOWARD the bottom inside the 70pt band.
+            pinned = true
+        }
     }
 
     // Streamed growth signature: last row id + version + count. Any append or
@@ -336,7 +398,7 @@ struct MarkdownRowView: View {
         case .paragraph(let runs):
             let _ = veil.noteLength(runs.map(\.text.count).reduce(0, +))
             runs.styledVeiled(veil: veil)
-                .textRenderer(InlineCodeRenderer())
+                .roundedInlineCodeBackground()
                 .lineSpacing(MD.lineHeight - MD.textSize - 4)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -344,7 +406,7 @@ struct MarkdownRowView: View {
             let m = MD.headingMetrics(level)
             let _ = veil.noteLength(runs.map(\.text.count).reduce(0, +))
             runs.styledVeiled(size: m.size, weight: .semibold, veil: veil)
-                .textRenderer(InlineCodeRenderer())
+                .roundedInlineCodeBackground()
                 .lineSpacing(m.line - m.size - 4)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)

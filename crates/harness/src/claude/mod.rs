@@ -88,6 +88,7 @@ fn option_is_on(options: &serde_json::Map<String, Value>, key: &str) -> bool {
 /// it at a fake CLI with [`ClaudeHarness::with_executable`].
 pub struct ClaudeHarness {
     executable: Option<PathBuf>,
+    mcp_server_url: Option<String>,
     /// Grace between the interrupt control request and SIGTERM.
     interrupt_grace: Duration,
     /// Grace between SIGTERM and SIGKILL.
@@ -98,6 +99,7 @@ impl Default for ClaudeHarness {
     fn default() -> Self {
         Self {
             executable: None,
+            mcp_server_url: None,
             interrupt_grace: Duration::from_secs(2),
             kill_grace: Duration::from_secs(3),
         }
@@ -112,6 +114,12 @@ impl ClaudeHarness {
     /// Use a fixed CLI binary instead of PATH/known-location resolution.
     pub fn with_executable(mut self, path: impl Into<PathBuf>) -> Self {
         self.executable = Some(path.into());
+        self
+    }
+
+    /// Add Comet's managed code-context MCP server to this invocation.
+    pub fn with_mcp_server(mut self, url: impl Into<String>) -> Self {
+        self.mcp_server_url = Some(url.into());
         self
     }
 
@@ -152,6 +160,20 @@ impl ClaudeHarness {
             "--permission-prompt-tool",
             "stdio",
         ]);
+        if let Some(url) = &self.mcp_server_url {
+            cmd.arg("--mcp-config");
+            cmd.arg(
+                serde_json::json!({
+                    "mcpServers": {
+                        "codebase-retrieval": {
+                            "type": "http",
+                            "url": url,
+                        }
+                    }
+                })
+                .to_string(),
+            );
+        }
         // The 1M context window is selected via a model-id suffix
         // (`sonnet[1m]`), exactly how the CLI itself does it; fast mode and
         // always-on thinking are settings overrides.
@@ -736,6 +758,38 @@ fn updated_input_with_answers(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn managed_context_engine_is_added_as_http_mcp_server() {
+        let harness = ClaudeHarness::new().with_mcp_server("http://127.0.0.1:6699/mcp");
+        let request = RunRequest {
+            prompt: "p".into(),
+            model: None,
+            reasoning: None,
+            model_options: serde_json::Map::new(),
+            cwd: String::new(),
+            sandbox: comet_proto::SandboxLevel::WorkspaceWrite,
+            auto_approve: false,
+            resume: None,
+            attachments: Vec::new(),
+        };
+        let command = harness.build_command(&PathBuf::from("claude"), &request);
+        let args = command
+            .as_std()
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        let config = args
+            .windows(2)
+            .find(|pair| pair[0] == "--mcp-config")
+            .map(|pair| &pair[1])
+            .expect("mcp config argument");
+        let config: Value = serde_json::from_str(config).unwrap();
+        assert_eq!(
+            config["mcpServers"]["codebase-retrieval"]["url"],
+            "http://127.0.0.1:6699/mcp"
+        );
+    }
 
     #[test]
     fn parses_questions_tolerantly() {

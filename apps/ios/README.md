@@ -9,6 +9,8 @@ engine runs on the phone.
 ## Build & run
 
 Requires Xcode 26+ (iOS 26 SDK — Liquid Glass APIs).
+The build reads `../../.env` for `COMET_EDGE_URL` and
+`COMET_WORKOS_CLIENT_ID`.
 
 ```sh
 cd apps/ios

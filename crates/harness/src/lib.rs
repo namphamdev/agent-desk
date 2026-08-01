@@ -66,6 +66,7 @@ pub trait Harness: Send + Sync {
 
 pub mod claude;
 pub mod codex;
+pub mod acp;
 pub mod mock;
 
 /// Bin directories where npm-installed CLIs land under Node version managers.
@@ -196,3 +197,4 @@ pub(crate) fn crash_message(
 
 pub use claude::ClaudeHarness;
 pub use codex::CodexHarness;
+pub use acp::AcpHarness;
