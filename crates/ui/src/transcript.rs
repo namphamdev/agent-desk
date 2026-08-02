@@ -471,8 +471,9 @@ pub fn rows_for_entry(
                             version: message.len() as u64,
                             turn_start: false,
                             kind: RowKind::ErrorChip {
-                                // Harness-generated; the chip is one line.
-                                message: single_line(message).into(),
+                                // Keep the raw error for clipboard copying;
+                                // rendering normalizes it to one line.
+                                message: message.clone().into(),
                             },
                             entry_id: entry_id.clone(),
                             timestamp: None,
@@ -942,6 +943,9 @@ pub struct Transcript {
     /// Message footer showing transient "Copied" feedback.
     copied_message: Option<SharedString>,
     copied_message_clear: Option<Task<()>>,
+    /// Error chip showing transient copied feedback.
+    copied_error: Option<SharedString>,
+    copied_error_clear: Option<Task<()>>,
     /// Transcript attachment being viewed full-size (click a user thumbnail).
     attachment_preview: Option<crate::attachments::PreviewImage>,
     /// In-flight ReadAttachmentChunk loads, keyed `(deviceId, path)` — one per
@@ -995,6 +999,8 @@ impl Transcript {
             copied_clear: None,
             copied_message: None,
             copied_message_clear: None,
+            copied_error: None,
+            copied_error_clear: None,
             attachment_preview: None,
             attachment_loads: HashMap::new(),
             attachment_retries: HashMap::new(),
@@ -1710,7 +1716,9 @@ impl Transcript {
             RowKind::InputChip { header, resolved } => {
                 input_chip(header.clone(), *resolved, &theme)
             }
-            RowKind::ErrorChip { message } => error_chip(message.clone(), &theme),
+            RowKind::ErrorChip { message } => {
+                self.render_error_chip(&row.id, message.clone(), &theme, cx)
+            }
         };
 
         // Hover-revealed timestamp strip (comet chat-view.tsx `Timestamp`):
@@ -2055,69 +2063,115 @@ impl Transcript {
             .child(body)
             .into_any_element()
     }
+
+    /// Render a visible run error with a trailing control that copies the full
+    /// message, including text hidden by the chip's one-line truncation.
+    fn render_error_chip(
+        &mut self,
+        row_id: &SharedString,
+        message: SharedString,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let red_300 = crate::theme::oklch(0.808, 0.114, 19.571); // tailwind red-300
+        let danger = theme.danger; // red-400
+        let copied = self.copied_error.as_ref().is_some_and(|id| id == row_id);
+        let copy_id = row_id.clone();
+        let copy_message = message.clone();
+        let display_message: SharedString = single_line(&message).into();
+
+        div()
+            .py(px(4.0))
+            .w_full()
+            .child(
+                div()
+                    .id(SharedString::from(format!("error-copy-{row_id}")))
+                    .h(px(34.0))
+                    .w_full()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .overflow_hidden()
+                    .rounded(px(10.0))
+                    .border_1()
+                    .border_color(danger.opacity(0.16))
+                    .bg(danger.opacity(0.05))
+                    .px(px(8.0))
+                    .text_size(px(12.0))
+                    .cursor_pointer()
+                    .hover(|el| el.bg(danger.opacity(0.1)))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(
+                            copy_message.to_string(),
+                        ));
+                        this.copied_error = Some(copy_id.clone());
+                        this.copied_error_clear = Some(cx.spawn(async move |this, cx| {
+                            cx.background_executor()
+                                .timer(Duration::from_millis(1500))
+                                .await;
+                            this.update(cx, |this, cx| {
+                                this.copied_error = None;
+                                this.copied_error_clear = None;
+                                cx.notify();
+                            })
+                            .ok();
+                        }));
+                        cx.notify();
+                    }))
+                    .child(
+                        div()
+                            .flex_none()
+                            .size(px(20.0))
+                            .rounded(px(6.0))
+                            .bg(danger.opacity(0.12))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(
+                                crate::icons::icon(crate::icons::DANGER_TRIANGLE)
+                                    .size(px(12.0))
+                                    .text_color(red_300.opacity(0.8)),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .text_color(red_300.opacity(0.8))
+                            .child(SharedString::from("Error")),
+                    )
+                    .child(
+                        div()
+                            .min_w_0()
+                            .flex_1()
+                            .truncate()
+                            .text_color(theme.text.opacity(0.8))
+                            .child(display_message),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .size(px(22.0))
+                            .rounded(px(6.0))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .text_color(theme.text_muted)
+                            .child(
+                                crate::icons::icon(if copied {
+                                    crate::icons::CHECK
+                                } else {
+                                    crate::icons::COPY
+                                })
+                                .size(px(12.0)),
+                            ),
+                    ),
+            )
+            .into_any_element()
+    }
 }
 
 impl EventEmitter<TranscriptEvent> for Transcript {}
-
-/// The transcript ErrorChip — an exact port of comet chat-view.tsx
-/// `ErrorChip`: a 34px row (`rounded-[10px] border border-red-400/[0.16]
-/// bg-red-400/[0.05] px-2 text-[12px]`) with a 20px red-washed tile holding a
-/// 12px DangerTriangle (`bg-red-400/[0.12] text-red-300/80`), a medium
-/// "Error" label, then the human message truncating at `text-foreground/80` —
-/// a subtle red-tinted wash, never a bare red-stroke box.
-fn error_chip(message: SharedString, theme: &Theme) -> AnyElement {
-    let red_300 = crate::theme::oklch(0.808, 0.114, 19.571); // tailwind red-300
-    let danger = theme.danger; // red-400
-    div()
-        .py(px(4.0))
-        .w_full()
-        .child(
-            div()
-                .h(px(34.0))
-                .w_full()
-                .flex()
-                .items_center()
-                .gap(px(8.0))
-                .overflow_hidden()
-                .rounded(px(10.0))
-                .border_1()
-                .border_color(danger.opacity(0.16))
-                .bg(danger.opacity(0.05))
-                .px(px(8.0))
-                .text_size(px(12.0))
-                .child(
-                    div()
-                        .flex_none()
-                        .size(px(20.0))
-                        .rounded(px(6.0))
-                        .bg(danger.opacity(0.12))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(
-                            crate::icons::icon(crate::icons::DANGER_TRIANGLE)
-                                .size(px(12.0))
-                                .text_color(red_300.opacity(0.8)),
-                        ),
-                )
-                .child(
-                    div()
-                        .flex_none()
-                        .font_weight(gpui::FontWeight::MEDIUM)
-                        .text_color(red_300.opacity(0.8))
-                        .child(SharedString::from("Error")),
-                )
-                .child(
-                    div()
-                        .min_w_0()
-                        .flex_1()
-                        .truncate()
-                        .text_color(theme.text.opacity(0.8))
-                        .child(message),
-                ),
-        )
-        .into_any_element()
-}
 
 /// A passive one-line chip marking a question the agent asked — the
 /// interactive controls live in the composer (chat-view.tsx `InputChip`):

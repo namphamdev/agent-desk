@@ -106,6 +106,11 @@ pub mod methods {
     pub const INSTALL_ACP_AGENT: &str = "InstallAcpAgent";
     pub const ACTIVATE_ACP_AGENT: &str = "ActivateAcpAgent";
     pub const REMOVE_ACP_AGENT: &str = "RemoveAcpAgent";
+    // Custom providers (ControlRpc, relay-forwardable and device-local).
+    pub const GET_CUSTOM_PROVIDERS: &str = "GetCustomProviders";
+    pub const UPSERT_CUSTOM_PROVIDER: &str = "UpsertCustomProvider";
+    pub const DELETE_CUSTOM_PROVIDER: &str = "DeleteCustomProvider";
+    pub const SELECT_CUSTOM_PROVIDER: &str = "SelectCustomProvider";
     // Uploads / attachments (ControlRpc, relay-forwardable — target the chat's host device).
     pub const UPLOAD_CHUNK: &str = "UploadChunk";
     pub const UPLOAD_COMMIT: &str = "UploadCommit";

@@ -9,9 +9,11 @@ pub mod agent;
 pub mod entities;
 pub mod harness;
 pub mod motion;
+pub mod providers;
 pub mod view;
 
 pub use acp::*;
 pub use agent::*;
 pub use entities::*;
 pub use harness::*;
+pub use providers::*;

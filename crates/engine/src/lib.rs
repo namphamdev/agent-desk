@@ -17,6 +17,7 @@ pub mod acp_agents;
 pub mod agent_accounts;
 pub mod auth;
 pub mod context_engine;
+pub mod custom_providers;
 pub mod diff_sync;
 pub mod doc_host;
 pub mod git;
@@ -37,6 +38,7 @@ pub mod workspace_host;
 pub use acp_agents::{ACP_CONFIG_FILE, AcpAgents};
 pub use agent_accounts::{AgentAccounts, AgentAccountsConfig};
 pub use auth::{Auth, AuthConfig, AuthState, AuthUser, OrgMembership};
+pub use custom_providers::{CUSTOM_PROVIDERS_FILE, CustomProviders};
 pub use diff_sync::{CheckoutDiffSync, DiffSidecar, DiffSnapshot, capture_diff};
 pub use doc_host::{ChatDocHandle, DocHost, DocHostConfig, EdgeConfig};
 pub use instance_lock::InstanceLock;
@@ -114,6 +116,7 @@ pub struct EngineCore {
     pub uploads: Uploads,
     pub agent_accounts: AgentAccounts,
     pub acp_agents: AcpAgents,
+    pub custom_providers: CustomProviders,
     pub device_id: String,
     /// Auth service (attached by [`Engine::run`]; a lazy dev-mode instance otherwise).
     auth: std::sync::Mutex<Option<Auth>>,
@@ -198,6 +201,7 @@ impl EngineCore {
         let uploads = Uploads::new(data_dir, edge.clone());
         let agent_accounts = AgentAccounts::new(AgentAccountsConfig::detect(data_dir));
         let acp_agents = AcpAgents::new(data_dir);
+        let custom_providers = CustomProviders::new(data_dir);
         sessions.set_titles(TitleGenerator::new(
             workspace.clone(),
             registry.clone(),
@@ -217,6 +221,7 @@ impl EngineCore {
             uploads,
             agent_accounts,
             acp_agents,
+            custom_providers,
             device_id,
             auth: std::sync::Mutex::new(None),
             links: std::sync::Mutex::new(None),
@@ -330,6 +335,7 @@ impl EngineCore {
             self.uploads.clone(),
             self.agent_accounts.clone(),
             self.acp_agents.clone(),
+            self.custom_providers.clone(),
         )
         .with_auth(self.auth());
         if let Some(links) = self.links() {
@@ -454,6 +460,11 @@ impl Engine {
             Arc::new(default_registry_with_config(
                 context_engine.as_ref().map(|_| context_engine::MCP_URL),
                 Some(config.data_dir.join(ACP_CONFIG_FILE)),
+                Some(
+                    config
+                        .data_dir
+                        .join(custom_providers::CUSTOM_PROVIDERS_FILE),
+                ),
             )),
             config.default_harness,
             edge.clone(),

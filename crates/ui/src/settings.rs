@@ -16,6 +16,7 @@ pub mod archived;
 pub mod composer;
 pub mod context_engine;
 pub mod devices;
+pub mod providers;
 pub mod shortcuts;
 pub mod widgets;
 pub mod workflows;

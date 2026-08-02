@@ -53,11 +53,13 @@ use serde::Deserialize;
 use tokio::sync::watch;
 
 use comet_doc::SessionCommandPayload;
-use comet_proto::{ChatConfig, HarnessId};
+use comet_proto::{ChatConfig, CustomProviderFormat, HarnessId};
 use comet_rpc::{LinkCache, RpcError, RpcReply, RpcService, methods, parse_params};
 
+use crate::acp_agents::AcpAgents;
 use crate::agent_accounts::AgentAccounts;
 use crate::auth::Auth;
+use crate::custom_providers::CustomProviders;
 use crate::diff_sync::CheckoutDiffSync;
 use crate::doc_host::DocHost;
 use crate::registry::HarnessRegistry;
@@ -222,6 +224,31 @@ struct AcpAgentParams {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct UpsertCustomProviderParams {
+    id: String,
+    name: String,
+    base_url: String,
+    #[serde(default)]
+    api_key: Option<String>,
+    formats: Vec<CustomProviderFormat>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DeleteCustomProviderParams {
+    id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SelectCustomProviderParams {
+    harness: HarnessId,
+    #[serde(default)]
+    provider_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct UploadChunkParams {
     upload_id: String,
     /// Base64 payload chunk.
@@ -356,7 +383,8 @@ pub struct EngineRpc {
     diff_sync: CheckoutDiffSync,
     uploads: Uploads,
     agent_accounts: AgentAccounts,
-    acp_agents: crate::AcpAgents,
+    acp_agents: AcpAgents,
+    custom_providers: CustomProviders,
     auth: Option<Auth>,
     links: Option<std::sync::Arc<LinkCache>>,
     updater: Option<comet_update::Updater>,
@@ -374,7 +402,8 @@ impl EngineRpc {
         diff_sync: CheckoutDiffSync,
         uploads: Uploads,
         agent_accounts: AgentAccounts,
-        acp_agents: crate::AcpAgents,
+        acp_agents: AcpAgents,
+        custom_providers: CustomProviders,
     ) -> Self {
         Self {
             sessions,
@@ -387,6 +416,7 @@ impl EngineRpc {
             uploads,
             agent_accounts,
             acp_agents,
+            custom_providers,
             auth: None,
             links: None,
             updater: None,
@@ -644,6 +674,10 @@ fn forwardable(method: &str) -> bool {
             | methods::INSTALL_ACP_AGENT
             | methods::ACTIVATE_ACP_AGENT
             | methods::REMOVE_ACP_AGENT
+            | methods::GET_CUSTOM_PROVIDERS
+            | methods::UPSERT_CUSTOM_PROVIDER
+            | methods::DELETE_CUSTOM_PROVIDER
+            | methods::SELECT_CUSTOM_PROVIDER
             // Uploads/attachments target the chat's host device (the agent reads
             // the committed file from that device's disk).
             | methods::UPLOAD_CHUNK
@@ -1220,6 +1254,41 @@ impl RpcService for EngineRpc {
                 let snapshot = self
                     .acp_agents
                     .remove(&p.agent_id)
+                    .await
+                    .map_err(|error| RpcError::Failed(error.to_string()))?;
+                RpcReply::value(&snapshot)
+            }
+            methods::GET_CUSTOM_PROVIDERS => {
+                let snapshot = self
+                    .custom_providers
+                    .list()
+                    .await
+                    .map_err(|error| RpcError::Failed(error.to_string()))?;
+                RpcReply::value(&snapshot)
+            }
+            methods::UPSERT_CUSTOM_PROVIDER => {
+                let p: UpsertCustomProviderParams = parse_params(params)?;
+                let snapshot = self
+                    .custom_providers
+                    .upsert(p.id, p.name, p.base_url, p.api_key, p.formats)
+                    .await
+                    .map_err(|error| RpcError::Failed(error.to_string()))?;
+                RpcReply::value(&snapshot)
+            }
+            methods::DELETE_CUSTOM_PROVIDER => {
+                let p: DeleteCustomProviderParams = parse_params(params)?;
+                let snapshot = self
+                    .custom_providers
+                    .delete(&p.id)
+                    .await
+                    .map_err(|error| RpcError::Failed(error.to_string()))?;
+                RpcReply::value(&snapshot)
+            }
+            methods::SELECT_CUSTOM_PROVIDER => {
+                let p: SelectCustomProviderParams = parse_params(params)?;
+                let snapshot = self
+                    .custom_providers
+                    .select(p.harness, p.provider_id)
                     .await
                     .map_err(|error| RpcError::Failed(error.to_string()))?;
                 RpcReply::value(&snapshot)

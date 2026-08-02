@@ -71,6 +71,7 @@ pub mod acp;
 pub mod claude;
 pub mod codex;
 pub mod mock;
+mod provider_models;
 pub mod shell_env;
 
 /// Bin directories where npm-installed CLIs land under Node version managers.

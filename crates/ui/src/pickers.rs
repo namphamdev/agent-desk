@@ -440,6 +440,21 @@ impl Pickers {
         &self.config
     }
 
+    /// Drop device-local model catalogs after provider settings change. The
+    /// next render/open reloads through `ListModels`, which discovers from the
+    /// newly selected provider.
+    pub fn invalidate_model_catalogs(&mut self, cx: &mut Context<Self>) {
+        self.models.clear();
+        self.config.model = None;
+        self.config.reasoning = None;
+        self.config.model_options.clear();
+        // Never send a remembered built-in model while the replacement
+        // provider catalog is still loading.
+        self.defaults.model_by_harness.clear();
+        self.save_defaults();
+        cx.notify();
+    }
+
     /// Harness is locked once the chat exists (feature-inventory §1.7).
     fn harness_locked(&self, cx: &App) -> bool {
         self.state.read(cx).selected_chat.is_some()
@@ -666,6 +681,11 @@ impl Pickers {
             PickerKind::HarnessModel | PickerKind::Traits => {
                 self.ensure_harnesses(cx);
                 if let Some(harness) = self.effective_harness(cx) {
+                    // Provider selection is device-local settings outside this
+                    // entity. Refresh on every picker open so switching to a
+                    // custom provider immediately replaces a previously
+                    // cached built-in catalog.
+                    self.models.remove(&harness);
                     self.ensure_models(harness, cx);
                 }
             }
@@ -1042,6 +1062,7 @@ impl Pickers {
         self.save_defaults();
         self.active = 0;
         self.model_scroll.set_offset(gpui::Point::default());
+        self.models.remove(&harness);
         self.ensure_models(harness, cx);
         cx.notify();
     }

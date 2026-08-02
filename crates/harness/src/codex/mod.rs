@@ -54,6 +54,9 @@ use normalize::{
 };
 use rpc::{Incoming, RpcClient};
 
+const CUSTOM_PROVIDER_ID: &str = "comet_custom";
+const CUSTOM_PROVIDER_API_KEY_ENV: &str = "COMET_CODEX_CUSTOM_PROVIDER_API_KEY";
+
 /// Locate the device's installed Codex CLI: `CODEX_EXECUTABLE`, then our own
 /// PATH, then the login-shell PATH snapshot (the user's shell init shapes
 /// PATH in ways a GUI/service launch never sees — see [`crate::shell_env`]),
@@ -129,6 +132,7 @@ fn worktree_on_slashed_branch(cwd: &str) -> bool {
 pub struct CodexHarness {
     executable: Option<PathBuf>,
     mcp_server_url: Option<String>,
+    custom_providers_path: Option<PathBuf>,
     /// Grace between `turn/interrupt` and SIGTERM.
     interrupt_grace: Duration,
     /// Grace between SIGTERM and SIGKILL.
@@ -140,6 +144,7 @@ impl Default for CodexHarness {
         Self {
             executable: None,
             mcp_server_url: None,
+            custom_providers_path: None,
             interrupt_grace: Duration::from_secs(2),
             kill_grace: Duration::from_secs(3),
         }
@@ -160,6 +165,12 @@ impl CodexHarness {
     /// Add Comet's managed code-context MCP server to this invocation.
     pub fn with_mcp_server(mut self, url: impl Into<String>) -> Self {
         self.mcp_server_url = Some(url.into());
+        self
+    }
+
+    /// Set the custom providers settings file path.
+    pub fn with_custom_providers(mut self, path: impl Into<PathBuf>) -> Self {
+        self.custom_providers_path = Some(path.into());
         self
     }
 
@@ -188,6 +199,62 @@ impl CodexHarness {
     fn build_command(&self, exe: &PathBuf, cwd: &str) -> Command {
         let mut cmd = Command::new(exe);
         crate::compose_child_path(&mut cmd, exe);
+
+        if let Some(path) = &self.custom_providers_path {
+            if let Ok(json) = std::fs::read_to_string(path) {
+                if let Ok(config) = serde_json::from_str::<serde_json::Value>(&json) {
+                    if let Some(id) = config
+                        .get("selection")
+                        .and_then(|s| s.get("codex"))
+                        .and_then(|v| v.as_str())
+                    {
+                        if let Some(providers) = config.get("providers").and_then(|p| p.as_array())
+                        {
+                            if let Some(provider) = providers
+                                .iter()
+                                .find(|p| p.get("id").and_then(|i| i.as_str()) == Some(id))
+                            {
+                                if let (Some(name), Some(base_url), Some(api_key)) = (
+                                    provider.get("name").and_then(|value| value.as_str()),
+                                    provider.get("baseUrl").and_then(|value| value.as_str()),
+                                    provider.get("apiKey").and_then(|value| value.as_str()),
+                                ) {
+                                    let base_url =
+                                        crate::provider_models::normalized_api_base_url(base_url)
+                                            .map(|url| url.to_string())
+                                            .unwrap_or_else(|_| base_url.to_string());
+                                    // Codex does not route the built-in OpenAI
+                                    // provider from OPENAI_BASE_URL alone.
+                                    // Define and select an explicit Responses
+                                    // provider through its documented config.
+                                    cmd.arg("-c").arg(format!(
+                                        "model_provider={}",
+                                        serde_json::to_string(CUSTOM_PROVIDER_ID).unwrap()
+                                    ));
+                                    cmd.arg("-c").arg(format!(
+                                        "model_providers.{CUSTOM_PROVIDER_ID}.name={}",
+                                        serde_json::to_string(name).unwrap()
+                                    ));
+                                    cmd.arg("-c").arg(format!(
+                                        "model_providers.{CUSTOM_PROVIDER_ID}.base_url={}",
+                                        serde_json::to_string(&base_url).unwrap()
+                                    ));
+                                    cmd.arg("-c").arg(format!(
+                                        "model_providers.{CUSTOM_PROVIDER_ID}.env_key={}",
+                                        serde_json::to_string(CUSTOM_PROVIDER_API_KEY_ENV).unwrap()
+                                    ));
+                                    cmd.arg("-c").arg(format!(
+                                        "model_providers.{CUSTOM_PROVIDER_ID}.wire_api=\"responses\""
+                                    ));
+                                    cmd.env(CUSTOM_PROVIDER_API_KEY_ENV, api_key);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         if let Some(url) = &self.mcp_server_url {
             cmd.args([
                 "-c",
@@ -235,6 +302,15 @@ impl Harness for CodexHarness {
     /// paging `model/list` (experimentalApi) exactly as codex.ts does.
     async fn models(&self) -> Result<Vec<Model>, HarnessError> {
         self.resolve_executable()?;
+        if let Some(models) = crate::provider_models::discover_selected_provider_models(
+            self.custom_providers_path.as_deref(),
+            HarnessId::Codex,
+            self.reasoning_levels(),
+        )
+        .await?
+        {
+            return Ok(models);
+        }
         Ok(static_models())
     }
 
@@ -1185,6 +1261,63 @@ mod tests {
         assert_eq!(
             command.as_std().get_current_dir(),
             Some(std::path::Path::new("/tmp"))
+        );
+    }
+
+    #[test]
+    fn selected_responses_provider_is_applied_to_new_processes() {
+        let temp = tempfile::tempdir().unwrap();
+        let providers = temp.path().join("custom-providers.json");
+        std::fs::write(
+            &providers,
+            r#"{
+                "providers": [{
+                    "id": "proxy",
+                    "name": "Proxy",
+                    "baseUrl": "https://proxy.example",
+                    "apiKey": "secret",
+                    "formats": ["responses"]
+                }],
+                "selection": {"codex": "proxy"}
+            }"#,
+        )
+        .unwrap();
+        let harness = CodexHarness::new().with_custom_providers(providers);
+        let command = harness.build_command(&PathBuf::from("codex"), "/tmp");
+        let args = command
+            .as_std()
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        let config = args
+            .windows(2)
+            .filter(|pair| pair[0] == "-c")
+            .map(|pair| pair[1].as_str())
+            .collect::<Vec<_>>();
+        assert!(config.contains(&r#"model_provider="comet_custom""#));
+        assert!(config.contains(&r#"model_providers.comet_custom.name="Proxy""#));
+        assert!(
+            config.contains(&r#"model_providers.comet_custom.base_url="https://proxy.example/v1""#)
+        );
+        assert!(config.contains(
+            &r#"model_providers.comet_custom.env_key="COMET_CODEX_CUSTOM_PROVIDER_API_KEY""#
+        ));
+        assert!(config.contains(&r#"model_providers.comet_custom.wire_api="responses""#));
+        assert_eq!(args.last().map(String::as_str), Some("app-server"));
+        let env = command
+            .as_std()
+            .get_envs()
+            .map(|(key, value)| {
+                (
+                    key.to_string_lossy().into_owned(),
+                    value.map(|value| value.to_string_lossy().into_owned()),
+                )
+            })
+            .collect::<std::collections::HashMap<_, _>>();
+        assert_eq!(
+            env.get(CUSTOM_PROVIDER_API_KEY_ENV)
+                .and_then(Option::as_deref),
+            Some("secret")
         );
     }
 

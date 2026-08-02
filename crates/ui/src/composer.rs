@@ -2081,6 +2081,12 @@ impl Composer {
             .update(cx, |pickers, cx| pickers.open_model_menu(window, cx));
     }
 
+    pub fn invalidate_model_catalogs(&mut self, cx: &mut Context<Self>) {
+        self.pickers
+            .update(cx, |pickers, cx| pickers.invalidate_model_catalogs(cx));
+        cx.notify();
+    }
+
     // ---- attachment staging (use-attachments.ts) ----
 
     /// Staged attachments for the chat the composer is showing.

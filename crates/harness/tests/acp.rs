@@ -39,6 +39,21 @@ fn mcp_rejecting_fixture_command() -> String {
     .to_string()
 }
 
+fn process_cpu_time() -> Duration {
+    let mut usage = std::mem::MaybeUninit::<libc::rusage>::zeroed();
+    assert_eq!(
+        unsafe { libc::getrusage(libc::RUSAGE_SELF, usage.as_mut_ptr()) },
+        0
+    );
+    let usage = unsafe { usage.assume_init() };
+    let micros = |time: libc::timeval| {
+        (time.tv_sec as u64)
+            .saturating_mul(1_000_000)
+            .saturating_add(time.tv_usec as u64)
+    };
+    Duration::from_micros(micros(usage.ru_utime) + micros(usage.ru_stime))
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn samples_live_process_tree_memory() {
@@ -100,6 +115,57 @@ async fn does_not_attach_mcp_servers_during_model_discovery() {
             .collect::<Vec<_>>(),
         vec!["acp-fast", "acp-smart"]
     );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn parked_acp_session_does_not_busy_poll() {
+    let harness = AcpHarness::with_command(fixture_path().display().to_string());
+    let (steer_tx, steer_rx) = mpsc::channel(1);
+    let controls = RunControls {
+        request_input: Box::new(|_| {
+            let (_tx, rx) = oneshot::channel();
+            rx
+        }),
+        steering: steer_rx,
+        interrupt: CancellationToken::new(),
+        report_memory: Box::new(|_| {}),
+    };
+    let request = RunRequest {
+        prompt: "Say hello".into(),
+        model: None,
+        reasoning: None,
+        model_options: serde_json::Map::new(),
+        cwd: "/tmp".into(),
+        sandbox: SandboxLevel::WorkspaceWrite,
+        auto_approve: true,
+        resume: None,
+        attachments: vec![],
+        seed: None,
+        seed_role: None,
+        seed_purpose: None,
+    };
+
+    let mut stream = harness.run(request, controls).await.unwrap();
+    loop {
+        let event = tokio::time::timeout(Duration::from_secs(10), stream.next())
+            .await
+            .expect("ACP fixture should complete")
+            .expect("parked ACP stream should remain open")
+            .unwrap();
+        if matches!(event, AgentEvent::Done { .. }) {
+            break;
+        }
+    }
+
+    let before = process_cpu_time();
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let cpu = process_cpu_time().saturating_sub(before);
+    assert!(
+        cpu < Duration::from_millis(250),
+        "idle ACP transport consumed {cpu:?} of CPU in 500ms"
+    );
+
+    drop(steer_tx);
 }
 
 #[tokio::test]

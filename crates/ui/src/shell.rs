@@ -36,6 +36,7 @@ use crate::settings::acp_agents::AcpAgentsPage;
 use crate::settings::archived::ArchivedPage;
 use crate::settings::context_engine::ContextEnginePage;
 use crate::settings::devices::DevicesPage;
+use crate::settings::providers::{ProvidersEvent, ProvidersPage};
 use crate::settings::shortcuts::{ShortcutsEvent, ShortcutsPage};
 use crate::settings::workflows::{WorkflowsEvent, WorkflowsPage};
 use crate::settings::{
@@ -145,6 +146,7 @@ pub fn apply_keymap(cx: &mut App, keymap: &KeymapConfig) {
 pub enum SettingsSection {
     Devices,
     Agents,
+    Providers,
     AcpAgents,
     ContextEngine,
     Shortcuts,
@@ -153,9 +155,10 @@ pub enum SettingsSection {
 }
 
 impl SettingsSection {
-    pub const ALL: [SettingsSection; 7] = [
+    pub const ALL: [SettingsSection; 8] = [
         SettingsSection::Devices,
         SettingsSection::Agents,
+        SettingsSection::Providers,
         SettingsSection::AcpAgents,
         SettingsSection::ContextEngine,
         SettingsSection::Shortcuts,
@@ -169,6 +172,7 @@ impl SettingsSection {
         match self {
             SettingsSection::Devices => "Devices",
             SettingsSection::Agents => "Accounts",
+            SettingsSection::Providers => "Providers",
             SettingsSection::AcpAgents => "ACP agents",
             SettingsSection::ContextEngine => "Code context",
             SettingsSection::Shortcuts => "Shortcuts",
@@ -444,6 +448,8 @@ pub struct Shell {
     workflows_page: Option<Entity<WorkflowsPage>>,
     shortcuts_page: Option<Entity<ShortcutsPage>>,
     accounts_page: Option<Entity<AccountsPage>>,
+    providers_page: Option<Entity<ProvidersPage>>,
+    providers_sub: Option<Subscription>,
     acp_agents_page: Option<Entity<AcpAgentsPage>>,
     context_engine_page: Option<Entity<ContextEnginePage>>,
     shortcuts_sub: Option<Subscription>,
@@ -622,6 +628,7 @@ impl Shell {
                 Route::Settings(SettingsSection::Devices)
             }
             Some("settings/agents") => Route::Settings(SettingsSection::Agents),
+            Some("settings/providers") => Route::Settings(SettingsSection::Providers),
             Some("settings/acp") => Route::Settings(SettingsSection::AcpAgents),
             Some("settings/context") => Route::Settings(SettingsSection::ContextEngine),
             Some("settings/shortcuts") => Route::Settings(SettingsSection::Shortcuts),
@@ -666,6 +673,8 @@ impl Shell {
             workflows_page: None,
             shortcuts_page: None,
             accounts_page: None,
+            providers_page: None,
+            providers_sub: None,
             acp_agents_page: None,
             context_engine_page: None,
             shortcuts_sub: None,
@@ -1214,6 +1223,28 @@ impl Shell {
                     None => Empty.into_any_element(),
                 }
             }
+            SettingsSection::Providers => {
+                if self.providers_page.is_none() {
+                    let state = self.state.clone();
+                    let page = cx.new(|cx| ProvidersPage::new(state, cx));
+                    self.providers_sub = Some(cx.subscribe(
+                        &page,
+                        |this: &mut Shell, _, event: &ProvidersEvent, cx| {
+                            if matches!(event, ProvidersEvent::Changed) {
+                                this.composer.update(cx, |composer, cx| {
+                                    composer.invalidate_model_catalogs(cx);
+                                });
+                                cx.notify();
+                            }
+                        },
+                    ));
+                    self.providers_page = Some(page);
+                }
+                match &self.providers_page {
+                    Some(page) => page.clone().into_any_element(),
+                    None => Empty.into_any_element(),
+                }
+            }
             SettingsSection::AcpAgents => {
                 if self.acp_agents_page.is_none() {
                     let state = self.state.clone();
@@ -1753,6 +1784,7 @@ impl Shell {
         let section_icon = |item: SettingsSection| match item {
             SettingsSection::Devices => icons::MONITOR,
             SettingsSection::Agents => icons::KEY_MINIMALISTIC,
+            SettingsSection::Providers => icons::GLOBAL,
             SettingsSection::AcpAgents => icons::WIDGET,
             SettingsSection::ContextEngine => icons::MAGNIFER,
             SettingsSection::Shortcuts => icons::KEYBOARD,

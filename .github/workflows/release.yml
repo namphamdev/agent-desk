@@ -3,6 +3,7 @@ name: release
 # Build release artifacts and publish them:
 #   - Linux headless tarballs (x86_64 + aarch64) via scripts/package-linux.sh
 #   - macOS dmg (Apple silicon) via scripts/package-macos.sh
+#   - Windows zip (x86_64) via the native Windows runner
 # then create a GitHub Release AND upload everything to the
 # `comet-native-releases` R2 bucket (served at comet.zeron.sh/releases/* for
 # `curl -fsSL https://comet.zeron.sh/install.sh | sh`), bumping latest.txt.
@@ -70,9 +71,38 @@ jobs:
             target/package/*.tar.gz
           if-no-files-found: error
 
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: rust toolchain (rust-toolchain.toml)
+        shell: pwsh
+        run: rustup show active-toolchain; if ($LASTEXITCODE -ne 0) { rustup toolchain install }
+      - uses: Swatinem/rust-cache@v2
+      - name: package zip
+        shell: pwsh
+        run: |
+          $version = (Select-String -Path Cargo.toml -Pattern '^version = "([^"]+)"' |
+            Select-Object -First 1).Matches.Groups[1].Value
+          $outDir = Join-Path $PWD 'target/package'
+          $stage = Join-Path $outDir "comet-$version-windows-x86_64"
+          $zip = "$stage.zip"
+
+          cargo build --release -p comet
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item target/release/comet.exe (Join-Path $stage 'comet.exe')
+          Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zip -Force
+          Remove-Item -Recurse -Force $stage
+          Write-Host "packaged: $zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-x86_64
+          path: target/package/*.zip
+          if-no-files-found: error
+
   publish:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [linux, macos]
+    needs: [linux, macos, windows]
     runs-on: ubuntu-latest
     env:
       # `secrets` is not a valid context in step `if:` expressions — surface

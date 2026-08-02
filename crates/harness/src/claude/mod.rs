@@ -97,6 +97,7 @@ fn option_is_on(options: &serde_json::Map<String, Value>, key: &str) -> bool {
 pub struct ClaudeHarness {
     executable: Option<PathBuf>,
     mcp_server_url: Option<String>,
+    custom_providers_path: Option<PathBuf>,
     /// Grace between the interrupt control request and SIGTERM.
     interrupt_grace: Duration,
     /// Grace between SIGTERM and SIGKILL.
@@ -108,6 +109,7 @@ impl Default for ClaudeHarness {
         Self {
             executable: None,
             mcp_server_url: None,
+            custom_providers_path: None,
             interrupt_grace: Duration::from_secs(2),
             kill_grace: Duration::from_secs(3),
         }
@@ -128,6 +130,12 @@ impl ClaudeHarness {
     /// Add Comet's managed code-context MCP server to this invocation.
     pub fn with_mcp_server(mut self, url: impl Into<String>) -> Self {
         self.mcp_server_url = Some(url.into());
+        self
+    }
+
+    /// Set the custom providers settings file path.
+    pub fn with_custom_providers(mut self, path: impl Into<PathBuf>) -> Self {
+        self.custom_providers_path = Some(path.into());
         self
     }
 
@@ -232,6 +240,38 @@ impl ClaudeHarness {
         if !request.cwd.is_empty() {
             cmd.current_dir(&request.cwd);
         }
+
+        if let Some(path) = &self.custom_providers_path {
+            if let Ok(json) = std::fs::read_to_string(path) {
+                if let Ok(config) = serde_json::from_str::<serde_json::Value>(&json) {
+                    if let Some(id) = config
+                        .get("selection")
+                        .and_then(|s| s.get("claude-code"))
+                        .and_then(|v| v.as_str())
+                    {
+                        if let Some(providers) = config.get("providers").and_then(|p| p.as_array())
+                        {
+                            if let Some(provider) = providers
+                                .iter()
+                                .find(|p| p.get("id").and_then(|i| i.as_str()) == Some(id))
+                            {
+                                if let Some(base_url) =
+                                    provider.get("baseUrl").and_then(|u| u.as_str())
+                                {
+                                    cmd.env("ANTHROPIC_BASE_URL", base_url);
+                                }
+                                if let Some(api_key) =
+                                    provider.get("apiKey").and_then(|k| k.as_str())
+                                {
+                                    cmd.env("ANTHROPIC_API_KEY", api_key);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -269,6 +309,15 @@ impl Harness for ClaudeHarness {
     /// like the TS harness's discovery call.
     async fn models(&self) -> Result<Vec<Model>, HarnessError> {
         self.resolve_executable()?;
+        if let Some(models) = crate::provider_models::discover_selected_provider_models(
+            self.custom_providers_path.as_deref(),
+            HarnessId::ClaudeCode,
+            self.reasoning_levels(),
+        )
+        .await?
+        {
+            return Ok(models);
+        }
         Ok(static_models())
     }
 
@@ -830,6 +879,60 @@ mod tests {
         assert_eq!(
             config["mcpServers"]["codebase-retrieval"]["url"],
             "http://127.0.0.1:6699/mcp"
+        );
+    }
+
+    #[test]
+    fn selected_anthropic_provider_is_applied_to_new_processes() {
+        let temp = tempfile::tempdir().unwrap();
+        let providers = temp.path().join("custom-providers.json");
+        std::fs::write(
+            &providers,
+            r#"{
+                "providers": [{
+                    "id": "proxy",
+                    "name": "Proxy",
+                    "baseUrl": "https://proxy.example",
+                    "apiKey": "secret",
+                    "formats": ["anthropic"]
+                }],
+                "selection": {"claude-code": "proxy"}
+            }"#,
+        )
+        .unwrap();
+        let harness = ClaudeHarness::new().with_custom_providers(providers);
+        let request = RunRequest {
+            prompt: "p".into(),
+            model: None,
+            reasoning: None,
+            model_options: serde_json::Map::new(),
+            cwd: String::new(),
+            sandbox: comet_proto::SandboxLevel::WorkspaceWrite,
+            auto_approve: false,
+            resume: None,
+            attachments: Vec::new(),
+            seed: None,
+            seed_purpose: None,
+            seed_role: None,
+        };
+        let command = harness.build_command(&PathBuf::from("claude"), &request);
+        let env = command
+            .as_std()
+            .get_envs()
+            .map(|(key, value)| {
+                (
+                    key.to_string_lossy().into_owned(),
+                    value.map(|value| value.to_string_lossy().into_owned()),
+                )
+            })
+            .collect::<std::collections::HashMap<_, _>>();
+        assert_eq!(
+            env.get("ANTHROPIC_BASE_URL").and_then(Option::as_deref),
+            Some("https://proxy.example")
+        );
+        assert_eq!(
+            env.get("ANTHROPIC_API_KEY").and_then(Option::as_deref),
+            Some("secret")
         );
     }
 

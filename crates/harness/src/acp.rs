@@ -21,13 +21,16 @@ use agent_client_protocol::schema::v1::{
     SessionUpdate, SetSessionConfigOptionRequest, StopReason, TextContent, ToolCall,
     ToolCallStatus, ToolKind,
 };
-use agent_client_protocol::{AcpAgent, AcpAgentConfig, Agent, ConnectionTo, LineDirection};
+use agent_client_protocol::{
+    AcpAgent, AcpAgentConfig, Agent, ConnectTo, ConnectionTo, LineDirection, Lines,
+};
 use async_trait::async_trait;
 use base64::Engine;
-use futures::StreamExt;
 use futures::stream::BoxStream;
+use futures::{AsyncBufReadExt, StreamExt};
 use serde::Deserialize;
 use tokio::sync::mpsc;
+use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 use comet_proto::{
     AgentEvent, DoneStatus, HarnessId, Model, PermissionMode, ReasoningLevel, RunRequest,
@@ -52,6 +55,7 @@ pub struct AcpHarness {
     command: Option<String>,
     config_file: Option<PathBuf>,
     mcp_server_url: Option<String>,
+    custom_providers_path: Option<PathBuf>,
 }
 
 impl AcpHarness {
@@ -65,6 +69,7 @@ impl AcpHarness {
             command: Some(command.into()),
             config_file: None,
             mcp_server_url: None,
+            custom_providers_path: None,
         }
     }
 
@@ -77,6 +82,12 @@ impl AcpHarness {
     /// Add Comet's managed code-context MCP server to each ACP session.
     pub fn with_mcp_server(mut self, url: impl Into<String>) -> Self {
         self.mcp_server_url = Some(url.into());
+        self
+    }
+
+    /// Set the custom providers settings file path.
+    pub fn with_custom_providers(mut self, path: impl Into<PathBuf>) -> Self {
+        self.custom_providers_path = Some(path.into());
         self
     }
 
@@ -102,6 +113,70 @@ impl AcpHarness {
                      {ENV_AGENT}"
                 ))
             })
+    }
+
+    fn custom_env(&self) -> Vec<(String, String)> {
+        let mut env = Vec::new();
+        if let Some(path) = &self.custom_providers_path {
+            if let Ok(json) = std::fs::read_to_string(path) {
+                if let Ok(config) = serde_json::from_str::<serde_json::Value>(&json) {
+                    if let Some(id) = config
+                        .get("selection")
+                        .and_then(|s| s.get("acp"))
+                        .and_then(|v| v.as_str())
+                    {
+                        if let Some(providers) = config.get("providers").and_then(|p| p.as_array())
+                        {
+                            if let Some(provider) = providers
+                                .iter()
+                                .find(|p| p.get("id").and_then(|i| i.as_str()) == Some(id))
+                            {
+                                let has_anthropic = provider
+                                    .get("formats")
+                                    .and_then(|f| f.as_array())
+                                    .map_or(false, |f| {
+                                        f.iter().any(|v| v.as_str() == Some("anthropic"))
+                                    });
+                                let has_responses = provider
+                                    .get("formats")
+                                    .and_then(|f| f.as_array())
+                                    .map_or(false, |f| {
+                                        f.iter().any(|v| {
+                                            v.as_str() == Some("responses")
+                                                || v.as_str() == Some("chat-completions")
+                                        })
+                                    });
+                                if has_anthropic {
+                                    if let Some(base_url) =
+                                        provider.get("baseUrl").and_then(|u| u.as_str())
+                                    {
+                                        env.push(("ANTHROPIC_BASE_URL".into(), base_url.into()));
+                                    }
+                                    if let Some(api_key) =
+                                        provider.get("apiKey").and_then(|k| k.as_str())
+                                    {
+                                        env.push(("ANTHROPIC_API_KEY".into(), api_key.into()));
+                                    }
+                                }
+                                if has_responses {
+                                    if let Some(base_url) =
+                                        provider.get("baseUrl").and_then(|u| u.as_str())
+                                    {
+                                        env.push(("OPENAI_BASE_URL".into(), base_url.into()));
+                                    }
+                                    if let Some(api_key) =
+                                        provider.get("apiKey").and_then(|k| k.as_str())
+                                    {
+                                        env.push(("OPENAI_API_KEY".into(), api_key.into()));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        env
     }
 }
 
@@ -144,10 +219,19 @@ impl Harness for AcpHarness {
 
     async fn models(&self) -> Result<Vec<Model>, HarnessError> {
         let command = self.command()?;
+        if let Some(models) = crate::provider_models::discover_selected_provider_models(
+            self.custom_providers_path.as_deref(),
+            HarnessId::Acp,
+            self.reasoning_levels(),
+        )
+        .await?
+        {
+            return Ok(models);
+        }
         let agent = AcpAgent::from_str(&command).map_err(|error| {
             HarnessError::Protocol(format!("invalid ACP agent config: {error}"))
         })?;
-        let agent = with_stderr_logging(agent);
+        let agent = TokioAcpAgent::new(agent, self.custom_env());
         let discovered_models = Arc::new(Mutex::new(None));
         let discovery_result = agent_client_protocol::Client
             .builder()
@@ -216,10 +300,11 @@ impl Harness for AcpHarness {
         let permission_input = request_input.clone();
         let permission_mode = request.effective_permission_mode();
         let mcp_server_url = self.mcp_server_url.clone();
+        let custom_env = self.custom_env();
 
         tokio::spawn(async move {
             let (agent, pid_file) = instrument_agent_for_memory(agent);
-            let agent = with_stderr_logging(agent);
+            let agent = TokioAcpAgent::new(agent, custom_env);
             let memory_stop = crate::CancellationToken::new();
             let memory_reporter: Arc<dyn Fn(Option<u64>) + Send + Sync> = report_memory.into();
             let memory_task = pid_file.clone().map(|path| {
@@ -297,8 +382,138 @@ impl Harness for AcpHarness {
     }
 }
 
-fn with_stderr_logging(agent: AcpAgent) -> AcpAgent {
-    agent.with_debug(|line, direction| match direction {
+type DebugCallback = Arc<dyn Fn(&str, LineDirection) + Send + Sync + 'static>;
+
+/// Tokio-native replacement for the SDK's `AcpAgent` subprocess transport.
+///
+/// agent-client-protocol 2.0 uses async-process for child pipes. Its readers
+/// busy-poll at idle on both macOS and Linux (upstream issue #254), consuming
+/// most of a core per parked ACP session. Comet already runs a Tokio runtime,
+/// so keep the SDK's protocol implementation and supply it Tokio child pipes.
+struct TokioAcpAgent {
+    config: AcpAgentConfig,
+    debug: DebugCallback,
+    custom_env: Vec<(String, String)>,
+}
+
+impl TokioAcpAgent {
+    fn new(agent: AcpAgent, custom_env: Vec<(String, String)>) -> Self {
+        Self {
+            config: agent.into_config(),
+            debug: Arc::new(log_acp_line),
+            custom_env,
+        }
+    }
+}
+
+impl ConnectTo<agent_client_protocol::Client> for TokioAcpAgent {
+    async fn connect_to(self, client: impl ConnectTo<Agent>) -> agent_client_protocol::Result<()> {
+        let mut command = tokio::process::Command::new(self.config.command());
+        command
+            .args(self.config.arguments())
+            .envs(self.config.environment())
+            .envs(self.custom_env.into_iter())
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true);
+        #[cfg(unix)]
+        {
+            command.process_group(0);
+        }
+
+        let mut child = command.spawn().map_err(acp_io_error)?;
+        let stdin = child.stdin.take().ok_or_else(|| {
+            acp_internal_error("failed to open stdin for the ACP agent subprocess")
+        })?;
+        let stdout = child.stdout.take().ok_or_else(|| {
+            acp_internal_error("failed to open stdout for the ACP agent subprocess")
+        })?;
+        let stderr = child.stderr.take().ok_or_else(|| {
+            acp_internal_error("failed to open stderr for the ACP agent subprocess")
+        })?;
+
+        let stderr_debug = self.debug.clone();
+        let stderr_task = tokio::spawn(async move {
+            use tokio::io::AsyncBufReadExt as _;
+
+            let mut lines = tokio::io::BufReader::new(stderr).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                stderr_debug(&line, LineDirection::Stderr);
+            }
+        });
+
+        let incoming_debug = self.debug.clone();
+        let incoming = futures::io::BufReader::new(stdout.compat())
+            .lines()
+            .inspect(move |line| {
+                if let Ok(line) = line {
+                    incoming_debug(line, LineDirection::Stdout);
+                }
+            });
+        let outgoing_debug = self.debug;
+        let outgoing = futures::sink::unfold(
+            (stdin.compat_write(), outgoing_debug),
+            async move |(mut writer, debug), line: String| {
+                use futures::AsyncWriteExt as _;
+                debug(&line, LineDirection::Stdin);
+                writer.write_all(line.as_bytes()).await?;
+                writer.write_all(b"\n").await?;
+                writer.flush().await?;
+                Ok::<_, std::io::Error>((writer, debug))
+            },
+        );
+
+        let protocol = ConnectTo::<agent_client_protocol::Client>::connect_to(
+            Lines::new(outgoing, incoming),
+            client,
+        );
+        tokio::pin!(protocol);
+        let result = tokio::select! {
+            result = &mut protocol => result,
+            status = child.wait() => match status {
+                Ok(status) if status.success() => Ok(()),
+                Ok(status) => Err(acp_internal_error(format!(
+                    "ACP agent exited unexpectedly ({status})"
+                ))),
+                Err(error) => Err(acp_io_error(error)),
+            },
+        };
+
+        terminate_process_group(&mut child);
+        stderr_task.abort();
+        let _ = stderr_task.await;
+        result
+    }
+}
+
+fn acp_io_error(error: std::io::Error) -> agent_client_protocol::Error {
+    acp_internal_error(format!("ACP subprocess I/O failed: {error}"))
+}
+
+fn acp_internal_error(message: impl Into<String>) -> agent_client_protocol::Error {
+    agent_client_protocol::Error::internal_error().data(message.into())
+}
+
+#[cfg(unix)]
+fn terminate_process_group(child: &mut tokio::process::Child) {
+    if let Some(pid) = child.id() {
+        // The child is its own process-group leader, so this also cleans up
+        // package runners and any agent descendants.
+        unsafe {
+            libc::kill(-(pid as i32), libc::SIGKILL);
+        }
+    }
+    let _ = child.start_kill();
+}
+
+#[cfg(not(unix))]
+fn terminate_process_group(child: &mut tokio::process::Child) {
+    let _ = child.start_kill();
+}
+
+fn log_acp_line(line: &str, direction: LineDirection) {
+    match direction {
         LineDirection::Stderr => tracing::warn!(stderr = %line, "ACP agent stderr"),
         LineDirection::Stdout => {
             if let Ok(value) = serde_json::from_str::<serde_json::Value>(line)
@@ -308,7 +523,7 @@ fn with_stderr_logging(agent: AcpAgent) -> AcpAgent {
             }
         }
         LineDirection::Stdin => {}
-    })
+    }
 }
 
 #[cfg(unix)]
@@ -1167,6 +1382,46 @@ mod tests {
         .unwrap();
         let harness = AcpHarness::new().with_config_file(config);
         assert_eq!(harness.command().unwrap(), "second-agent --acp");
+    }
+
+    #[test]
+    fn selected_provider_is_applied_to_acp_processes() {
+        let temp = tempfile::tempdir().unwrap();
+        let providers = temp.path().join("custom-providers.json");
+        std::fs::write(
+            &providers,
+            r#"{
+                "providers": [{
+                    "id": "proxy",
+                    "name": "Proxy",
+                    "baseUrl": "https://proxy.example",
+                    "apiKey": "secret",
+                    "formats": ["anthropic", "chat-completions"]
+                }],
+                "selection": {"acp": "proxy"}
+            }"#,
+        )
+        .unwrap();
+        let env = AcpHarness::new()
+            .with_custom_providers(providers)
+            .custom_env();
+        let env = env.into_iter().collect::<std::collections::HashMap<_, _>>();
+        assert_eq!(
+            env.get("ANTHROPIC_BASE_URL").map(String::as_str),
+            Some("https://proxy.example")
+        );
+        assert_eq!(
+            env.get("ANTHROPIC_API_KEY").map(String::as_str),
+            Some("secret")
+        );
+        assert_eq!(
+            env.get("OPENAI_BASE_URL").map(String::as_str),
+            Some("https://proxy.example")
+        );
+        assert_eq!(
+            env.get("OPENAI_API_KEY").map(String::as_str),
+            Some("secret")
+        );
     }
 
     #[test]

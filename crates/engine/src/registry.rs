@@ -130,13 +130,14 @@ pub fn default_registry() -> HarnessRegistry {
 /// Production registry with an optional Comet-managed HTTP MCP server injected
 /// into the Claude Code and Codex subprocesses.
 pub fn default_registry_with_mcp(mcp_server_url: Option<&str>) -> HarnessRegistry {
-    default_registry_with_config(mcp_server_url, None)
+    default_registry_with_config(mcp_server_url, None, None)
 }
 
 /// Production registry with optional MCP and device-local ACP configuration.
 pub fn default_registry_with_config(
     mcp_server_url: Option<&str>,
     acp_config_file: Option<std::path::PathBuf>,
+    custom_providers_path: Option<std::path::PathBuf>,
 ) -> HarnessRegistry {
     // Warm the login-shell PATH snapshot in the background so the first
     // claude/codex resolve doesn't pay the shell-startup latency inline.
@@ -200,10 +201,15 @@ pub fn default_registry_with_config(
         },
         Box::new({
             let mcp_server_url = mcp_server_url.map(str::to_owned);
+            let custom_providers = custom_providers_path.clone();
             move || {
                 let harness = comet_harness::ClaudeHarness::new();
                 let harness = match &mcp_server_url {
                     Some(url) => harness.with_mcp_server(url.clone()),
+                    None => harness,
+                };
+                let harness = match &custom_providers {
+                    Some(path) => harness.with_custom_providers(path.clone()),
                     None => harness,
                 };
                 Ok(Arc::new(harness) as Arc<dyn Harness>)
@@ -234,10 +240,15 @@ pub fn default_registry_with_config(
         },
         Box::new({
             let mcp_server_url = mcp_server_url.map(str::to_owned);
+            let custom_providers = custom_providers_path.clone();
             move || {
                 let harness = comet_harness::CodexHarness::new();
                 let harness = match &mcp_server_url {
                     Some(url) => harness.with_mcp_server(url.clone()),
+                    None => harness,
+                };
+                let harness = match &custom_providers {
+                    Some(path) => harness.with_custom_providers(path.clone()),
                     None => harness,
                 };
                 Ok(Arc::new(harness) as Arc<dyn Harness>)
@@ -254,6 +265,7 @@ pub fn default_registry_with_config(
         },
         Box::new({
             let mcp_server_url = mcp_server_url.map(str::to_owned);
+            let custom_providers = custom_providers_path.clone();
             move || {
                 let harness = comet_harness::AcpHarness::new();
                 let harness = match &acp_config_file {
@@ -262,6 +274,10 @@ pub fn default_registry_with_config(
                 };
                 let harness = match &mcp_server_url {
                     Some(url) => harness.with_mcp_server(url.clone()),
+                    None => harness,
+                };
+                let harness = match &custom_providers {
+                    Some(path) => harness.with_custom_providers(path.clone()),
                     None => harness,
                 };
                 Ok(Arc::new(harness) as Arc<dyn Harness>)
