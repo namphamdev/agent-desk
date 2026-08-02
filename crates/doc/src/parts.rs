@@ -80,7 +80,8 @@ impl MessagePart {
 /// - `ToolCall` appends, or refreshes in place when the id already exists (SDK retry idempotence).
 /// - `ToolResult` marks the matching tool part resolved / errored in place.
 /// - `InputRequested` appends an input part; `InputResolved` marks it resolved.
-/// - `Error` and `Done{error}` become visible error parts.
+/// - `Error` and `Done{error}` become visible error parts, with an identical
+///   terminal error deduplicated when adapters emit both events.
 pub fn fold_event_into_parts(parts: &[MessagePart], event: &AgentEvent) -> Vec<MessagePart> {
     let mut out: Vec<MessagePart> = parts.to_vec();
     match event {
@@ -169,11 +170,17 @@ pub fn fold_event_into_parts(parts: &[MessagePart], event: &AgentEvent) -> Vec<M
         }
         AgentEvent::Done { error, .. } => {
             if let Some(message) = error {
-                let id = format!("e{}", out.len());
-                out.push(MessagePart::Error {
-                    id,
-                    message: message.clone(),
-                });
+                let duplicate = matches!(
+                    out.last(),
+                    Some(MessagePart::Error { message: previous, .. }) if previous == message
+                );
+                if !duplicate {
+                    let id = format!("e{}", out.len());
+                    out.push(MessagePart::Error {
+                        id,
+                        message: message.clone(),
+                    });
+                }
             }
         }
         AgentEvent::AssistantMessageCompleted { .. } | AgentEvent::Usage { .. } => {}
@@ -365,6 +372,29 @@ mod tests {
             }
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    #[test]
+    fn identical_error_and_done_error_render_once() {
+        let message = "connection refused".to_string();
+        let parts = fold_event_into_parts(
+            &[],
+            &AgentEvent::Error {
+                message: message.clone(),
+            },
+        );
+        let parts = fold_event_into_parts(
+            &parts,
+            &AgentEvent::Done {
+                status: comet_proto::DoneStatus::Errored,
+                result: None,
+                error: Some(message),
+                session_id: None,
+            },
+        );
+
+        assert_eq!(parts.len(), 1);
+        assert!(matches!(parts[0], MessagePart::Error { .. }));
     }
 
     #[test]

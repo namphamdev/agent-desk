@@ -1269,14 +1269,28 @@ impl Shell {
                 if self.shortcuts_page.is_none() {
                     let state = self.state.clone();
                     let keymap = self.settings.keymap.clone();
-                    let page = cx.new(|cx| ShortcutsPage::new(state, keymap, cx));
+                    let ai_shortcuts = self.settings.ai_shortcuts.clone();
+                    let page = cx.new(|cx| ShortcutsPage::new(state, keymap, ai_shortcuts, cx));
                     // Persist + re-apply the keymap whenever the page changes it.
                     self.shortcuts_sub = Some(cx.subscribe(
                         &page,
                         |this: &mut Shell, _, event: &ShortcutsEvent, cx| {
-                            let ShortcutsEvent::Changed(keymap) = event;
+                            let ShortcutsEvent::Changed {
+                                keymap,
+                                ai_shortcuts,
+                            } = event;
                             this.settings.keymap = keymap.clone();
+                            this.settings.ai_shortcuts = ai_shortcuts.clone();
                             apply_keymap(cx, keymap);
+                            if let Some(runtime) = cx
+                                .try_global::<crate::global_shortcuts::GlobalShortcutRuntimeHandle>(
+                                )
+                                .map(|runtime| runtime.0.clone())
+                            {
+                                runtime.update(cx, |runtime, cx| {
+                                    runtime.configure(ai_shortcuts.clone(), cx)
+                                });
+                            }
                             this.schedule_save(cx);
                             cx.notify();
                         },

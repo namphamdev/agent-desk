@@ -31,6 +31,8 @@ struct StoredCustomProvider {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     api_key: Option<String>,
     formats: Vec<CustomProviderFormat>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    codex_subagent_model: Option<String>,
 }
 
 impl CustomProviders {
@@ -79,8 +81,10 @@ impl CustomProviders {
         let mut config = self.load_config()?;
 
         let mut existing_key = None;
+        let mut codex_subagent_model = None;
         if let Some(pos) = config.providers.iter().position(|p| p.id == id) {
             existing_key = config.providers[pos].api_key.clone();
+            codex_subagent_model = config.providers[pos].codex_subagent_model.clone();
             config.providers.remove(pos);
         }
 
@@ -104,6 +108,7 @@ impl CustomProviders {
             base_url: base_url.trim_end_matches('/').to_string(),
             api_key,
             formats,
+            codex_subagent_model,
         });
 
         self.save_config(&config)?;
@@ -147,9 +152,6 @@ impl CustomProviders {
                         bail!("Codex requires a provider supporting the Responses format");
                     }
                 }
-                HarnessId::Acp => {
-                    // any format is ok
-                }
                 _ => {
                     bail!("Harness {:?} does not support custom providers", harness);
                 }
@@ -161,6 +163,112 @@ impl CustomProviders {
 
         self.save_config(&config)?;
         Ok(snapshot(config))
+    }
+
+    pub async fn set_codex_subagent_model(
+        &self,
+        provider_id: &str,
+        model: Option<String>,
+    ) -> anyhow::Result<CustomProviderSnapshot> {
+        let _guard = self.mutation.lock().await;
+        let mut config = self.load_config()?;
+        let provider = config
+            .providers
+            .iter_mut()
+            .find(|provider| provider.id == provider_id)
+            .ok_or_else(|| anyhow::anyhow!("Provider not found: {provider_id}"))?;
+        if !provider.formats.contains(&CustomProviderFormat::Responses) {
+            bail!("Codex subagent models require the Responses format");
+        }
+        provider.codex_subagent_model = model
+            .map(|model| model.trim().to_string())
+            .filter(|model| !model.is_empty());
+        self.save_config(&config)?;
+        Ok(snapshot(config))
+    }
+
+    /// Fetch an OpenAI-compatible model catalog with the provider's saved
+    /// credential. Credentials never cross the RPC boundary.
+    pub async fn list_chat_models(&self, provider_id: &str) -> anyhow::Result<Vec<String>> {
+        let provider = self.chat_provider(provider_id)?;
+        let response = reqwest::Client::new()
+            .get(openai_endpoint(&provider.base_url, "models")?)
+            .bearer_auth(provider.api_key.as_deref().unwrap_or_default())
+            .send()
+            .await
+            .context("request provider models")?
+            .error_for_status()
+            .context("provider models request failed")?;
+        let value: serde_json::Value = response.json().await.context("decode provider models")?;
+        let mut models = value
+            .get("data")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|entry| entry.get("id").and_then(serde_json::Value::as_str))
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        models.sort();
+        models.dedup();
+        Ok(models)
+    }
+
+    /// Run one non-streaming OpenAI chat-completions request for a desktop
+    /// shortcut. The shortcut prompt is the system instruction and the
+    /// captured/asked text is the user message.
+    pub async fn run_chat_completion(
+        &self,
+        provider_id: &str,
+        model: &str,
+        prompt: &str,
+        input: &str,
+    ) -> anyhow::Result<String> {
+        if model.trim().is_empty() {
+            bail!("Model is required");
+        }
+        if prompt.trim().is_empty() {
+            bail!("Prompt is required");
+        }
+        let provider = self.chat_provider(provider_id)?;
+        let response = reqwest::Client::new()
+            .post(openai_endpoint(&provider.base_url, "chat/completions")?)
+            .bearer_auth(provider.api_key.as_deref().unwrap_or_default())
+            .json(&serde_json::json!({
+                "model": model.trim(),
+                "stream": false,
+                "messages": [
+                    { "role": "system", "content": prompt.trim() },
+                    { "role": "user", "content": input },
+                ],
+            }))
+            .send()
+            .await
+            .context("request chat completion")?
+            .error_for_status()
+            .context("chat completion request failed")?;
+        let value: serde_json::Value = response.json().await.context("decode chat completion")?;
+        completion_text(&value)
+            .filter(|text| !text.trim().is_empty())
+            .ok_or_else(|| anyhow::anyhow!("Provider returned an empty chat completion"))
+    }
+
+    fn chat_provider(&self, provider_id: &str) -> anyhow::Result<StoredCustomProvider> {
+        let config = self.load_config()?;
+        let provider = config
+            .providers
+            .into_iter()
+            .find(|provider| provider.id == provider_id)
+            .ok_or_else(|| anyhow::anyhow!("Provider not found: {provider_id}"))?;
+        if !provider
+            .formats
+            .contains(&CustomProviderFormat::ChatCompletions)
+        {
+            bail!("Provider does not support Chat Completions");
+        }
+        if provider.api_key.as_deref().is_none_or(str::is_empty) {
+            bail!("Provider API key is missing");
+        }
+        Ok(provider)
     }
 
     fn load_config(&self) -> anyhow::Result<CustomProvidersConfig> {
@@ -195,6 +303,36 @@ impl CustomProviders {
     }
 }
 
+fn openai_endpoint(base_url: &str, path: &str) -> anyhow::Result<reqwest::Url> {
+    let base = base_url.trim_end_matches('/');
+    let url = if base.ends_with("/v1") {
+        format!("{base}/{path}")
+    } else {
+        format!("{base}/v1/{path}")
+    };
+    reqwest::Url::parse(&url).context("invalid provider endpoint")
+}
+
+fn completion_text(value: &serde_json::Value) -> Option<String> {
+    let content = value.pointer("/choices/0/message/content")?;
+    if let Some(text) = content.as_str() {
+        return Some(text.to_string());
+    }
+    // A few OpenAI-compatible providers return multimodal content parts even
+    // for text-only requests.
+    content.as_array().map(|parts| {
+        parts
+            .iter()
+            .filter_map(|part| {
+                part.get("text")
+                    .and_then(serde_json::Value::as_str)
+                    .or_else(|| part.as_str())
+            })
+            .collect::<Vec<_>>()
+            .join("")
+    })
+}
+
 fn snapshot(config: CustomProvidersConfig) -> CustomProviderSnapshot {
     CustomProviderSnapshot {
         providers: config
@@ -206,6 +344,7 @@ fn snapshot(config: CustomProvidersConfig) -> CustomProviderSnapshot {
                 base_url: p.base_url,
                 has_api_key: p.api_key.as_ref().is_some_and(|key| !key.is_empty()),
                 formats: p.formats,
+                codex_subagent_model: p.codex_subagent_model,
             })
             .collect(),
         selection: config.selection,
@@ -294,6 +433,14 @@ mod tests {
                 .map(String::as_str),
             Some("proxy")
         );
+        let configured = settings
+            .set_codex_subagent_model("proxy", Some("worker-model".into()))
+            .await
+            .unwrap();
+        assert_eq!(
+            configured.providers[0].codex_subagent_model.as_deref(),
+            Some("worker-model")
+        );
         let deleted = settings.delete("proxy").await.unwrap();
         assert!(deleted.providers.is_empty());
         assert!(deleted.selection.is_empty());
@@ -326,6 +473,39 @@ mod tests {
                 )
                 .await
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn builds_versioned_endpoints_and_extracts_completion_text() {
+        assert_eq!(
+            openai_endpoint("https://api.example.com", "chat/completions")
+                .unwrap()
+                .as_str(),
+            "https://api.example.com/v1/chat/completions"
+        );
+        assert_eq!(
+            openai_endpoint("https://api.example.com/v1/", "models")
+                .unwrap()
+                .as_str(),
+            "https://api.example.com/v1/models"
+        );
+        assert_eq!(
+            completion_text(&serde_json::json!({
+                "choices": [{ "message": { "content": "answer" } }]
+            }))
+            .as_deref(),
+            Some("answer")
+        );
+        assert_eq!(
+            completion_text(&serde_json::json!({
+                "choices": [{ "message": { "content": [
+                    { "type": "text", "text": "one" },
+                    { "type": "text", "text": " two" }
+                ] } }]
+            }))
+            .as_deref(),
+            Some("one two")
         );
     }
 }

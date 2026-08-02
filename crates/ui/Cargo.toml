@@ -28,6 +28,8 @@ uuid.workspace = true
 chrono.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
+global-hotkey.workspace = true
+arboard.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

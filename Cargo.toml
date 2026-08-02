@@ -98,6 +98,8 @@ pulldown-cmark = "0.12"
 unicode-segmentation = "1"
 mermaid-rs-renderer = { version = "0.3.1", default-features = false }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
+global-hotkey = "0.7"
+arboard = "3.6"
 
 [profile.release]
 # Distribution profile (scripts/package-linux.sh): thin LTO buys most of fat

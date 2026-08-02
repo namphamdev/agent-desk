@@ -466,6 +466,18 @@ pub fn rows_for_entry(
                         id: part_id,
                         message,
                     } => {
+                        // Older docs may contain the same terminal failure as
+                        // both Error and Done(error). Keep replay clean too,
+                        // not only newly folded events.
+                        if matches!(
+                            rows.last(),
+                            Some(Row {
+                                kind: RowKind::ErrorChip { message: previous },
+                                ..
+                            }) if previous.as_ref() == message.as_str()
+                        ) {
+                            continue;
+                        }
                         rows.push(Row {
                             id: format!("{}#{}", entry.id, part_id).into(),
                             version: message.len() as u64,
@@ -2101,9 +2113,7 @@ impl Transcript {
                     .cursor_pointer()
                     .hover(|el| el.bg(danger.opacity(0.1)))
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        cx.write_to_clipboard(ClipboardItem::new_string(
-                            copy_message.to_string(),
-                        ));
+                        cx.write_to_clipboard(ClipboardItem::new_string(copy_message.to_string()));
                         this.copied_error = Some(copy_id.clone());
                         this.copied_error_clear = Some(cx.spawn(async move |this, cx| {
                             cx.background_executor()
@@ -2930,6 +2940,32 @@ mod tests {
             },
         ];
         assert_eq!(tool_group_summary(&tools), "Read 1 file · searched 2 times");
+    }
+
+    #[test]
+    fn duplicate_adjacent_error_parts_render_once() {
+        let entry = assistant(
+            "m1",
+            MessageStatus::Complete,
+            vec![
+                MessagePart::Error {
+                    id: "e0".into(),
+                    message: "connection refused".into(),
+                },
+                MessagePart::Error {
+                    id: "e1".into(),
+                    message: "connection refused".into(),
+                },
+            ],
+        );
+
+        let rows = rows_for_entry(&entry, false, &mut parse);
+        assert_eq!(
+            rows.iter()
+                .filter(|row| matches!(row.kind, RowKind::ErrorChip { .. }))
+                .count(),
+            1
+        );
     }
 
     #[test]

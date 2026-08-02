@@ -89,6 +89,27 @@ async fn lists_models_exposed_by_the_acp_agent() {
 }
 
 #[tokio::test]
+async fn caches_models_discovered_from_the_acp_agent() {
+    let log = tempfile::NamedTempFile::new().unwrap();
+    let harness = AcpHarness::with_command(
+        serde_json::json!({
+            "command": fixture_path(),
+            "env": { "FAKE_ACP_DISCOVERY_LOG": log.path() },
+        })
+        .to_string(),
+    );
+
+    let first = harness.models().await.unwrap();
+    let second = harness.models().await.unwrap();
+
+    assert_eq!(first, second);
+    assert_eq!(
+        std::fs::read_to_string(log.path()).unwrap(),
+        "session/new\n"
+    );
+}
+
+#[tokio::test]
 async fn preserves_models_when_the_agent_exits_after_discovery() {
     let harness = AcpHarness::with_command(exiting_fixture_command());
     let models = harness.models().await.unwrap();

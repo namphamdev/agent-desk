@@ -18,6 +18,7 @@ pub mod changes;
 pub mod composer;
 pub mod edge_fade;
 pub mod frost;
+pub mod global_shortcuts;
 pub mod icons;
 pub mod loaders;
 pub mod markdown;
@@ -143,6 +144,17 @@ pub fn run_app(config: UiConfig) {
 
         let state = cx.new(|_| state::AppState::new());
         state::AppState::bootstrap(state.clone(), config.boot(), cx);
+        let shortcut_settings = settings::UiSettings::load(&config.data_dir);
+        let shortcut_runtime = cx.new(|cx| {
+            global_shortcuts::GlobalShortcutRuntime::new(
+                state.clone(),
+                shortcut_settings.ai_shortcuts,
+                cx,
+            )
+        });
+        cx.set_global(global_shortcuts::GlobalShortcutRuntimeHandle(
+            shortcut_runtime,
+        ));
 
         // Graceful teardown: an in-process engine drains live runs and flushes
         // doc snapshots before the process exits (remote engines outlive us).

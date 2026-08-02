@@ -76,6 +76,10 @@ pub struct UiSettings {
     pub terminal_open: bool,
     /// Customizable shortcut combos (feature-inventory §1.4).
     pub keymap: KeymapConfig,
+    /// User-defined global AI shortcuts. These are listened for while Comet is
+    /// running even when another application has focus.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ai_shortcuts: Vec<AiShortcut>,
     /// Global workflow overrides. Empty implies built-ins.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub workflows: Vec<crate::workflows::WorkflowDefinition>,
@@ -96,8 +100,51 @@ impl Default for UiSettings {
             terminal_height: TERMINAL_DEFAULT_HEIGHT,
             terminal_open: false,
             keymap: KeymapConfig::default(),
+            ai_shortcuts: Vec::new(),
             workflows: Vec::new(),
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct AiShortcut {
+    pub id: String,
+    pub name: String,
+    /// Platform-neutral combo, for example `mod-shift-l`.
+    pub combo: String,
+    pub provider_id: String,
+    pub model: String,
+    pub prompt: String,
+    /// When enabled the shortcut captures selected text, falling back to the
+    /// current clipboard. Otherwise a small input window is shown.
+    pub use_clipboard: bool,
+    pub enabled: bool,
+}
+
+impl Default for AiShortcut {
+    fn default() -> Self {
+        Self {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: "New shortcut".into(),
+            combo: "mod-shift-l".into(),
+            provider_id: String::new(),
+            model: String::new(),
+            prompt: "Help me with the following text.".into(),
+            use_clipboard: true,
+            enabled: true,
+        }
+    }
+}
+
+impl AiShortcut {
+    pub fn is_valid(&self) -> bool {
+        !self.id.trim().is_empty()
+            && !self.name.trim().is_empty()
+            && !self.combo.trim().is_empty()
+            && !self.provider_id.trim().is_empty()
+            && !self.model.trim().is_empty()
+            && !self.prompt.trim().is_empty()
     }
 }
 
@@ -355,6 +402,12 @@ mod tests {
                 toggle_sidebar: "mod-shift-s".into(),
                 ..KeymapConfig::default()
             },
+            ai_shortcuts: vec![AiShortcut {
+                name: "Explain".into(),
+                provider_id: "proxy".into(),
+                model: "model-a".into(),
+                ..AiShortcut::default()
+            }],
             workflows: crate::workflows::builtin_workflows(),
         };
         settings.save(dir.path()).unwrap();

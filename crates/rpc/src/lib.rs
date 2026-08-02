@@ -111,6 +111,12 @@ pub mod methods {
     pub const UPSERT_CUSTOM_PROVIDER: &str = "UpsertCustomProvider";
     pub const DELETE_CUSTOM_PROVIDER: &str = "DeleteCustomProvider";
     pub const SELECT_CUSTOM_PROVIDER: &str = "SelectCustomProvider";
+    pub const SET_CODEX_SUBAGENT_MODEL: &str = "SetCodexSubagentModel";
+    /// Execute a configured desktop AI shortcut without exposing provider
+    /// credentials to the viewport.
+    pub const RUN_AI_SHORTCUT: &str = "RunAiShortcut";
+    /// Discover the OpenAI-compatible model catalog for one custom provider.
+    pub const LIST_CUSTOM_PROVIDER_MODELS: &str = "ListCustomProviderModels";
     // Uploads / attachments (ControlRpc, relay-forwardable — target the chat's host device).
     pub const UPLOAD_CHUNK: &str = "UploadChunk";
     pub const UPLOAD_COMMIT: &str = "UploadCommit";

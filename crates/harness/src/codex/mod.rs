@@ -246,6 +246,16 @@ impl CodexHarness {
                                     cmd.arg("-c").arg(format!(
                                         "model_providers.{CUSTOM_PROVIDER_ID}.wire_api=\"responses\""
                                     ));
+                                    if let Some(model) = provider
+                                        .get("codexSubagentModel")
+                                        .and_then(|value| value.as_str())
+                                        .filter(|model| !model.trim().is_empty())
+                                    {
+                                        cmd.arg("-c").arg(format!(
+                                            "agents.default_subagent_model={}",
+                                            serde_json::to_string(model).unwrap()
+                                        ));
+                                    }
                                     cmd.env(CUSTOM_PROVIDER_API_KEY_ENV, api_key);
                                 }
                             }
@@ -1276,7 +1286,8 @@ mod tests {
                     "name": "Proxy",
                     "baseUrl": "https://proxy.example",
                     "apiKey": "secret",
-                    "formats": ["responses"]
+                    "formats": ["responses"],
+                    "codexSubagentModel": "worker-model"
                 }],
                 "selection": {"codex": "proxy"}
             }"#,
@@ -1303,6 +1314,7 @@ mod tests {
             &r#"model_providers.comet_custom.env_key="COMET_CODEX_CUSTOM_PROVIDER_API_KEY""#
         ));
         assert!(config.contains(&r#"model_providers.comet_custom.wire_api="responses""#));
+        assert!(config.contains(&r#"agents.default_subagent_model="worker-model""#));
         assert_eq!(args.last().map(String::as_str), Some("app-server"));
         let env = command
             .as_std()

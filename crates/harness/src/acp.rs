@@ -55,7 +55,7 @@ pub struct AcpHarness {
     command: Option<String>,
     config_file: Option<PathBuf>,
     mcp_server_url: Option<String>,
-    custom_providers_path: Option<PathBuf>,
+    discovered_models: tokio::sync::Mutex<Option<Vec<Model>>>,
 }
 
 impl AcpHarness {
@@ -69,7 +69,7 @@ impl AcpHarness {
             command: Some(command.into()),
             config_file: None,
             mcp_server_url: None,
-            custom_providers_path: None,
+            discovered_models: tokio::sync::Mutex::new(None),
         }
     }
 
@@ -82,12 +82,6 @@ impl AcpHarness {
     /// Add Comet's managed code-context MCP server to each ACP session.
     pub fn with_mcp_server(mut self, url: impl Into<String>) -> Self {
         self.mcp_server_url = Some(url.into());
-        self
-    }
-
-    /// Set the custom providers settings file path.
-    pub fn with_custom_providers(mut self, path: impl Into<PathBuf>) -> Self {
-        self.custom_providers_path = Some(path.into());
         self
     }
 
@@ -113,70 +107,6 @@ impl AcpHarness {
                      {ENV_AGENT}"
                 ))
             })
-    }
-
-    fn custom_env(&self) -> Vec<(String, String)> {
-        let mut env = Vec::new();
-        if let Some(path) = &self.custom_providers_path {
-            if let Ok(json) = std::fs::read_to_string(path) {
-                if let Ok(config) = serde_json::from_str::<serde_json::Value>(&json) {
-                    if let Some(id) = config
-                        .get("selection")
-                        .and_then(|s| s.get("acp"))
-                        .and_then(|v| v.as_str())
-                    {
-                        if let Some(providers) = config.get("providers").and_then(|p| p.as_array())
-                        {
-                            if let Some(provider) = providers
-                                .iter()
-                                .find(|p| p.get("id").and_then(|i| i.as_str()) == Some(id))
-                            {
-                                let has_anthropic = provider
-                                    .get("formats")
-                                    .and_then(|f| f.as_array())
-                                    .map_or(false, |f| {
-                                        f.iter().any(|v| v.as_str() == Some("anthropic"))
-                                    });
-                                let has_responses = provider
-                                    .get("formats")
-                                    .and_then(|f| f.as_array())
-                                    .map_or(false, |f| {
-                                        f.iter().any(|v| {
-                                            v.as_str() == Some("responses")
-                                                || v.as_str() == Some("chat-completions")
-                                        })
-                                    });
-                                if has_anthropic {
-                                    if let Some(base_url) =
-                                        provider.get("baseUrl").and_then(|u| u.as_str())
-                                    {
-                                        env.push(("ANTHROPIC_BASE_URL".into(), base_url.into()));
-                                    }
-                                    if let Some(api_key) =
-                                        provider.get("apiKey").and_then(|k| k.as_str())
-                                    {
-                                        env.push(("ANTHROPIC_API_KEY".into(), api_key.into()));
-                                    }
-                                }
-                                if has_responses {
-                                    if let Some(base_url) =
-                                        provider.get("baseUrl").and_then(|u| u.as_str())
-                                    {
-                                        env.push(("OPENAI_BASE_URL".into(), base_url.into()));
-                                    }
-                                    if let Some(api_key) =
-                                        provider.get("apiKey").and_then(|k| k.as_str())
-                                    {
-                                        env.push(("OPENAI_API_KEY".into(), api_key.into()));
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        env
     }
 }
 
@@ -219,19 +149,15 @@ impl Harness for AcpHarness {
 
     async fn models(&self) -> Result<Vec<Model>, HarnessError> {
         let command = self.command()?;
-        if let Some(models) = crate::provider_models::discover_selected_provider_models(
-            self.custom_providers_path.as_deref(),
-            HarnessId::Acp,
-            self.reasoning_levels(),
-        )
-        .await?
-        {
-            return Ok(models);
+        let mut cached_models = self.discovered_models.lock().await;
+        if let Some(models) = cached_models.as_ref() {
+            return Ok(models.clone());
         }
+
         let agent = AcpAgent::from_str(&command).map_err(|error| {
             HarnessError::Protocol(format!("invalid ACP agent config: {error}"))
         })?;
-        let agent = TokioAcpAgent::new(agent, self.custom_env());
+        let agent = TokioAcpAgent::new(agent);
         let discovered_models = Arc::new(Mutex::new(None));
         let discovery_result = agent_client_protocol::Client
             .builder()
@@ -253,8 +179,8 @@ impl Harness for AcpHarness {
             })
             .await;
 
-        match discovery_result {
-            Ok(models) => Ok(models),
+        let models = match discovery_result {
+            Ok(models) => models,
             Err(error) => {
                 if let Some(models) = discovered_models
                     .lock()
@@ -265,16 +191,18 @@ impl Harness for AcpHarness {
                         error = %error,
                         "ACP agent exited after model discovery; using discovered models"
                     );
-                    Ok(models)
+                    models
                 } else {
                     tracing::debug!(
                         error = %error,
                         "ACP model discovery failed; using default model"
                     );
-                    Ok(vec![default_acp_model(REASONING_LEVELS.to_vec())])
+                    vec![default_acp_model(REASONING_LEVELS.to_vec())]
                 }
             }
-        }
+        };
+        *cached_models = Some(models.clone());
+        Ok(models)
     }
 
     async fn run(
@@ -300,11 +228,10 @@ impl Harness for AcpHarness {
         let permission_input = request_input.clone();
         let permission_mode = request.effective_permission_mode();
         let mcp_server_url = self.mcp_server_url.clone();
-        let custom_env = self.custom_env();
 
         tokio::spawn(async move {
             let (agent, pid_file) = instrument_agent_for_memory(agent);
-            let agent = TokioAcpAgent::new(agent, custom_env);
+            let agent = TokioAcpAgent::new(agent);
             let memory_stop = crate::CancellationToken::new();
             let memory_reporter: Arc<dyn Fn(Option<u64>) + Send + Sync> = report_memory.into();
             let memory_task = pid_file.clone().map(|path| {
@@ -393,15 +320,13 @@ type DebugCallback = Arc<dyn Fn(&str, LineDirection) + Send + Sync + 'static>;
 struct TokioAcpAgent {
     config: AcpAgentConfig,
     debug: DebugCallback,
-    custom_env: Vec<(String, String)>,
 }
 
 impl TokioAcpAgent {
-    fn new(agent: AcpAgent, custom_env: Vec<(String, String)>) -> Self {
+    fn new(agent: AcpAgent) -> Self {
         Self {
             config: agent.into_config(),
             debug: Arc::new(log_acp_line),
-            custom_env,
         }
     }
 }
@@ -412,7 +337,6 @@ impl ConnectTo<agent_client_protocol::Client> for TokioAcpAgent {
         command
             .args(self.config.arguments())
             .envs(self.config.environment())
-            .envs(self.custom_env.into_iter())
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -1382,46 +1306,6 @@ mod tests {
         .unwrap();
         let harness = AcpHarness::new().with_config_file(config);
         assert_eq!(harness.command().unwrap(), "second-agent --acp");
-    }
-
-    #[test]
-    fn selected_provider_is_applied_to_acp_processes() {
-        let temp = tempfile::tempdir().unwrap();
-        let providers = temp.path().join("custom-providers.json");
-        std::fs::write(
-            &providers,
-            r#"{
-                "providers": [{
-                    "id": "proxy",
-                    "name": "Proxy",
-                    "baseUrl": "https://proxy.example",
-                    "apiKey": "secret",
-                    "formats": ["anthropic", "chat-completions"]
-                }],
-                "selection": {"acp": "proxy"}
-            }"#,
-        )
-        .unwrap();
-        let env = AcpHarness::new()
-            .with_custom_providers(providers)
-            .custom_env();
-        let env = env.into_iter().collect::<std::collections::HashMap<_, _>>();
-        assert_eq!(
-            env.get("ANTHROPIC_BASE_URL").map(String::as_str),
-            Some("https://proxy.example")
-        );
-        assert_eq!(
-            env.get("ANTHROPIC_API_KEY").map(String::as_str),
-            Some("secret")
-        );
-        assert_eq!(
-            env.get("OPENAI_BASE_URL").map(String::as_str),
-            Some("https://proxy.example")
-        );
-        assert_eq!(
-            env.get("OPENAI_API_KEY").map(String::as_str),
-            Some("secret")
-        );
     }
 
     #[test]

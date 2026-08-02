@@ -1,14 +1,14 @@
 use std::collections::HashSet;
 
-use comet_proto::{CustomProvider, CustomProviderFormat, CustomProviderSnapshot, HarnessId};
+use comet_proto::{CustomProvider, CustomProviderFormat, CustomProviderSnapshot, HarnessId, Model};
 use comet_rpc::methods;
 use gpui::{
-    AnyElement, Context, Entity, EventEmitter, SharedString, Subscription, Task, Window, div,
-    prelude::*, px,
+    AnyElement, Context, Entity, EventEmitter, Focusable as _, SharedString, Subscription, Task,
+    Window, div, prelude::*, px,
 };
 
 use crate::composer::{ComposerInput, ComposerInputEvent};
-use crate::popover::Loadable;
+use crate::popover::{self, Loadable};
 use crate::settings::widgets;
 use crate::state::AppState;
 use crate::theme::{Theme, white_alpha};
@@ -21,10 +21,15 @@ pub enum ProvidersEvent {
 pub struct ProvidersPage {
     state: Entity<AppState>,
     snapshot: Loadable<CustomProviderSnapshot>,
+    codex_models: Loadable<Vec<Model>>,
+    subagent_dropdown_open: bool,
+    subagent_search: Entity<ComposerInput>,
     editor: Option<ProviderEditor>,
     busy: bool,
     error: Option<SharedString>,
     task: Option<Task<()>>,
+    models_task: Option<Task<()>>,
+    _subagent_search_events: Subscription,
     _observe: Subscription,
 }
 
@@ -43,13 +48,25 @@ struct ProviderEditor {
 impl ProvidersPage {
     pub fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
         let observe = cx.observe(&state, |_, _, cx| cx.notify());
+        let subagent_search = cx.new(|cx| ComposerInput::new("Search models…", cx));
+        let subagent_search_events =
+            cx.subscribe(&subagent_search, |_, _, event: &ComposerInputEvent, cx| {
+                if matches!(event, ComposerInputEvent::Edited) {
+                    cx.notify();
+                }
+            });
         let mut page = Self {
             state,
             snapshot: Loadable::Idle,
+            codex_models: Loadable::Idle,
+            subagent_dropdown_open: false,
+            subagent_search,
             editor: None,
             busy: false,
             error: None,
             task: None,
+            models_task: None,
+            _subagent_search_events: subagent_search_events,
             _observe: observe,
         };
         page.load(cx);
@@ -73,11 +90,47 @@ impl ProvidersPage {
                 .await;
             this.update(cx, |page, cx| {
                 page.snapshot = decode_snapshot(result);
+                page.load_codex_models(cx);
                 cx.notify();
             })
             .ok();
         }));
         cx.notify();
+    }
+
+    fn load_codex_models(&mut self, cx: &mut Context<Self>) {
+        let has_custom_codex = self
+            .snapshot
+            .ready()
+            .is_some_and(|snapshot| snapshot.selection.contains_key(&HarnessId::Codex));
+        if !has_custom_codex {
+            self.codex_models = Loadable::Idle;
+            return;
+        }
+        let Some(engine) = self.engine(cx) else {
+            self.codex_models = Loadable::Error("Engine not connected".into());
+            return;
+        };
+        self.codex_models = Loadable::Loading;
+        self.models_task = Some(cx.spawn(async move |this, cx| {
+            let result = engine
+                .client()
+                .call(
+                    methods::LIST_MODELS,
+                    serde_json::json!({ "harness": HarnessId::Codex }),
+                )
+                .await;
+            this.update(cx, |page, cx| {
+                page.codex_models = match result {
+                    Ok(value) => serde_json::from_value(value)
+                        .map(Loadable::Ready)
+                        .unwrap_or_else(|error| Loadable::Error(error.to_string())),
+                    Err(error) => Loadable::Error(error.to_string()),
+                };
+                cx.notify();
+            })
+            .ok();
+        }));
     }
 
     fn open_editor(&mut self, provider: Option<CustomProvider>, cx: &mut Context<Self>) {
@@ -167,6 +220,7 @@ impl ProvidersPage {
                     Ok(snapshot) => {
                         page.snapshot = Loadable::Ready(snapshot);
                         page.editor = None;
+                        page.load_codex_models(cx);
                         cx.emit(ProvidersEvent::Changed);
                     }
                     Err(error) => page.error = Some(error.into()),
@@ -197,6 +251,7 @@ impl ProvidersPage {
                 match decode_result(result) {
                     Ok(snapshot) => {
                         page.snapshot = Loadable::Ready(snapshot);
+                        page.load_codex_models(cx);
                         cx.emit(ProvidersEvent::Changed);
                     }
                     Err(error) => page.error = Some(error.into()),
@@ -230,6 +285,7 @@ impl ProvidersPage {
                 match decode_result(result) {
                     Ok(snapshot) => {
                         page.snapshot = Loadable::Ready(snapshot);
+                        page.load_codex_models(cx);
                         cx.emit(ProvidersEvent::Changed);
                     }
                     Err(error) => page.error = Some(error.into()),
@@ -238,6 +294,58 @@ impl ProvidersPage {
             })
             .ok();
         }));
+        cx.notify();
+    }
+
+    fn set_codex_subagent_model(
+        &mut self,
+        provider_id: String,
+        model: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(engine) = self.engine(cx) else {
+            return;
+        };
+        self.busy = true;
+        self.error = None;
+        self.task = Some(cx.spawn(async move |this, cx| {
+            let result = engine
+                .client()
+                .call(
+                    methods::SET_CODEX_SUBAGENT_MODEL,
+                    serde_json::json!({
+                        "providerId": provider_id,
+                        "model": model,
+                    }),
+                )
+                .await;
+            this.update(cx, |page, cx| {
+                page.busy = false;
+                match decode_result(result) {
+                    Ok(snapshot) => {
+                        page.snapshot = Loadable::Ready(snapshot);
+                        page.subagent_dropdown_open = false;
+                        page.subagent_search
+                            .update(cx, |input, cx| input.set_text("", cx));
+                        cx.emit(ProvidersEvent::Changed);
+                    }
+                    Err(error) => page.error = Some(error.into()),
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+        cx.notify();
+    }
+
+    fn toggle_subagent_dropdown(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.subagent_dropdown_open = !self.subagent_dropdown_open;
+        self.subagent_search
+            .update(cx, |input, cx| input.set_text("", cx));
+        if self.subagent_dropdown_open {
+            let focus = self.subagent_search.read(cx).focus_handle(cx);
+            window.focus(&focus, cx);
+        }
         cx.notify();
     }
 
@@ -357,6 +465,201 @@ impl ProvidersPage {
                     .child(options),
             )
             .into_any_element()
+    }
+
+    fn codex_subagent_row(
+        &self,
+        snapshot: &CustomProviderSnapshot,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let provider_id = snapshot.selection.get(&HarnessId::Codex)?;
+        let provider = snapshot
+            .providers
+            .iter()
+            .find(|provider| &provider.id == provider_id)?;
+        let selected = provider.codex_subagent_model.as_deref();
+        let selected_label = selected
+            .and_then(|id| {
+                self.codex_models
+                    .ready()?
+                    .iter()
+                    .find(|model| model.id == id)
+                    .map(|model| model.label.clone())
+            })
+            .unwrap_or_else(|| {
+                selected
+                    .map(str::to_string)
+                    .unwrap_or_else(|| "Same as main agent".into())
+            });
+        let query = self.subagent_search.read(cx).text().to_string();
+        let filtered = self
+            .codex_models
+            .ready()
+            .map(|models| filter_provider_models(&query, models))
+            .unwrap_or_default();
+        let mut rows: Vec<AnyElement> = Vec::new();
+        let default_provider_id = provider.id.clone();
+        rows.push(
+            popover::menu_row(
+                theme,
+                selected.is_none(),
+                "codex-subagent-model-default-row",
+            )
+            .id("codex-subagent-model-default-row")
+            .on_click(cx.listener(move |this, _, _, cx| {
+                if !this.busy {
+                    this.set_codex_subagent_model(default_provider_id.clone(), None, cx);
+                }
+            }))
+            .child("Same as main agent")
+            .into_any_element(),
+        );
+        for model in filtered {
+            let provider_id = provider.id.clone();
+            let model_id = model.id.clone();
+            let active = selected == Some(model.id.as_str());
+            rows.push(
+                popover::menu_row(
+                    theme,
+                    active,
+                    SharedString::from(format!("codex-subagent-model-row-{}", model.id)),
+                )
+                .id(SharedString::from(format!(
+                    "codex-subagent-model-row-{}",
+                    model.id
+                )))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if !this.busy {
+                        this.set_codex_subagent_model(
+                            provider_id.clone(),
+                            Some(model_id.clone()),
+                            cx,
+                        );
+                    }
+                }))
+                .child(
+                    div()
+                        .min_w_0()
+                        .flex_1()
+                        .child(SharedString::from(model.label.clone()))
+                        .when(model.label != model.id, |row| {
+                            row.child(
+                                div()
+                                    .ml(px(8.0))
+                                    .truncate()
+                                    .text_size(px(10.5))
+                                    .text_color(theme.text_muted)
+                                    .child(SharedString::from(model.id.clone())),
+                            )
+                        }),
+                )
+                .into_any_element(),
+            );
+        }
+        let menu = popover::popover_card(theme)
+            .id("codex-subagent-model-menu")
+            .w(px(340.0))
+            // `anchored_menu` pins its top-left to the trigger; offset the
+            // menu so it opens below the select field instead of covering it.
+            .mt(px(42.0))
+            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                this.subagent_dropdown_open = false;
+                this.subagent_search
+                    .update(cx, |input, cx| input.set_text("", cx));
+                cx.notify();
+            }))
+            .child(popover::search_input_frame(
+                theme,
+                self.subagent_search.clone().into_any_element(),
+            ))
+            .child(
+                div()
+                    .id("codex-subagent-model-options")
+                    .max_h(px(260.0))
+                    .overflow_y_scroll()
+                    .children(rows),
+            )
+            .into_any_element();
+        let trigger = div()
+            .id("codex-subagent-model-trigger")
+            .relative()
+            .mt(px(9.0))
+            .w(px(340.0))
+            .h(px(36.0))
+            .px(px(11.0))
+            .rounded(px(8.0))
+            .border_1()
+            .border_color(theme.border)
+            .bg(white_alpha(0.025))
+            .flex()
+            .items_center()
+            .cursor_pointer()
+            .when(self.busy, |trigger| trigger.opacity(0.45))
+            .on_click(cx.listener(|this, _, window, cx| {
+                if !this.busy {
+                    this.toggle_subagent_dropdown(window, cx);
+                }
+            }))
+            .child(
+                div()
+                    .min_w_0()
+                    .flex_1()
+                    .truncate()
+                    .text_size(px(12.0))
+                    .text_color(theme.text)
+                    .child(SharedString::from(selected_label)),
+            )
+            .child(
+                crate::icons::icon(crate::icons::ALT_ARROW_DOWN)
+                    .size(px(14.0))
+                    .text_color(theme.text_muted),
+            )
+            .when(self.subagent_dropdown_open, |trigger| {
+                trigger.child(popover::anchored_menu(
+                    "codex-subagent-model-dropdown",
+                    menu,
+                ))
+            });
+        Some(
+            widgets::card_row(theme, false)
+                .child(
+                    div()
+                        .min_w_0()
+                        .flex_1()
+                        .child(widgets::row_title(theme, "Codex subagent model"))
+                        .child(
+                            div()
+                                .mt(px(4.0))
+                                .text_size(px(11.5))
+                                .text_color(theme.text_muted.opacity(0.65))
+                                .child("Default model used for spawned workers and subagents."),
+                        )
+                        .when(self.codex_models.is_loading(), |content| {
+                            content.child(
+                                div()
+                                    .mt(px(8.0))
+                                    .text_size(px(11.5))
+                                    .text_color(theme.text_muted)
+                                    .child("Discovering models…"),
+                            )
+                        })
+                        .when_some(
+                            self.codex_models.error().map(str::to_string),
+                            |content, error| {
+                                content.child(
+                                    div()
+                                        .mt(px(8.0))
+                                        .text_size(px(11.5))
+                                        .text_color(theme.warning)
+                                        .child(SharedString::from(error)),
+                                )
+                            },
+                        )
+                        .child(trigger),
+                )
+                .into_any_element(),
+        )
     }
 
     fn editor(&self, theme: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -563,9 +866,19 @@ fn compatible_providers(providers: &[CustomProvider], harness: HarnessId) -> Vec
         .filter(|provider| match harness {
             HarnessId::ClaudeCode => provider.formats.contains(&CustomProviderFormat::Anthropic),
             HarnessId::Codex => provider.formats.contains(&CustomProviderFormat::Responses),
-            HarnessId::Acp => !provider.formats.is_empty(),
             _ => false,
         })
+        .collect()
+}
+
+fn filter_provider_models<'a>(query: &str, models: &'a [Model]) -> Vec<&'a Model> {
+    let labels = models
+        .iter()
+        .map(|model| format!("{} {}", model.label, model.id))
+        .collect::<Vec<_>>();
+    popover::filter_indices(query, &labels)
+        .into_iter()
+        .map(|index| &models[index])
         .collect()
 }
 
@@ -674,14 +987,7 @@ impl gpui::Render for ProvidersPage {
                                             &theme,
                                             cx,
                                         ))
-                                        .child(self.selection_row(
-                                            &snapshot,
-                                            HarnessId::Acp,
-                                            "ACP",
-                                            false,
-                                            &theme,
-                                            cx,
-                                        )),
+                                        .children(self.codex_subagent_row(&snapshot, &theme, cx))
                                 ),
                         )
                         .child(
@@ -729,6 +1035,7 @@ mod tests {
             base_url: "https://example.com".into(),
             has_api_key: true,
             formats,
+            codex_subagent_model: None,
         }
     }
 
@@ -747,7 +1054,7 @@ mod tests {
             compatible_providers(&providers, HarnessId::Codex)[0].id,
             "responses"
         );
-        assert_eq!(compatible_providers(&providers, HarnessId::Acp).len(), 3);
+        assert_eq!(compatible_providers(&providers, HarnessId::Acp).len(), 0);
     }
 
     #[test]
@@ -757,5 +1064,34 @@ mod tests {
         formats.insert(CustomProviderFormat::Anthropic);
         assert!(validate_draft("Proxy", "example.com", &formats).is_err());
         assert!(validate_draft("Proxy", "https://example.com", &formats).is_ok());
+    }
+
+    #[test]
+    fn subagent_model_search_matches_label_and_id() {
+        let models = vec![
+            Model {
+                id: "worker-fast-v2".into(),
+                label: "Fast Worker".into(),
+                description: None,
+                reasoning_levels: vec![],
+                options: vec![],
+            },
+            Model {
+                id: "deep-agent".into(),
+                label: "Deep Agent".into(),
+                description: None,
+                reasoning_levels: vec![],
+                options: vec![],
+            },
+        ];
+        assert_eq!(
+            filter_provider_models("fast", &models)[0].id,
+            "worker-fast-v2"
+        );
+        assert_eq!(
+            filter_provider_models("deep-agent", &models)[0].label,
+            "Deep Agent"
+        );
+        assert!(filter_provider_models("missing", &models).is_empty());
     }
 }

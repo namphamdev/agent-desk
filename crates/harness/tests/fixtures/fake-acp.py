@@ -28,6 +28,9 @@ for line in sys.stdin:
             },
         })
     elif method == "session/new":
+        if discovery_log := os.environ.get("FAKE_ACP_DISCOVERY_LOG"):
+            with open(discovery_log, "a") as log:
+                log.write("session/new\n")
         if (
             os.environ.get("FAKE_ACP_REJECT_MCP")
             and message.get("params", {}).get("mcpServers")

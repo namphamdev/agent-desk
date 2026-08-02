@@ -21,6 +21,8 @@ pub struct CustomProvider {
     #[serde(default)]
     pub has_api_key: bool,
     pub formats: Vec<CustomProviderFormat>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codex_subagent_model: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]

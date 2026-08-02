@@ -249,6 +249,30 @@ struct SelectCustomProviderParams {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct SetCodexSubagentModelParams {
+    provider_id: String,
+    #[serde(default)]
+    model: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CustomProviderIdParams {
+    provider_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RunAiShortcutParams {
+    provider_id: String,
+    model: String,
+    prompt: String,
+    #[serde(default)]
+    input: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct UploadChunkParams {
     upload_id: String,
     /// Base64 payload chunk.
@@ -678,6 +702,9 @@ fn forwardable(method: &str) -> bool {
             | methods::UPSERT_CUSTOM_PROVIDER
             | methods::DELETE_CUSTOM_PROVIDER
             | methods::SELECT_CUSTOM_PROVIDER
+            | methods::SET_CODEX_SUBAGENT_MODEL
+            | methods::LIST_CUSTOM_PROVIDER_MODELS
+            | methods::RUN_AI_SHORTCUT
             // Uploads/attachments target the chat's host device (the agent reads
             // the committed file from that device's disk).
             | methods::UPLOAD_CHUNK
@@ -1266,6 +1293,24 @@ impl RpcService for EngineRpc {
                     .map_err(|error| RpcError::Failed(error.to_string()))?;
                 RpcReply::value(&snapshot)
             }
+            methods::LIST_CUSTOM_PROVIDER_MODELS => {
+                let p: CustomProviderIdParams = parse_params(params)?;
+                let models = self
+                    .custom_providers
+                    .list_chat_models(&p.provider_id)
+                    .await
+                    .map_err(|error| RpcError::Failed(error.to_string()))?;
+                RpcReply::value(&models)
+            }
+            methods::RUN_AI_SHORTCUT => {
+                let p: RunAiShortcutParams = parse_params(params)?;
+                let result = self
+                    .custom_providers
+                    .run_chat_completion(&p.provider_id, &p.model, &p.prompt, &p.input)
+                    .await
+                    .map_err(|error| RpcError::Failed(format!("{error:#}")))?;
+                RpcReply::value(&serde_json::json!({ "content": result }))
+            }
             methods::UPSERT_CUSTOM_PROVIDER => {
                 let p: UpsertCustomProviderParams = parse_params(params)?;
                 let snapshot = self
@@ -1289,6 +1334,15 @@ impl RpcService for EngineRpc {
                 let snapshot = self
                     .custom_providers
                     .select(p.harness, p.provider_id)
+                    .await
+                    .map_err(|error| RpcError::Failed(error.to_string()))?;
+                RpcReply::value(&snapshot)
+            }
+            methods::SET_CODEX_SUBAGENT_MODEL => {
+                let p: SetCodexSubagentModelParams = parse_params(params)?;
+                let snapshot = self
+                    .custom_providers
+                    .set_codex_subagent_model(&p.provider_id, p.model)
                     .await
                     .map_err(|error| RpcError::Failed(error.to_string()))?;
                 RpcReply::value(&snapshot)
