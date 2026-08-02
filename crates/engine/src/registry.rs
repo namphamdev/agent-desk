@@ -138,6 +138,9 @@ pub fn default_registry_with_config(
     mcp_server_url: Option<&str>,
     acp_config_file: Option<std::path::PathBuf>,
 ) -> HarnessRegistry {
+    // Warm the login-shell PATH snapshot in the background so the first
+    // claude/codex resolve doesn't pay the shell-startup latency inline.
+    comet_harness::shell_env::prewarm();
     let registry = HarnessRegistry::new();
     registry.register(Arc::new(MockHarness {
         script: vec![

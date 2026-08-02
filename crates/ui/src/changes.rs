@@ -21,7 +21,7 @@ use std::time::Duration;
 
 use gpui::{
     AnyElement, App, ClipboardItem, Context, Entity, ListAlignment, ListState, MouseButton,
-    SharedString, Subscription, Task, Window, div, font, prelude::*, px,
+    SharedString, Subscription, Task, Window, div, font, list, prelude::*, px,
 };
 use serde::Deserialize;
 
