@@ -287,6 +287,36 @@ final class AppModel {
         return await workspace?.listRefs(deviceId: space.deviceId, repoPath: space.path)
     }
 
+    func gitStatus(chat: Chat) async -> GitStatus? {
+        guard let cwd = chat.cwd else { return nil }
+        if demo != nil { return GitStatus(branch: chat.branch, ahead: 0, behind: 0, files: [], isRepo: true) }
+        return await workspace?.gitStatus(deviceId: chat.deviceId, cwd: cwd)
+    }
+
+    func acpAgents(deviceId: String) async -> AcpAgentsSnapshot? {
+        await workspace?.listAcpAgents(deviceId: deviceId)
+    }
+
+    func acpAgentAction(deviceId: String, method: String, agentId: String) async -> AcpAgentsSnapshot? {
+        await workspace?.acpAgentAction(deviceId: deviceId, method: method, agentId: agentId)
+    }
+
+    func customProviders(deviceId: String) async -> CustomProviderSnapshot? {
+        await workspace?.customProviders(deviceId: deviceId)
+    }
+
+    func selectCustomProvider(deviceId: String, harness: String, providerId: String?) async -> CustomProviderSnapshot? {
+        await workspace?.selectCustomProvider(deviceId: deviceId, harness: harness, providerId: providerId)
+    }
+
+    func upsertCustomProvider(deviceId: String, provider: CustomProviderDraft) async -> CustomProviderSnapshot? {
+        await workspace?.upsertCustomProvider(deviceId: deviceId, provider: provider)
+    }
+
+    func deleteCustomProvider(deviceId: String, providerId: String) async -> CustomProviderSnapshot? {
+        await workspace?.deleteCustomProvider(deviceId: deviceId, providerId: providerId)
+    }
+
     /// Draft-mode checkout switch: `git checkout` in the SPACE's folder.
     /// Returns an error message, or nil on success.
     func switchSpaceRef(space: Space, refName: String) async -> String? {

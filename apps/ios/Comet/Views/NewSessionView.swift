@@ -17,11 +17,14 @@ struct NewSessionView: View {
     @AppStorage("newSessionModel") private var storedModel = ""
     @AppStorage("newSessionReasoning") private var storedReasoning = ""
     @AppStorage("newSessionPermissionMode") private var storedPermissionMode = PermissionMode.default.rawValue
+    @AppStorage("newSessionWorkflow") private var storedWorkflow = ""
+    @AppStorage("newSessionPrRef") private var storedPrRef = ""
 
     @State private var draft = ""
     @State private var showPicker = false
     @State private var showRefPicker = false
     @State private var showCheckoutPicker = false
+    @State private var showWorkflowPicker = false
     /// Live per-harness catalogs from the space's device (static fallback).
     @State private var catalogs: [String: [ModelInfo]] = [:]
     @State private var refs: [RepoRef] = []
@@ -51,6 +54,10 @@ struct NewSessionView: View {
     private var permissionMode: PermissionMode {
         get { PermissionMode(rawValue: storedPermissionMode) ?? .default }
         set { storedPermissionMode = newValue.rawValue }
+    }
+
+    private var workflow: WorkflowDefinition? {
+        WorkflowCatalog.all.first { $0.id == storedWorkflow }
     }
 
     var body: some View {
@@ -105,6 +112,9 @@ struct NewSessionView: View {
                                 selectedRefHasWorktree: selectedRefRow?.worktreePath != nil) { kind in
                 pickCheckout(kind)
             }
+        }
+        .sheet(isPresented: $showWorkflowPicker) {
+            WorkflowPickerSheet(selectedId: $storedWorkflow, prRef: $storedPrRef)
         }
         .task(id: spaceId) {
             // Load refs for the branch chip (git spaces only).
@@ -188,6 +198,12 @@ struct NewSessionView: View {
             chip(systemIcon: permissionMode.iconName, label: permissionMode.label) {
                 focused = false
                 showPicker = true
+            }
+            .layoutPriority(-1)
+
+            chip(systemIcon: "arrow.triangle.branch", label: workflow?.label ?? "Workflow") {
+                focused = false
+                showWorkflowPicker = true
             }
             .layoutPriority(-1)
 
@@ -321,7 +337,8 @@ struct NewSessionView: View {
     /// picked ref's worktree, or CreateWorktree off the base first).
     private func send() {
         guard let space, canSend else { return }
-        let prompt = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        let prompt = workflow?.prompt(task: draft, prRef: storedPrRef)
+            ?? draft.trimmingCharacters(in: .whitespacesAndNewlines)
         busy = true
         let config = ChatConfig(harness: harness, model: selectedModel.id,
                                 reasoning: reasoning, sandbox: permissionMode.sandbox,
@@ -861,5 +878,59 @@ struct CheckoutPickerSheet: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(SheetRowButtonStyle())
+    }
+}
+
+struct WorkflowPickerSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @Binding var selectedId: String
+    @Binding var prRef: String
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 8) {
+                    SheetLabel("Workflow")
+                    SheetCard {
+                        ForEach(Array(WorkflowCatalog.all.enumerated()), id: \.element.id) { index, workflow in
+                            SheetSelectRow(title: workflow.label,
+                                           subtitle: workflow.description,
+                                           selected: selectedId == workflow.id,
+                                           leading: nil) {
+                                selectedId = workflow.id
+                                dismiss()
+                            }
+                            if index < WorkflowCatalog.all.count - 1 {
+                                SheetSeparator()
+                            }
+                        }
+                        if WorkflowCatalog.all.first(where: { $0.id == selectedId })?.needsPrRef == true {
+                            TextField("PR or branch reference", text: $prRef)
+                                .textInputAutocapitalization(.never)
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 10)
+                        }
+                        if !selectedId.isEmpty {
+                            SheetSeparator()
+                            SheetSelectRow(title: "No workflow",
+                                           subtitle: "Use the normal session prompt",
+                                           selected: false,
+                                           leading: nil) {
+                                selectedId = ""
+                                dismiss()
+                            }
+                        }
+                    }
+                }
+                .padding(20)
+            }
+            .background(SheetStyle.panel)
+            .navigationTitle("Workflow")
+            .navigationBarTitleDisplayMode(.inline)
+        }
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+        .presentationCornerRadius(32)
+        .preferredColorScheme(.dark)
     }
 }

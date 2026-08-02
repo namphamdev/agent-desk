@@ -16,6 +16,7 @@ pub mod archived;
 pub mod composer;
 pub mod context_engine;
 pub mod devices;
+pub mod notifications;
 pub mod providers;
 pub mod shortcuts;
 pub mod widgets;
@@ -66,6 +67,8 @@ pub struct UiSettings {
     /// Session notification chimes (done / awaiting-input). `COMET_DISABLE_SOUND`
     /// overrides.
     pub sound_enabled: bool,
+    /// OS-level desktop notifications on run completion / awaiting input.
+    pub notifications_enabled: bool,
     pub right_pane_width: f32,
     /// Legacy: panel *open* flags are session-scoped in-memory state now
     /// (`shell::SessionPanels`, comet `sessionPanels` parity). Kept for file
@@ -95,6 +98,7 @@ impl Default for UiSettings {
             tab_order: std::collections::HashMap::new(),
             space_order: Vec::new(),
             sound_enabled: true,
+            notifications_enabled: true,
             right_pane_width: RIGHT_PANE_DEFAULT,
             right_pane_open: false,
             terminal_height: TERMINAL_DEFAULT_HEIGHT,
@@ -394,6 +398,7 @@ mod tests {
             )]),
             space_order: vec!["space-2".to_string(), "space-1".to_string()],
             sound_enabled: false,
+            notifications_enabled: false,
             right_pane_width: 700.0,
             right_pane_open: true,
             terminal_height: 320.0,

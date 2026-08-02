@@ -287,6 +287,44 @@ final class WorkspaceStore {
         }
     }
 
+    func gitStatus(deviceId: String, cwd: String) async -> GitStatus? {
+        try? await relay(for: deviceId).call(method: "GitStatus", params: ["cwd": cwd])
+    }
+
+    func listAcpAgents(deviceId: String) async -> AcpAgentsSnapshot? {
+        try? await relay(for: deviceId).call(method: "ListAcpAgents", params: [:])
+    }
+
+    func acpAgentAction(deviceId: String, method: String, agentId: String) async -> AcpAgentsSnapshot? {
+        try? await relay(for: deviceId).call(method: method, params: ["agentId": agentId])
+    }
+
+    func customProviders(deviceId: String) async -> CustomProviderSnapshot? {
+        try? await relay(for: deviceId).call(method: "GetCustomProviders", params: [:])
+    }
+
+    func selectCustomProvider(deviceId: String, harness: String, providerId: String?) async -> CustomProviderSnapshot? {
+        try? await relay(for: deviceId).call(method: "SelectCustomProvider",
+                                             params: ["harness": harness, "providerId": providerId as Any])
+    }
+
+    func upsertCustomProvider(deviceId: String, provider: CustomProviderDraft) async -> CustomProviderSnapshot? {
+        var params: [String: Any] = [
+            "id": provider.id,
+            "name": provider.name,
+            "baseUrl": provider.baseUrl,
+            "formats": provider.formats,
+        ]
+        if let apiKey = provider.apiKey, !apiKey.isEmpty {
+            params["apiKey"] = apiKey
+        }
+        return try? await relay(for: deviceId).call(method: "UpsertCustomProvider", params: params)
+    }
+
+    func deleteCustomProvider(deviceId: String, providerId: String) async -> CustomProviderSnapshot? {
+        try? await relay(for: deviceId).call(method: "DeleteCustomProvider", params: ["id": providerId])
+    }
+
     /// SwitchRef — `git checkout` in the given folder on the target device.
     /// Returns git's error message on failure (dirty tree, held ref, …).
     func switchRef(deviceId: String, repoPath: String, refName: String) async -> String? {

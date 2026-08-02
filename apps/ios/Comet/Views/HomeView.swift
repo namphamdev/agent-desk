@@ -15,6 +15,7 @@ struct HomeView: View {
     @Environment(AppModel.self) private var model
     @State private var path: [Route] = []
     @State private var showNewSpace = false
+    @State private var showDeviceSettings = false
 
     var body: some View {
         NavigationStack(path: $path) {
@@ -60,6 +61,9 @@ struct HomeView: View {
                         if model.demo != nil {
                             Text("Demo mode")
                         }
+                            Button("ACP and providers") {
+                                showDeviceSettings = true
+                            }
                         Button("Sign out", role: .destructive) { model.signOut() }
                     } label: {
                         Image(systemName: "person.circle")
@@ -70,6 +74,9 @@ struct HomeView: View {
                 NewSpaceSheet { spaceId in
                     path.append(.space(spaceId))
                 }
+            }
+            .sheet(isPresented: $showDeviceSettings) {
+                DeviceSettingsView()
             }
             .task(id: model.overviewChats.map(\.id).joined()) {
                 model.preloadSessions()

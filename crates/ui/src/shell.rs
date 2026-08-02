@@ -36,6 +36,7 @@ use crate::settings::acp_agents::AcpAgentsPage;
 use crate::settings::archived::ArchivedPage;
 use crate::settings::context_engine::ContextEnginePage;
 use crate::settings::devices::DevicesPage;
+use crate::settings::notifications::{NotificationsEvent, NotificationsPage};
 use crate::settings::providers::{ProvidersEvent, ProvidersPage};
 use crate::settings::shortcuts::{ShortcutsEvent, ShortcutsPage};
 use crate::settings::workflows::{WorkflowsEvent, WorkflowsPage};
@@ -149,18 +150,20 @@ pub enum SettingsSection {
     Providers,
     AcpAgents,
     ContextEngine,
+    Notifications,
     Shortcuts,
     Archived,
     Workflows,
 }
 
 impl SettingsSection {
-    pub const ALL: [SettingsSection; 8] = [
+    pub const ALL: [SettingsSection; 9] = [
         SettingsSection::Devices,
         SettingsSection::Agents,
         SettingsSection::Providers,
         SettingsSection::AcpAgents,
         SettingsSection::ContextEngine,
+        SettingsSection::Notifications,
         SettingsSection::Shortcuts,
         SettingsSection::Archived,
         SettingsSection::Workflows,
@@ -175,6 +178,7 @@ impl SettingsSection {
             SettingsSection::Providers => "Providers",
             SettingsSection::AcpAgents => "ACP agents",
             SettingsSection::ContextEngine => "Code context",
+            SettingsSection::Notifications => "Notifications",
             SettingsSection::Shortcuts => "Shortcuts",
             SettingsSection::Archived => "Archived sessions",
             SettingsSection::Workflows => "Workflows",
@@ -452,6 +456,8 @@ pub struct Shell {
     providers_sub: Option<Subscription>,
     acp_agents_page: Option<Entity<AcpAgentsPage>>,
     context_engine_page: Option<Entity<ContextEnginePage>>,
+    notifications_page: Option<Entity<NotificationsPage>>,
+    notifications_sub: Option<Subscription>,
     shortcuts_sub: Option<Subscription>,
     workflows_sub: Option<Subscription>,
     /// Session-row context menu: (chat id, window position).
@@ -631,6 +637,7 @@ impl Shell {
             Some("settings/providers") => Route::Settings(SettingsSection::Providers),
             Some("settings/acp") => Route::Settings(SettingsSection::AcpAgents),
             Some("settings/context") => Route::Settings(SettingsSection::ContextEngine),
+            Some("settings/notifications") => Route::Settings(SettingsSection::Notifications),
             Some("settings/shortcuts") => Route::Settings(SettingsSection::Shortcuts),
             Some("settings/workflows") => Route::Settings(SettingsSection::Workflows),
             Some("settings/archived") => Route::Settings(SettingsSection::Archived),
@@ -677,6 +684,8 @@ impl Shell {
             providers_sub: None,
             acp_agents_page: None,
             context_engine_page: None,
+            notifications_page: None,
+            notifications_sub: None,
             shortcuts_sub: None,
             workflows_sub: None,
             chat_menu: None,
@@ -843,10 +852,21 @@ impl Shell {
             for (chat_id, status) in sessions {
                 let prev = self.sound_prev.insert(chat_id, status);
                 if let Some(prev) = prev
-                    && self.settings.sound_enabled
                     && let Some(sound) = crate::sound::sound_for_transition(prev, status)
                 {
-                    crate::sound::play(sound);
+                    // Notification chime (done / awaiting-input).
+                    if self.settings.sound_enabled {
+                        crate::sound::play(sound);
+                    }
+                    // OS desktop notification on the same transitions.
+                    if self.settings.notifications_enabled {
+                        crate::notify::show(match sound {
+                            crate::sound::Sound::Done => crate::notify::NotificationKind::Done,
+                            crate::sound::Sound::Request => {
+                                crate::notify::NotificationKind::Request
+                            }
+                        });
+                    }
                 }
             }
         }
@@ -1261,6 +1281,29 @@ impl Shell {
                     self.context_engine_page = Some(cx.new(|_| ContextEnginePage::new(data_dir)));
                 }
                 match &self.context_engine_page {
+                    Some(page) => page.clone().into_any_element(),
+                    None => Empty.into_any_element(),
+                }
+            }
+            SettingsSection::Notifications => {
+                if self.notifications_page.is_none() {
+                    let data_dir = self.data_dir.clone();
+                    let settings = self.settings.clone();
+                    let page = cx.new(|_cx| NotificationsPage::new(data_dir, settings));
+                    let sub = cx.subscribe(&page, |this, _, event: &NotificationsEvent, cx| {
+                        let NotificationsEvent::Changed {
+                            notifications_enabled,
+                            sound_enabled,
+                        } = event;
+                        this.settings.notifications_enabled = *notifications_enabled;
+                        this.settings.sound_enabled = *sound_enabled;
+                        this.schedule_save(cx);
+                        cx.notify();
+                    });
+                    self.notifications_page = Some(page);
+                    self.notifications_sub = Some(sub);
+                }
+                match &self.notifications_page {
                     Some(page) => page.clone().into_any_element(),
                     None => Empty.into_any_element(),
                 }
@@ -1801,6 +1844,7 @@ impl Shell {
             SettingsSection::Providers => icons::GLOBAL,
             SettingsSection::AcpAgents => icons::WIDGET,
             SettingsSection::ContextEngine => icons::MAGNIFER,
+            SettingsSection::Notifications => icons::BELL_MINIMALISTIC,
             SettingsSection::Shortcuts => icons::KEYBOARD,
             SettingsSection::Archived => icons::ARCHIVE_MINIMALISTIC,
             SettingsSection::Workflows => icons::DOCUMENT,

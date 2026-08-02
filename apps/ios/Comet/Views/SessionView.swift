@@ -8,6 +8,7 @@ struct SessionView: View {
     @Environment(AppModel.self) private var model
     let chatId: String
     @State private var showConfig = false
+    @State private var showChanges = false
     @State private var refs: [RepoRef] = []
     @State private var catalogs: [String: [ModelInfo]] = [:]
 
@@ -93,6 +94,16 @@ struct SessionView: View {
                     }
                     .buttonStyle(.plain)
                 }
+                ToolbarItem(placement: .topBarTrailing) {
+                    if chat.cwd != nil {
+                        Button {
+                            showChanges = true
+                        } label: {
+                            Image(systemName: "rectangle.and.pencil.and.ellipsis")
+                        }
+                        .accessibilityLabel("Git changes")
+                    }
+                }
             }
         }
         .sheet(isPresented: $showConfig) {
@@ -125,6 +136,11 @@ struct SessionView: View {
                     catalogs: catalogs,
                     checkout: checkoutContext(chat: chat)
                 )
+            }
+        }
+        .sheet(isPresented: $showChanges) {
+            if let chat {
+                ChangesView(chat: chat)
             }
         }
         .task(id: chatId) {

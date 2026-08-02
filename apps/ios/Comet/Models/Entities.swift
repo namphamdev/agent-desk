@@ -324,6 +324,81 @@ struct RepoRef: Codable, Hashable, Identifiable {
     var id: String { name }
 }
 
+struct GitStatus: Codable, Hashable {
+    var branch: String?
+    var ahead: Int
+    var behind: Int
+    var files: [GitFileChange]
+    var isRepo: Bool
+}
+
+struct GitFileChange: Codable, Hashable, Identifiable {
+    var path: String
+    var oldPath: String?
+    var kind: String
+    var staged: Bool
+    var unstaged: Bool
+    var xy: String
+
+    var id: String { path }
+
+    var label: String {
+        switch kind {
+        case "added": return "Added"
+        case "deleted": return "Deleted"
+        case "renamed": return "Renamed"
+        case "untracked": return "Untracked"
+        default: return staged && unstaged ? "Staged + modified" : staged ? "Staged" : "Modified"
+        }
+    }
+}
+
+struct AcpRegistryAgent: Codable, Hashable, Identifiable {
+    var id: String
+    var name: String
+    var description: String
+    var version: String
+    var distribution: String?
+    var supported: Bool
+}
+
+struct InstalledAcpAgent: Codable, Hashable, Identifiable {
+    var id: String
+    var name: String
+    var version: String
+    var command: String
+    var distribution: String
+}
+
+struct AcpAgentsSnapshot: Codable, Hashable {
+    var activeAgentId: String?
+    var installed: [InstalledAcpAgent]
+    var registry: [AcpRegistryAgent]
+    var registryError: String?
+}
+
+struct CustomProvider: Codable, Hashable, Identifiable {
+    var id: String
+    var name: String
+    var baseUrl: String
+    var hasApiKey: Bool
+    var formats: [String]
+    var codexSubagentModel: String?
+}
+
+struct CustomProviderSnapshot: Codable, Hashable {
+    var providers: [CustomProvider]
+    var selection: [String: String]
+}
+
+struct CustomProviderDraft {
+    var id: String
+    var name: String
+    var baseUrl: String
+    var apiKey: String?
+    var formats: [String]
+}
+
 // MARK: - Command ledger (commands.rs port)
 
 let commandDefaultTtlMs: Int64 = 86_400_000
