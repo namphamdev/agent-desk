@@ -22,7 +22,7 @@ use gpui::{
 
 use comet_engine::registry::HarnessDescriptor;
 use comet_proto::{
-    ChatConfig, FolderListing, HarnessId, Model, ReasoningLevel, RepoRef, SandboxLevel,
+    ChatConfig, FolderListing, HarnessId, Model, PermissionMode, ReasoningLevel, RepoRef,
 };
 use comet_rpc::methods;
 
@@ -52,6 +52,7 @@ pub struct DraftConfig {
     pub reasoning: Option<ReasoningLevel>,
     /// option id → choice id (only non-defaults are meaningful).
     pub model_options: serde_json::Map<String, serde_json::Value>,
+    pub permission_mode: PermissionMode,
     /// The picked ref (base branch in NewWorktree mode; a worktree's branch
     /// when reusing one). `None` = the repo's current branch.
     pub branch: Option<String>,
@@ -96,6 +97,7 @@ pub struct ResolvedRunConfig {
     pub model: Option<String>,
     pub reasoning: Option<ReasoningLevel>,
     pub model_options: serde_json::Map<String, serde_json::Value>,
+    pub permission_mode: PermissionMode,
 }
 
 impl ResolvedRunConfig {
@@ -106,7 +108,8 @@ impl ResolvedRunConfig {
             model: self.model.clone(),
             reasoning: self.reasoning,
             model_options: self.model_options.clone(),
-            sandbox: SandboxLevel::WorkspaceWrite,
+            sandbox: self.permission_mode.sandbox(),
+            permission_mode: self.permission_mode,
         })
     }
 }
@@ -283,6 +286,7 @@ pub enum PickerKind {
     Checkout,
     HarnessModel,
     Traits,
+    Permission,
 }
 
 pub struct Pickers {
@@ -550,6 +554,15 @@ impl Pickers {
         }
     }
 
+    fn effective_permission_mode(&self, cx: &App) -> PermissionMode {
+        self.state
+            .read(cx)
+            .selected_chat_row()
+            .and_then(|chat| chat.config.as_ref())
+            .map(|config| config.permission_mode)
+            .unwrap_or(self.config.permission_mode)
+    }
+
     /// The fully-resolved config the composer threads into the Run request and
     /// `Mutate createChat`: concrete model + reasoning whenever the catalog is
     /// loaded (no "engine picks a default" passthrough).
@@ -563,6 +576,7 @@ impl Pickers {
                 .or_else(|| self.effective_model_id(cx).map(str::to_string)),
             reasoning: self.effective_reasoning(cx),
             model_options: self.explicit_options(cx),
+            permission_mode: self.effective_permission_mode(cx),
         }
     }
 
@@ -616,6 +630,7 @@ impl Pickers {
                 CheckoutKind::Local => 0,
                 CheckoutKind::NewWorktree => 1,
             },
+            PickerKind::Permission => self.effective_permission_mode(cx) as usize,
             PickerKind::Branch => self.selected_ref_index(cx),
             _ => 0,
         };
@@ -654,6 +669,7 @@ impl Pickers {
                     self.ensure_models(harness, cx);
                 }
             }
+            PickerKind::Permission => {}
         }
         cx.notify();
     }
@@ -1066,6 +1082,19 @@ impl Pickers {
         cx.notify();
     }
 
+    fn pick_permission(&mut self, mode: PermissionMode, cx: &mut Context<Self>) {
+        self.open = None;
+        if self.state.read(cx).selected_chat.is_some() {
+            self.update_chat_config(cx, move |config| {
+                config.permission_mode = mode;
+                config.sandbox = mode.sandbox();
+            });
+        } else {
+            self.config.permission_mode = mode;
+        }
+        cx.notify();
+    }
+
     fn pick_option(
         &mut self,
         option_id: String,
@@ -1114,6 +1143,7 @@ impl Pickers {
             .and_then(|c| c.config.as_ref())
         {
             config.sandbox = existing.sandbox;
+            config.permission_mode = existing.permission_mode;
         }
         change(&mut config);
         // Reasoning must stay concrete for whatever model the row now names —
@@ -1336,6 +1366,7 @@ impl Pickers {
                     // chips below (reasoning ladder, model options) are
                     // mouse-only.
                     Some(PickerKind::HarnessModel) => self.model_rows_len(cx),
+                    Some(PickerKind::Permission) => 4,
                     Some(PickerKind::Traits) => 0, // merged into HarnessModel
                     None => 0,
                 };
@@ -1361,6 +1392,14 @@ impl Pickers {
                         CheckoutKind::NewWorktree
                     };
                     self.pick_checkout(kind, cx);
+                } else if self.open == Some(PickerKind::Permission) {
+                    let mode = [
+                        PermissionMode::Default,
+                        PermissionMode::Plan,
+                        PermissionMode::AcceptEdits,
+                        PermissionMode::FullAccess,
+                    ][self.active.min(3)];
+                    self.pick_permission(mode, cx);
                 } else {
                     self.on_search_submit(cx);
                 }
@@ -1386,6 +1425,7 @@ impl Pickers {
             PickerKind::Checkout => "picker-checkout",
             PickerKind::HarnessModel => "picker-model",
             PickerKind::Traits => "picker-traits",
+            PickerKind::Permission => "picker-permission",
         };
         let open = self.open == Some(kind)
             || (kind == PickerKind::Traits && self.open == Some(PickerKind::HarnessModel));
@@ -1698,6 +1738,7 @@ impl Pickers {
                             this.models.clear();
                             this.ensure_harnesses(cx);
                         }
+                        PickerKind::Permission => {}
                     }))
                     .child(SharedString::from("Retry")),
             )
@@ -1898,6 +1939,67 @@ impl Pickers {
                                 .child(SharedString::from(label)),
                         )
                         .when(is_selected, |el| el.child(popover::menu_check(&theme)))
+                    }),
+            )
+            .into_any_element()
+    }
+
+    fn render_permission_popover(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = Theme::of(cx).clone();
+        let current = self.effective_permission_mode(cx);
+        let options = [
+            (
+                PermissionMode::Default,
+                "Default",
+                "Ask before sensitive actions",
+            ),
+            (PermissionMode::Plan, "Plan", "Read-only exploration"),
+            (
+                PermissionMode::AcceptEdits,
+                "Accept edits",
+                "Allow workspace changes",
+            ),
+            (
+                PermissionMode::FullAccess,
+                "Full access",
+                "Allow all actions without approval",
+            ),
+        ];
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(2.0))
+            .children(
+                options
+                    .into_iter()
+                    .enumerate()
+                    .map(|(ix, (mode, label, description))| {
+                        let selected = current == mode;
+                        popover::menu_row_nav(
+                            &theme,
+                            selected,
+                            ix == self.active,
+                            format!("permission-row-{ix}"),
+                        )
+                        .id(("permission-row", ix))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.pick_permission(mode, cx);
+                        }))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .child(label)
+                                .child(
+                                    div()
+                                        .text_size(px(10.5))
+                                        .text_color(theme.text_muted)
+                                        .child(description),
+                                ),
+                        )
+                        .when(selected, |el| el.child(popover::menu_check(&theme)))
                     }),
             )
             .into_any_element()
@@ -2521,6 +2623,12 @@ impl Render for Pickers {
             .clone()
             .map(SharedString::from)
             .unwrap_or_else(|| SharedString::from("Traits"));
+        let permission_label = SharedString::from(match self.effective_permission_mode(cx) {
+            PermissionMode::Default => "Default",
+            PermissionMode::Plan => "Plan",
+            PermissionMode::AcceptEdits => "Accept edits",
+            PermissionMode::FullAccess => "Full access",
+        });
 
         // Render the open popover's body first (mutable borrow), then the
         // chips. Branch/Checkout render in the composer FOOTER row (see
@@ -2532,6 +2640,13 @@ impl Render for Pickers {
                 Some((
                     PickerKind::HarnessModel,
                     self.popover_frame_flush(460.0, content, cx),
+                ))
+            }
+            Some(PickerKind::Permission) => {
+                let content = self.render_permission_popover(cx);
+                Some((
+                    PickerKind::Permission,
+                    self.popover_frame(260.0, content, cx),
                 ))
             }
             // Traits merged into the HarnessModel popover.
@@ -2560,6 +2675,15 @@ impl Render for Pickers {
             &theme,
             cx,
         );
+        let permission_chip = self.trigger_chip(
+            PickerKind::Permission,
+            permission_label,
+            true,
+            None,
+            None,
+            &theme,
+            cx,
+        );
         let _ = traits_set;
         let right = div()
             .flex()
@@ -2567,6 +2691,12 @@ impl Render for Pickers {
             .items_center()
             .flex_none()
             .gap(px(4.0))
+            .child(attach_overlay_end(
+                permission_chip,
+                &mut overlay,
+                PickerKind::Permission,
+                "permission-popover",
+            ))
             // End-anchored: the menu's right edge sits flush with the chip's
             // right edge (user request), same as the footer's ref popover.
             .child(attach_overlay_end(
@@ -2591,7 +2721,7 @@ impl Render for Pickers {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use comet_proto::{FolderEntry, Model, ModelOption, ModelOptionChoice};
+    use comet_proto::{FolderEntry, Model, ModelOption, ModelOptionChoice, SandboxLevel};
 
     #[test]
     fn traits_summary_formats_non_defaults() {

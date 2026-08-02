@@ -38,6 +38,34 @@ pub enum SandboxLevel {
     DangerFullAccess,
 }
 
+/// User-facing permission policy shared by every harness.
+///
+/// Harness adapters translate these portable intents into their native
+/// permission and sandbox settings.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PermissionMode {
+    #[default]
+    Default,
+    Plan,
+    AcceptEdits,
+    FullAccess,
+}
+
+impl PermissionMode {
+    pub fn sandbox(self) -> SandboxLevel {
+        match self {
+            Self::Plan => SandboxLevel::ReadOnly,
+            Self::Default | Self::AcceptEdits => SandboxLevel::WorkspaceWrite,
+            Self::FullAccess => SandboxLevel::DangerFullAccess,
+        }
+    }
+
+    pub fn auto_approve(self) -> bool {
+        matches!(self, Self::AcceptEdits | Self::FullAccess)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum SteeringMode {
@@ -107,6 +135,19 @@ pub struct RunRequest {
     /// content blocks. Additive + serde-defaulted for wire compat.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<String>,
+}
+
+impl RunRequest {
+    /// Preserve behavior for requests created by older peers which only knew
+    /// `sandbox` and `autoApprove`.
+    pub fn effective_permission_mode(&self) -> PermissionMode {
+        match (self.sandbox, self.auto_approve) {
+            (SandboxLevel::ReadOnly, _) => PermissionMode::Plan,
+            (SandboxLevel::DangerFullAccess, true) => PermissionMode::FullAccess,
+            (SandboxLevel::WorkspaceWrite, true) => PermissionMode::AcceptEdits,
+            _ => PermissionMode::Default,
+        }
+    }
 }
 
 /// A decoded tool invocation, reduced to the fields each kind renders.
@@ -304,6 +345,27 @@ mod tests {
         let round: RunRequest =
             serde_json::from_value(serde_json::to_value(&req).unwrap()).unwrap();
         assert_eq!(round.attachments, vec!["/tmp/a.png".to_string()]);
+    }
+
+    #[test]
+    fn permission_modes_map_to_legacy_run_fields() {
+        assert_eq!(
+            PermissionMode::Default.sandbox(),
+            SandboxLevel::WorkspaceWrite
+        );
+        assert!(!PermissionMode::Default.auto_approve());
+        assert_eq!(PermissionMode::Plan.sandbox(), SandboxLevel::ReadOnly);
+        assert!(!PermissionMode::Plan.auto_approve());
+        assert_eq!(
+            PermissionMode::AcceptEdits.sandbox(),
+            SandboxLevel::WorkspaceWrite
+        );
+        assert!(PermissionMode::AcceptEdits.auto_approve());
+        assert_eq!(
+            PermissionMode::FullAccess.sandbox(),
+            SandboxLevel::DangerFullAccess
+        );
+        assert!(PermissionMode::FullAccess.auto_approve());
     }
 
     #[test]

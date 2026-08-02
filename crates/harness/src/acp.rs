@@ -13,14 +13,15 @@ use std::sync::{Arc, Mutex};
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
     CancelNotification, ClientCapabilities, ClientSessionCapabilities, ContentBlock,
-    Implementation, InitializeRequest, LoadSessionRequest, NewSessionRequest, PermissionOption,
-    PermissionOptionKind, PromptRequest, RequestPermissionOutcome, RequestPermissionRequest,
-    RequestPermissionResponse, SelectedPermissionOutcome, SessionConfigKind, SessionConfigOption,
-    SessionConfigOptionCategory, SessionConfigOptionsCapabilities, SessionConfigSelectOptions,
-    SessionId, SessionNotification, SessionUpdate, SetSessionConfigOptionRequest, StopReason,
-    TextContent, ToolCall, ToolCallStatus, ToolKind,
+    Implementation, InitializeRequest, LoadSessionRequest, McpServer, McpServerHttp,
+    NewSessionRequest, PermissionOption, PermissionOptionKind, PromptRequest,
+    RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
+    SelectedPermissionOutcome, SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory,
+    SessionConfigOptionsCapabilities, SessionConfigSelectOptions, SessionId, SessionNotification,
+    SessionUpdate, SetSessionConfigOptionRequest, StopReason, TextContent, ToolCall,
+    ToolCallStatus, ToolKind,
 };
-use agent_client_protocol::{AcpAgent, AcpAgentConfig, Agent, ConnectionTo};
+use agent_client_protocol::{AcpAgent, AcpAgentConfig, Agent, ConnectionTo, LineDirection};
 use async_trait::async_trait;
 use base64::Engine;
 use futures::StreamExt;
@@ -29,13 +30,14 @@ use serde::Deserialize;
 use tokio::sync::mpsc;
 
 use comet_proto::{
-    AgentEvent, DoneStatus, HarnessId, Model, ReasoningLevel, RunRequest, SteeringMode,
-    ToolCall as CometToolCall, UserInputQuestion,
+    AgentEvent, DoneStatus, HarnessId, Model, PermissionMode, ReasoningLevel, RunRequest,
+    SteeringMode, ToolCall as CometToolCall, UserInputQuestion,
 };
 
 use crate::{Harness, HarnessError, RunControls};
 
 const ENV_AGENT: &str = "COMET_ACP_AGENT";
+const CODE_CONTEXT_MCP_NAME: &str = "codebase-retrieval";
 const REASONING_LEVELS: &[ReasoningLevel] = &[ReasoningLevel::Medium];
 
 type InputRequester = dyn Fn(
@@ -49,6 +51,7 @@ type InputRequester = dyn Fn(
 pub struct AcpHarness {
     command: Option<String>,
     config_file: Option<PathBuf>,
+    mcp_server_url: Option<String>,
 }
 
 impl AcpHarness {
@@ -61,12 +64,19 @@ impl AcpHarness {
         Self {
             command: Some(command.into()),
             config_file: None,
+            mcp_server_url: None,
         }
     }
 
     /// Read the active agent command from Comet's device-local ACP settings.
     pub fn with_config_file(mut self, path: impl Into<PathBuf>) -> Self {
         self.config_file = Some(path.into());
+        self
+    }
+
+    /// Add Comet's managed code-context MCP server to each ACP session.
+    pub fn with_mcp_server(mut self, url: impl Into<String>) -> Self {
+        self.mcp_server_url = Some(url.into());
         self
     }
 
@@ -137,24 +147,50 @@ impl Harness for AcpHarness {
         let agent = AcpAgent::from_str(&command).map_err(|error| {
             HarnessError::Protocol(format!("invalid ACP agent config: {error}"))
         })?;
-        let models = agent_client_protocol::Client
+        let agent = with_stderr_logging(agent);
+        let discovered_models = Arc::new(Mutex::new(None));
+        let discovery_result = agent_client_protocol::Client
             .builder()
-            .connect_with(agent, |connection: ConnectionTo<Agent>| async move {
-                initialize(&connection).await?;
-                let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
-                let response = connection
-                    .send_request(NewSessionRequest::new(cwd))
-                    .block_task()
-                    .await?;
-                Ok(models_from_config_options(
-                    response.config_options.as_deref(),
-                ))
+            .connect_with(agent, {
+                let discovered_models = discovered_models.clone();
+                move |connection: ConnectionTo<Agent>| async move {
+                    initialize(&connection).await?;
+                    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
+                    let response = connection
+                        .send_request(NewSessionRequest::new(cwd))
+                        .block_task()
+                        .await?;
+                    let models = models_from_config_options(response.config_options.as_deref());
+                    *discovered_models
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(models.clone());
+                    Ok(models)
+                }
             })
-            .await
-            .map_err(|error| {
-                HarnessError::Protocol(format!("could not list ACP models: {error}"))
-            })?;
-        Ok(models)
+            .await;
+
+        match discovery_result {
+            Ok(models) => Ok(models),
+            Err(error) => {
+                if let Some(models) = discovered_models
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take()
+                {
+                    tracing::debug!(
+                        error = %error,
+                        "ACP agent exited after model discovery; using discovered models"
+                    );
+                    Ok(models)
+                } else {
+                    tracing::debug!(
+                        error = %error,
+                        "ACP model discovery failed; using default model"
+                    );
+                    Ok(vec![default_acp_model(REASONING_LEVELS.to_vec())])
+                }
+            }
+        }
     }
 
     async fn run(
@@ -178,10 +214,12 @@ impl Harness for AcpHarness {
         } = controls;
         let request_input = Arc::new(request_input);
         let permission_input = request_input.clone();
-        let auto_approve = request.auto_approve;
+        let permission_mode = request.effective_permission_mode();
+        let mcp_server_url = self.mcp_server_url.clone();
 
         tokio::spawn(async move {
             let (agent, pid_file) = instrument_agent_for_memory(agent);
+            let agent = with_stderr_logging(agent);
             let memory_stop = crate::CancellationToken::new();
             let memory_reporter: Arc<dyn Fn(Option<u64>) + Send + Sync> = report_memory.into();
             let memory_task = pid_file.clone().map(|path| {
@@ -209,7 +247,7 @@ impl Harness for AcpHarness {
                     async move |permission: RequestPermissionRequest, responder, _cx| {
                         let outcome = permission_outcome(
                             &permission,
-                            auto_approve,
+                            permission_mode,
                             permission_input.as_ref().as_ref(),
                         )
                         .await;
@@ -218,7 +256,15 @@ impl Harness for AcpHarness {
                     agent_client_protocol::on_receive_request!(),
                 )
                 .connect_with(agent, |connection: ConnectionTo<Agent>| async move {
-                    run_connection(connection, request, steering, interrupt, connection_tx).await
+                    run_connection(
+                        connection,
+                        request,
+                        steering,
+                        interrupt,
+                        connection_tx,
+                        mcp_server_url,
+                    )
+                    .await
                 })
                 .await;
 
@@ -232,6 +278,7 @@ impl Harness for AcpHarness {
             }
 
             if let Err(error) = result {
+                tracing::warn!(error = %error, "ACP session connection failed");
                 let _ = event_tx
                     .send(Ok(AgentEvent::Done {
                         status: DoneStatus::Errored,
@@ -248,6 +295,20 @@ impl Harness for AcpHarness {
         })
         .boxed())
     }
+}
+
+fn with_stderr_logging(agent: AcpAgent) -> AcpAgent {
+    agent.with_debug(|line, direction| match direction {
+        LineDirection::Stderr => tracing::warn!(stderr = %line, "ACP agent stderr"),
+        LineDirection::Stdout => {
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(line)
+                && let Some(error) = value.get("error")
+            {
+                tracing::warn!(error = %error, "ACP agent returned a protocol error");
+            }
+        }
+        LineDirection::Stdin => {}
+    })
 }
 
 #[cfg(unix)]
@@ -273,6 +334,13 @@ fn instrument_agent_for_memory(agent: AcpAgent) -> (AcpAgent, Option<PathBuf>) {
 #[cfg(not(unix))]
 fn instrument_agent_for_memory(agent: AcpAgent) -> (AcpAgent, Option<PathBuf>) {
     (agent, None)
+}
+
+fn mcp_servers(url: Option<&str>) -> Vec<McpServer> {
+    url.filter(|url| !url.trim().is_empty())
+        .map(|url| McpServer::Http(McpServerHttp::new(CODE_CONTEXT_MCP_NAME, url)))
+        .into_iter()
+        .collect()
 }
 
 async fn poll_process_memory(
@@ -345,13 +413,18 @@ async fn run_connection(
     mut steering: mpsc::Receiver<crate::SteerMessage>,
     interrupt: crate::CancellationToken,
     event_tx: mpsc::Sender<Result<AgentEvent, HarnessError>>,
+    mcp_server_url: Option<String>,
 ) -> agent_client_protocol::Result<()> {
     initialize(&connection).await?;
 
     let cwd = absolute_cwd(&request.cwd);
+    let mcp_servers = mcp_servers(mcp_server_url.as_deref());
     let (session_id, config_options) = if let Some(resume) = &request.resume {
         match connection
-            .send_request(LoadSessionRequest::new(resume.clone(), cwd.clone()))
+            .send_request(
+                LoadSessionRequest::new(resume.clone(), cwd.clone())
+                    .mcp_servers(mcp_servers.clone()),
+            )
             .block_task()
             .await
         {
@@ -359,7 +432,7 @@ async fn run_connection(
             Err(error) => {
                 tracing::debug!(target: "comet_harness::acp", %error, "session/load failed; starting a new ACP session");
                 let response = connection
-                    .send_request(NewSessionRequest::new(cwd.clone()))
+                    .send_request(NewSessionRequest::new(cwd.clone()).mcp_servers(mcp_servers))
                     .block_task()
                     .await?;
                 (response.session_id, response.config_options)
@@ -383,6 +456,17 @@ async fn run_connection(
         .as_deref()
         .filter(|options| !options.is_empty())
         .or(config_options.as_deref());
+    let mode_config_options = set_session_permission_mode(
+        &connection,
+        &session_id,
+        request.effective_permission_mode(),
+        effective_config_options,
+    )
+    .await?;
+    let effective_config_options = mode_config_options
+        .as_deref()
+        .filter(|options| !options.is_empty())
+        .or(effective_config_options);
     set_session_reasoning(
         &connection,
         &session_id,
@@ -527,6 +611,20 @@ fn thought_level_config_option(options: &[SessionConfigOption]) -> Option<&Sessi
             normalize_config_name(&option.name).as_str(),
             "thoughtlevel" | "reasoning" | "reasoninglevel"
         )
+    })
+}
+
+fn mode_config_option(options: &[SessionConfigOption]) -> Option<&SessionConfigOption> {
+    options.iter().find(|option| {
+        matches!(option.category, Some(SessionConfigOptionCategory::Mode))
+            || matches!(
+                normalize_config_name(&option.id.to_string()).as_str(),
+                "mode" | "permissionmode"
+            )
+            || matches!(
+                normalize_config_name(&option.name).as_str(),
+                "mode" | "permissionmode"
+            )
     })
 }
 
@@ -727,6 +825,42 @@ async fn set_session_reasoning(
     }
 }
 
+async fn set_session_permission_mode(
+    connection: &ConnectionTo<Agent>,
+    session_id: &SessionId,
+    mode: PermissionMode,
+    config_options: Option<&[SessionConfigOption]>,
+) -> agent_client_protocol::Result<Option<Vec<SessionConfigOption>>> {
+    let Some(option) = config_options.and_then(mode_config_option) else {
+        return Ok(None);
+    };
+    let aliases: &[&str] = match mode {
+        PermissionMode::Default => &["default", "ask", "askbeforeedits"],
+        PermissionMode::Plan => &["plan", "planning", "readonly"],
+        PermissionMode::AcceptEdits => &["acceptedits", "autoedit", "edit"],
+        PermissionMode::FullAccess => &["fullaccess", "bypasspermissions", "yolo"],
+    };
+    let Some(value) = select_choices(option).into_iter().find_map(|choice| {
+        let value = normalize_config_name(&choice.value.to_string());
+        let name = normalize_config_name(&choice.name);
+        aliases
+            .iter()
+            .any(|alias| value == *alias || name == *alias)
+            .then(|| choice.value.to_string())
+    }) else {
+        return Ok(None);
+    };
+    let response = connection
+        .send_request(SetSessionConfigOptionRequest::new(
+            session_id.clone(),
+            option.id.clone(),
+            value.as_str(),
+        ))
+        .block_task()
+        .await?;
+    Ok(Some(response.config_options))
+}
+
 fn is_legacy_config_option_response(error: &agent_client_protocol::Error) -> bool {
     let error = error.to_string();
     error.contains("missing field 'configOptions'")
@@ -869,10 +1003,25 @@ fn normalize_tool_call(tool: &ToolCall) -> CometToolCall {
 
 async fn permission_outcome(
     request: &RequestPermissionRequest,
-    auto_approve: bool,
+    permission_mode: PermissionMode,
     request_input: &InputRequester,
 ) -> RequestPermissionOutcome {
-    if auto_approve && let Some(option) = preferred_allow_option(&request.options) {
+    let edit = matches!(
+        request.tool_call.fields.kind,
+        Some(ToolKind::Edit | ToolKind::Delete | ToolKind::Move)
+    );
+    if permission_mode == PermissionMode::Plan
+        && edit
+        && let Some(option) = preferred_reject_option(&request.options)
+    {
+        return RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(
+            option.option_id.clone(),
+        ));
+    }
+    if (permission_mode == PermissionMode::FullAccess
+        || (permission_mode == PermissionMode::AcceptEdits && edit))
+        && let Some(option) = preferred_allow_option(&request.options)
+    {
         return RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(
             option.option_id.clone(),
         ));
@@ -921,6 +1070,17 @@ fn preferred_allow_option(options: &[PermissionOption]) -> Option<&PermissionOpt
             options
                 .iter()
                 .find(|option| option.kind == PermissionOptionKind::AllowOnce)
+        })
+}
+
+fn preferred_reject_option(options: &[PermissionOption]) -> Option<&PermissionOption> {
+    options
+        .iter()
+        .find(|option| option.kind == PermissionOptionKind::RejectAlways)
+        .or_else(|| {
+            options
+                .iter()
+                .find(|option| option.kind == PermissionOptionKind::RejectOnce)
         })
 }
 
@@ -1007,6 +1167,17 @@ mod tests {
         .unwrap();
         let harness = AcpHarness::new().with_config_file(config);
         assert_eq!(harness.command().unwrap(), "second-agent --acp");
+    }
+
+    #[test]
+    fn managed_context_engine_is_added_as_http_mcp_server() {
+        let servers = mcp_servers(Some("http://127.0.0.1:6699/mcp"));
+        assert_eq!(servers.len(), 1);
+        let McpServer::Http(server) = &servers[0] else {
+            panic!("expected HTTP MCP server");
+        };
+        assert_eq!(server.name, CODE_CONTEXT_MCP_NAME);
+        assert_eq!(server.url, "http://127.0.0.1:6699/mcp");
     }
 
     #[cfg(unix)]

@@ -266,11 +266,14 @@ final class SessionStore {
             return
         }
         let messageId = UUID().uuidString.lowercased()
+        let mode = chat.config?.effectivePermissionMode ?? .default
         let request = RunRequest(prompt: prompt,
                                  model: chat.config?.model,
                                  reasoning: chat.config?.reasoning,
                                  cwd: chat.cwd ?? "",
-                                 sandbox: chat.config?.sandbox ?? "workspace-write")
+                                 sandbox: mode.sandbox,
+                                 autoApprove: mode.autoApprove,
+                                 permissionMode: mode)
         queueCommand(kind: "run", payload: [
             "kind": "run",
             "request": encodableJSON(request),

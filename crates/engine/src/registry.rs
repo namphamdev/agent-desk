@@ -252,13 +252,20 @@ pub fn default_registry_with_config(
             steering_mode: SteeringMode::TurnBoundary,
             reasoning_levels: vec![ReasoningLevel::Medium],
         },
-        Box::new(move || {
-            let harness = comet_harness::AcpHarness::new();
-            let harness = match &acp_config_file {
-                Some(path) => harness.with_config_file(path.clone()),
-                None => harness,
-            };
-            Ok(Arc::new(harness) as Arc<dyn Harness>)
+        Box::new({
+            let mcp_server_url = mcp_server_url.map(str::to_owned);
+            move || {
+                let harness = comet_harness::AcpHarness::new();
+                let harness = match &acp_config_file {
+                    Some(path) => harness.with_config_file(path.clone()),
+                    None => harness,
+                };
+                let harness = match &mcp_server_url {
+                    Some(url) => harness.with_mcp_server(url.clone()),
+                    None => harness,
+                };
+                Ok(Arc::new(harness) as Arc<dyn Harness>)
+            }
         }),
     );
     registry

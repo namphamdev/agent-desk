@@ -21,7 +21,7 @@ use std::time::Duration;
 
 use gpui::{
     AnyElement, App, ClipboardItem, Context, Entity, ListAlignment, ListState, MouseButton,
-    SharedString, Subscription, Task, Window, div, font, list, prelude::*, px,
+    SharedString, Subscription, Task, Window, div, font, prelude::*, px,
 };
 use serde::Deserialize;
 
@@ -617,11 +617,19 @@ impl Changes {
 
     fn git_context(&self, cx: &App) -> Option<(String, Option<String>)> {
         let state = self.state.read(cx);
-        let chat = state.selected_chat_row()?;
-        let cwd = chat.cwd.clone()?;
-        let target = (state.local_device_id.as_deref() != Some(chat.device_id.as_str()))
-            .then(|| chat.device_id.clone());
-        Some((cwd, target))
+        if let Some(chat) = state.selected_chat_row() {
+            let cwd = chat.cwd.clone()?;
+            let target = (state.local_device_id.as_deref() != Some(chat.device_id.as_str()))
+                .then(|| chat.device_id.clone());
+            return Some((cwd, target));
+        }
+
+        // The new-session canvas has no chat yet, but the selected Space still
+        // identifies the repository whose changes should be shown.
+        let space = state.selected_space_row()?;
+        let target = (state.local_device_id.as_deref() != Some(space.device_id.as_str()))
+            .then(|| space.device_id.clone());
+        Some((space.path.clone(), target))
     }
 
     fn with_git_target(
@@ -1037,7 +1045,14 @@ impl Changes {
     /// and the pane sits on "Preparing diff…" forever (user report).
     fn desired_target(&self, cx: &App) -> Option<String> {
         let state = self.state.read(cx);
-        let device = state.selected_chat_row()?.device_id.clone();
+        let device = state
+            .selected_chat_row()
+            .map(|chat| chat.device_id.clone())
+            .or_else(|| {
+                state
+                    .selected_space_row()
+                    .map(|space| space.device_id.clone())
+            })?;
         (state.local_device_id.as_deref() != Some(device.as_str())).then_some(device)
     }
 
@@ -1142,8 +1157,14 @@ impl Changes {
 
     fn resolved(&self, cx: &App) -> Option<CheckoutDiff> {
         let state = self.state.read(cx);
-        let chat = state.selected_chat_row()?;
-        resolve_diff(&self.diffs, chat).cloned()
+        if let Some(chat) = state.selected_chat_row() {
+            return resolve_diff(&self.diffs, chat).cloned();
+        }
+        let space = state.selected_space_row()?;
+        self.diffs
+            .iter()
+            .find(|diff| diff.device_id == space.device_id && diff.cwd == space.path)
+            .cloned()
     }
 
     /// Reconcile parsed content with the currently-resolved diff.
@@ -2511,13 +2532,7 @@ impl Render for Changes {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::of(cx).clone();
         let resolved = self.resolved(cx);
-        // With no session selected (new-chat canvas) there is nothing to
-        // prepare — show the quiet empty state, not an endless spinner.
-        let phase = if self.state.read(cx).selected_chat_row().is_none() {
-            DiffPhase::Clean
-        } else {
-            diff_phase(resolved.as_ref())
-        };
+        let phase = diff_phase(resolved.as_ref());
         let error = self.error.clone();
 
         let content: AnyElement = match phase {

@@ -1233,6 +1233,7 @@ impl App {
             reasoning: draft.reasoning,
             model_options: Default::default(),
             sandbox: SandboxLevel::WorkspaceWrite,
+            permission_mode: Default::default(),
         });
         effects.push(Command::StartSession(Box::new(crate::link::StartSession {
             chat_id,
@@ -2140,6 +2141,7 @@ impl App {
             reasoning: None,
             model_options: Default::default(),
             sandbox: SandboxLevel::WorkspaceWrite,
+            permission_mode: Default::default(),
         });
         config.reasoning = Some(level);
         let Ok(value) = serde_json::to_value(&config) else {
@@ -2170,6 +2172,7 @@ impl App {
             reasoning: None,
             model_options: Default::default(),
             sandbox: SandboxLevel::WorkspaceWrite,
+            permission_mode: Default::default(),
         });
         config.model = Some(model.id.clone());
         // Keep the reasoning level only if the new model offers it.

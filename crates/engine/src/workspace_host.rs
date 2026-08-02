@@ -711,6 +711,7 @@ impl WorkspaceHost {
 
 impl WorkspaceHostInner {
     fn publish(&self) {
+        self.merge_obsolete_device_registrations();
         match self.doc.read_all() {
             Ok(mut state) => {
                 self.overlay_presence(&mut state.devices);
@@ -724,6 +725,48 @@ impl WorkspaceHostInner {
             }
             Err(err) => {
                 tracing::warn!(error = %err, "workspace read failed");
+            }
+        }
+    }
+
+    /// Upgrades used to be able to create a fresh device id. Once the old row
+    /// arrives from sync, move its owned rows to this running (newer) version
+    /// and remove the offline registration.
+    fn merge_obsolete_device_registrations(&self) {
+        let Ok(devices) = self.doc.read_devices() else {
+            return;
+        };
+        let Some(current) = devices
+            .iter()
+            .find(|device| device.id == self.config.device_id)
+        else {
+            return;
+        };
+        let Some(current_version) = current.version.as_deref() else {
+            return;
+        };
+        for obsolete in devices.iter().filter(|device| {
+            device.id != current.id
+                && device.name == current.name
+                && device.platform == current.platform
+                && device
+                    .version
+                    .as_deref()
+                    .is_some_and(|version| version_is_newer(current_version, version))
+        }) {
+            match self.doc.merge_device_into(&obsolete.id, &current.id) {
+                Ok(true) => tracing::info!(
+                    obsolete_device = %obsolete.id,
+                    device = %current.id,
+                    "merged obsolete device registration"
+                ),
+                Ok(false) => {}
+                Err(err) => tracing::warn!(
+                    obsolete_device = %obsolete.id,
+                    device = %current.id,
+                    error = %err,
+                    "failed to merge obsolete device registration"
+                ),
             }
         }
     }
@@ -802,6 +845,23 @@ impl WorkspaceHostInner {
             room.ephemeral()
                 .set(&presence_key(&self.config.device_id), now_ms());
         }
+    }
+}
+
+fn version_is_newer(candidate: &str, previous: &str) -> bool {
+    fn numeric_core(version: &str) -> Option<Vec<u64>> {
+        version
+            .split_once('-')
+            .map_or(version, |(core, _)| core)
+            .split('.')
+            .map(str::parse)
+            .collect::<Result<Vec<_>, _>>()
+            .ok()
+    }
+
+    match (numeric_core(candidate), numeric_core(previous)) {
+        (Some(candidate), Some(previous)) => candidate > previous,
+        _ => candidate > previous,
     }
 }
 
@@ -941,5 +1001,18 @@ async fn workspace_task(weak: Weak<WorkspaceHostInner>, mut changed_rx: watch::R
                 inner.publish();
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::version_is_newer;
+
+    #[test]
+    fn compares_numeric_app_versions() {
+        assert!(version_is_newer("0.1.9", "0.1.8"));
+        assert!(version_is_newer("0.1.10", "0.1.9"));
+        assert!(!version_is_newer("0.1.8", "0.1.9"));
+        assert!(!version_is_newer("0.1.9", "0.1.9"));
     }
 }

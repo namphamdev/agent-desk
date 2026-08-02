@@ -161,6 +161,9 @@ fn run_request(prompt: &str) -> RunRequest {
         auto_approve: true,
         attachments: Vec::new(),
         resume: None,
+        seed: None,
+        seed_purpose: None,
+        seed_role: None,
     }
 }
 
@@ -419,6 +422,7 @@ async fn chat_config_selects_the_run_harness() {
                 reasoning: None,
                 model_options: Default::default(),
                 sandbox: SandboxLevel::WorkspaceWrite,
+                permission_mode: Default::default(),
             }),
             None,
         )

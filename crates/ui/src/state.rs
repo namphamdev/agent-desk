@@ -1479,6 +1479,7 @@ mod tests {
             reasoning: Some(comet_proto::ReasoningLevel::XHigh),
             model_options: serde_json::Map::new(),
             sandbox: comet_proto::SandboxLevel::WorkspaceWrite,
+            permission_mode: Default::default(),
         };
         state.apply_chat_config("a", config.clone());
         assert_eq!(
@@ -1503,6 +1504,7 @@ mod tests {
                 reasoning: None,
                 model_options: serde_json::Map::new(),
                 sandbox: comet_proto::SandboxLevel::WorkspaceWrite,
+                permission_mode: Default::default(),
             },
         );
     }

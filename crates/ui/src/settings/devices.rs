@@ -3,10 +3,12 @@
 //! and a Rename dialog (Mutate renameDevice).
 
 use chrono::{DateTime, Utc};
+use comet_proto::Device;
 use gpui::{
     AnyElement, ClipboardItem, Context, Entity, SharedString, Subscription, Task, Window, div,
     prelude::*, px,
 };
+use std::collections::HashSet;
 use std::time::Duration;
 
 use comet_rpc::methods;
@@ -199,6 +201,67 @@ pub fn short_id(id: &str) -> String {
     }
 }
 
+/// Collapse registry rows created by different app versions on the same named
+/// machine. Device ids remain untouched in synced state because spaces and
+/// routing refer to them; this only prevents version-specific registrations
+/// from appearing as separate devices.
+pub fn devices_for_display(devices: Vec<Device>, local_id: Option<&str>) -> Vec<Device> {
+    let mut displayed = Vec::new();
+    let mut consumed = vec![false; devices.len()];
+
+    for (index, device) in devices.iter().enumerate() {
+        if consumed[index] {
+            continue;
+        }
+        let group: Vec<usize> = devices
+            .iter()
+            .enumerate()
+            .filter_map(|(candidate_index, candidate)| {
+                (!consumed[candidate_index]
+                    && candidate.name == device.name
+                    && candidate.platform == device.platform)
+                    .then_some(candidate_index)
+            })
+            .collect();
+        let versions: HashSet<&str> = group
+            .iter()
+            .filter_map(|&candidate_index| {
+                devices[candidate_index]
+                    .version
+                    .as_deref()
+                    .filter(|version| !version.is_empty())
+            })
+            .collect();
+
+        if versions.len() < 2 {
+            displayed.extend(group.iter().map(|&candidate_index| {
+                consumed[candidate_index] = true;
+                devices[candidate_index].clone()
+            }));
+            continue;
+        }
+
+        let representative = group
+            .iter()
+            .copied()
+            .max_by_key(|&candidate_index| {
+                let candidate = &devices[candidate_index];
+                (
+                    local_id == Some(candidate.id.as_str()),
+                    candidate.last_seen_at,
+                    candidate.created_at,
+                )
+            })
+            .expect("device group is non-empty");
+        for candidate_index in group {
+            consumed[candidate_index] = true;
+        }
+        displayed.push(devices[representative].clone());
+    }
+
+    displayed
+}
+
 impl Render for DevicesPage {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         use crate::settings::widgets;
@@ -208,6 +271,7 @@ impl Render for DevicesPage {
             let state = self.state.read(cx);
             (state.devices.clone(), state.local_device_id.clone())
         };
+        let devices = devices_for_display(devices, local_id.as_deref());
         let copied = self.copied.clone();
         let dialog = self.render_rename_dialog(window.viewport_size(), cx);
         let emerald = crate::theme::oklch(0.765, 0.177, 163.223); // emerald-400
@@ -437,5 +501,61 @@ mod tests {
             format_last_seen(Some(now - TimeDelta::days(2)), now),
             "2d ago"
         );
+    }
+
+    fn device(id: &str, version: &str, last_seen_at: DateTime<Utc>) -> Device {
+        Device {
+            id: id.into(),
+            name: "workstation".into(),
+            platform: "macos".into(),
+            last_seen_at: Some(last_seen_at),
+            created_at: None,
+            version: Some(version.into()),
+        }
+    }
+
+    #[test]
+    fn different_versions_of_the_same_device_render_once() {
+        let now = Utc::now();
+        let displayed = devices_for_display(
+            vec![
+                device("old-id", "0.1.8", now - TimeDelta::days(1)),
+                device("new-id", "0.1.9", now),
+            ],
+            None,
+        );
+
+        assert_eq!(displayed.len(), 1);
+        assert_eq!(displayed[0].id, "new-id");
+        assert_eq!(displayed[0].version.as_deref(), Some("0.1.9"));
+    }
+
+    #[test]
+    fn local_registration_wins_when_versions_are_deduplicated() {
+        let now = Utc::now();
+        let displayed = devices_for_display(
+            vec![
+                device("local-id", "0.1.8", now - TimeDelta::days(1)),
+                device("remote-id", "0.1.9", now),
+            ],
+            Some("local-id"),
+        );
+
+        assert_eq!(displayed.len(), 1);
+        assert_eq!(displayed[0].id, "local-id");
+    }
+
+    #[test]
+    fn same_version_registrations_remain_separate_devices() {
+        let now = Utc::now();
+        let displayed = devices_for_display(
+            vec![
+                device("first-id", "0.1.9", now),
+                device("second-id", "0.1.9", now),
+            ],
+            None,
+        );
+
+        assert_eq!(displayed.len(), 2);
     }
 }

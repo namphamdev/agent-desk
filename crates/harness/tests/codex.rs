@@ -44,6 +44,9 @@ fn request(prompt: &str) -> RunRequest {
         auto_approve: true,
         attachments: Vec::new(),
         resume: None,
+        seed: None,
+        seed_purpose: None,
+        seed_role: None,
     }
 }
 

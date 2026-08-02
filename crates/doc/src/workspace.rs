@@ -145,6 +145,40 @@ impl WorkspaceDoc {
         Ok(devices)
     }
 
+    /// Replace an obsolete device registration everywhere it is referenced,
+    /// then remove its registry row. Used when an app upgrade accidentally
+    /// generated a new id for the same physical device.
+    pub fn merge_device_into(&self, obsolete_id: &str, current_id: &str) -> Result<bool, DocError> {
+        if obsolete_id == current_id || self.existing_row("devices", obsolete_id).is_none() {
+            return Ok(false);
+        }
+
+        for container in ["spaces", "chats", "sessions"] {
+            let parent = self.doc.get_map(container);
+            let keys: Vec<String> = parent
+                .get_deep_value()
+                .to_json_value()
+                .as_object()
+                .map(|rows| rows.keys().cloned().collect())
+                .unwrap_or_default();
+            for key in keys {
+                let Some(row) = self.existing_row(container, &key) else {
+                    continue;
+                };
+                if matches!(
+                    row.get("deviceId"),
+                    Some(loro::ValueOrContainer::Value(LoroValue::String(id)))
+                        if id.as_ref() == obsolete_id
+                ) {
+                    row.insert("deviceId", current_id)?;
+                }
+            }
+        }
+        self.doc.get_map("devices").delete(obsolete_id)?;
+        self.doc.commit();
+        Ok(true)
+    }
+
     // ── spaces ──────────────────────────────────────────────────────────────
 
     /// Upsert a full space row (creation from any device; owner-only fields are
@@ -738,6 +772,7 @@ mod tests {
                 reasoning: None,
                 model_options: Default::default(),
                 sandbox: SandboxLevel::WorkspaceWrite,
+                permission_mode: Default::default(),
             }),
             last_message_preview: None,
             last_message_at: None,
@@ -803,6 +838,7 @@ mod tests {
             reasoning: Some(comet_proto::ReasoningLevel::XHigh),
             model_options: options,
             sandbox: SandboxLevel::WorkspaceWrite,
+            permission_mode: Default::default(),
         };
         assert!(ws.set_chat_config("chat-1", &config).unwrap());
         let row = ws.chat("chat-1").unwrap().expect("row exists");
@@ -838,6 +874,33 @@ mod tests {
         assert_eq!(chats.len(), 1);
         assert_eq!(chats[0].title, None);
         assert_eq!(chats[0].last_message_preview.as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn merging_device_reassigns_all_owned_rows() {
+        let ws = WorkspaceDoc::new();
+        ws.upsert_device(&device("old-id", "workstation")).unwrap();
+        ws.upsert_device(&device("new-id", "workstation")).unwrap();
+        ws.upsert_space(&space("space-1", "old-id", "/work"))
+            .unwrap();
+        ws.upsert_chat(&chat("chat-1", "old-id")).unwrap();
+        ws.upsert_session(&session("chat-1", "old-id", SessionStatus::Working))
+            .unwrap();
+
+        assert!(ws.merge_device_into("old-id", "new-id").unwrap());
+        let state = ws.read_all().unwrap();
+        assert_eq!(
+            state
+                .devices
+                .iter()
+                .map(|device| device.id.as_str())
+                .collect::<Vec<_>>(),
+            ["new-id"]
+        );
+        assert_eq!(state.spaces[0].device_id, "new-id");
+        assert_eq!(state.chats[0].device_id, "new-id");
+        assert_eq!(state.sessions[0].device_id, "new-id");
+        assert!(!ws.merge_device_into("old-id", "new-id").unwrap());
     }
 
     #[test]

@@ -263,6 +263,7 @@ impl AccountsPage {
             let s = self.state.read(cx);
             (s.devices.clone(), s.local_device_id.clone())
         };
+        devices = crate::settings::devices::devices_for_display(devices, local_id.as_deref());
         // Stable row order (registration time, then id) — comet's switcher
         // sorts the same way so rows never reshuffle on heartbeats.
         devices.sort_by(|a, b| {

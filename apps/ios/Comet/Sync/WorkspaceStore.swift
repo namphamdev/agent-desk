@@ -166,10 +166,13 @@ final class WorkspaceStore {
                   let deviceId = m["deviceId"]?.stringValue else { return nil }
             var chatConfig: ChatConfig?
             if let c = m["config"]?.mapValue {
+                let modeStr = c["permissionMode"]?.stringValue
+                let mode = modeStr.flatMap(PermissionMode.init(rawValue:))
                 chatConfig = ChatConfig(harness: c["harness"]?.stringValue ?? "claude-code",
                                         model: c["model"]?.stringValue,
                                         reasoning: c["reasoning"]?.stringValue,
-                                        sandbox: c["sandbox"]?.stringValue)
+                                        sandbox: c["sandbox"]?.stringValue,
+                                        permissionMode: mode)
             }
             return Chat(id: id, deviceId: deviceId,
                         title: m["title"]?.stringValue,

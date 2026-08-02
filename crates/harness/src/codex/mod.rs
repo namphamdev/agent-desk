@@ -43,8 +43,8 @@ use tokio::process::{Child, Command};
 use tokio::sync::mpsc;
 
 use comet_proto::{
-    AgentEvent, DoneStatus, HarnessId, Model, ReasoningLevel, RunRequest, SteeringMode,
-    UserInputAnswer, UserInputQuestion,
+    AgentEvent, DoneStatus, HarnessId, Model, PermissionMode, ReasoningLevel, RunRequest,
+    SteeringMode, UserInputAnswer, UserInputQuestion,
 };
 
 use crate::{Harness, HarnessError, RunControls};
@@ -426,13 +426,12 @@ async fn run_session(session: Session) {
     let request_input = Arc::new(request_input);
 
     // ---- wire params ------------------------------------------------------
-    // Parity with the Claude adapter, which auto-approves every `can_use_tool`
-    // regardless of `auto_approve` (comet sessions run unattended; the sandbox
-    // is the guardrail): never surface wire approvals. "on-request" turned
-    // every command into a yes/no question (user report: "asking me for
-    // approval at every step"). The approval-as-input plumbing below stays for
-    // stray requests and a future explicit permission-mode setting.
-    let approval_policy = "never";
+    let permission_mode = request.effective_permission_mode();
+    let approval_policy = match permission_mode {
+        PermissionMode::Default | PermissionMode::Plan => "untrusted",
+        PermissionMode::AcceptEdits => "on-request",
+        PermissionMode::FullAccess => "never",
+    };
     let effort = to_effort(request.reasoning);
     // Service tier rides thread-start and every turn (mirrors the Codex IDE
     // client). "default" means Standard — omit it entirely.
@@ -804,7 +803,7 @@ async fn run_session(session: Session) {
                         id,
                         &method,
                         &params,
-                        request.auto_approve,
+                        permission_mode,
                         &request_input,
                     );
                 }
@@ -1024,7 +1023,7 @@ fn handle_server_request(
     id: Value,
     method: &str,
     params: &Value,
-    auto_approve: bool,
+    permission_mode: PermissionMode,
     request_input: &Arc<RequestInputFn>,
 ) {
     let is_approval = matches!(
@@ -1039,7 +1038,10 @@ fn handle_server_request(
         client.respond_error(&id, -32601, &format!("unsupported method: {method}"));
         return;
     }
-    if auto_approve {
+    if permission_mode == PermissionMode::FullAccess
+        || (permission_mode == PermissionMode::AcceptEdits
+            && method == "item/fileChange/requestApproval")
+    {
         client.respond(&id, json!({ "decision": "accept" }));
         return;
     }

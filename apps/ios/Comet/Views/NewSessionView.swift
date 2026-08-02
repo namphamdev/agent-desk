@@ -16,6 +16,7 @@ struct NewSessionView: View {
     @AppStorage("newSessionHarness") private var harness = "claude-code"
     @AppStorage("newSessionModel") private var storedModel = ""
     @AppStorage("newSessionReasoning") private var storedReasoning = ""
+    @AppStorage("newSessionPermissionMode") private var storedPermissionMode = PermissionMode.default.rawValue
 
     @State private var draft = ""
     @State private var showPicker = false
@@ -45,6 +46,11 @@ struct NewSessionView: View {
         if selectedModel.reasoningLevels.isEmpty { return nil }
         if selectedModel.reasoningLevels.contains(storedReasoning) { return storedReasoning }
         return HarnessCatalog.defaultReasoning(for: selectedModel)
+    }
+
+    private var permissionMode: PermissionMode {
+        get { PermissionMode(rawValue: storedPermissionMode) ?? .default }
+        set { storedPermissionMode = newValue.rawValue }
     }
 
     var body: some View {
@@ -122,6 +128,9 @@ struct NewSessionView: View {
             ), reasoning: Binding(
                 get: { reasoning },
                 set: { storedReasoning = $0 ?? "" }
+            ), permissionMode: Binding(
+                get: { permissionMode },
+                set: { storedPermissionMode = $0.rawValue }
             ), catalogs: catalogs)
         }
         .onAppear {
@@ -175,6 +184,13 @@ struct NewSessionView: View {
             }
             .buttonStyle(ChipPressButtonStyle())
 
+            // Permission mode chip
+            chip(systemIcon: permissionMode.iconName, label: permissionMode.label) {
+                focused = false
+                showPicker = true
+            }
+            .layoutPriority(-1)
+
             // Checkout + ref chips — the desktop footer (git spaces only).
             if space?.gitDetected == true {
                 chip(icon: checkoutIcon, label: checkoutLabel) {
@@ -195,6 +211,24 @@ struct NewSessionView: View {
         Button(action: action) {
             HStack(spacing: 6) {
                 LineIconView(icon, size: 13, color: Theme.textMuted)
+                Text(label)
+                    .font(Theme.sans(13, weight: .medium))
+                    .foregroundStyle(Theme.text.opacity(0.9))
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 12)
+            .frame(height: 36)
+            .background(whiteAlpha(0.10), in: Capsule())
+        }
+        .buttonStyle(ChipPressButtonStyle())
+    }
+
+    private func chip(systemIcon: String, label: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Image(systemName: systemIcon)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(Theme.textMuted)
                 Text(label)
                     .font(Theme.sans(13, weight: .medium))
                     .foregroundStyle(Theme.text.opacity(0.9))
@@ -290,7 +324,8 @@ struct NewSessionView: View {
         let prompt = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         busy = true
         let config = ChatConfig(harness: harness, model: selectedModel.id,
-                                reasoning: reasoning, sandbox: "workspace-write")
+                                reasoning: reasoning, sandbox: permissionMode.sandbox,
+                                permissionMode: permissionMode)
         Task { @MainActor in
             var cwd: String?
             var branch = selectedRef
@@ -351,6 +386,7 @@ struct ModelPickerSheet: View {
     @Binding var harness: String
     @Binding var modelId: String
     @Binding var reasoning: String?
+    @Binding var permissionMode: PermissionMode
     /// True when reconfiguring a live chat: the harness can't change mid-chat.
     var lockedHarness = false
     /// Live per-harness catalogs from the device (static fallback when absent).
@@ -410,6 +446,28 @@ struct ModelPickerSheet: View {
                                     if ix < m.reasoningLevels.count - 1 {
                                         SheetSeparator()
                                     }
+                                }
+                            }
+                        }
+                    }
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        SheetLabel("Permission mode")
+                        SheetCard {
+                            ForEach(Array(PermissionMode.allCases.enumerated()), id: \.element.id) { ix, mode in
+                                SheetSelectRow(title: mode.label,
+                                               subtitle: mode.description,
+                                               selected: mode == permissionMode,
+                                               leading: AnyView(
+                                                Image(systemName: mode.iconName)
+                                                    .font(.system(size: 14))
+                                                    .foregroundStyle(Theme.textMuted)
+                                                    .frame(width: 20)
+                                               )) {
+                                    permissionMode = mode
+                                }
+                                if ix < PermissionMode.allCases.count - 1 {
+                                    SheetSeparator()
                                 }
                             }
                         }

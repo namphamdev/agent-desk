@@ -30,8 +30,8 @@ use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::mpsc;
 
 use comet_proto::{
-    AgentEvent, DoneStatus, HarnessId, Model, ReasoningLevel, RunRequest, SteeringMode,
-    UserInputAnswer, UserInputQuestion,
+    AgentEvent, DoneStatus, HarnessId, Model, PermissionMode, ReasoningLevel, RunRequest,
+    SteeringMode, UserInputAnswer, UserInputQuestion,
 };
 
 use crate::{Harness, HarnessError, RunControls};
@@ -202,15 +202,16 @@ impl ClaudeHarness {
         if let Some(effort) = to_effort(request.reasoning, request.model.as_deref()) {
             cmd.args(["--effort", effort]);
         }
-        if request.auto_approve {
-            cmd.args([
+        match request.effective_permission_mode() {
+            PermissionMode::Default => cmd.args(["--permission-mode", "default"]),
+            PermissionMode::Plan => cmd.args(["--permission-mode", "plan"]),
+            PermissionMode::AcceptEdits => cmd.args(["--permission-mode", "acceptEdits"]),
+            PermissionMode::FullAccess => cmd.args([
                 "--permission-mode",
                 "bypassPermissions",
                 "--dangerously-skip-permissions",
-            ]);
-        } else {
-            cmd.args(["--permission-mode", "default"]);
-        }
+            ]),
+        };
         if let Some(resume) = &request.resume {
             cmd.arg(format!("--resume={resume}"));
         }
@@ -330,6 +331,7 @@ impl Harness for ClaudeHarness {
             event_tx,
             controls,
             reasoning: request.reasoning,
+            permission_mode: request.effective_permission_mode(),
             interrupt_grace: self.interrupt_grace,
             kill_grace: self.kill_grace,
             stderr_tail,
@@ -453,6 +455,7 @@ struct Session {
     event_tx: mpsc::Sender<Result<AgentEvent, HarnessError>>,
     controls: RunControls,
     reasoning: Option<ReasoningLevel>,
+    permission_mode: PermissionMode,
     interrupt_grace: Duration,
     kill_grace: Duration,
     /// Rolling stderr tail for the crash message on an unexpected exit.
@@ -469,6 +472,7 @@ async fn run_session(session: Session) {
         event_tx,
         controls,
         reasoning,
+        permission_mode,
         interrupt_grace,
         kill_grace,
         stderr_tail,
@@ -505,7 +509,7 @@ async fn run_session(session: Session) {
                         }
                     };
                     if let Frame::ControlRequest(req) = frame {
-                        handle_control_request(req, &request_input, &stdin_tx);
+                        handle_control_request(req, permission_mode, &request_input, &stdin_tx);
                         continue;
                     }
                     for ev in norm.normalize(frame, interrupted) {
@@ -658,6 +662,7 @@ type RequestInputFn = Box<
 /// expects.
 fn handle_control_request(
     req: ControlRequestFrame,
+    permission_mode: PermissionMode,
     request_input: &Arc<RequestInputFn>,
     stdin_tx: &mpsc::UnboundedSender<StdinMsg>,
 ) {
@@ -668,7 +673,7 @@ fn handle_control_request(
         );
         return;
     }
-    if req.request.tool_name != "AskUserQuestion" {
+    if req.request.tool_name != "AskUserQuestion" && permission_mode == PermissionMode::FullAccess {
         let line = control_response_line(&req.request_id, allow_response(req.request.input));
         let _ = stdin_tx.send(StdinMsg::Line(line));
         return;
@@ -678,6 +683,30 @@ fn handle_control_request(
     tokio::spawn(async move {
         let request_id = req.request_id;
         let input = req.request.input;
+        if req.request.tool_name != "AskUserQuestion" {
+            let question_id = uuid::Uuid::new_v4().to_string();
+            let answers = (request_input)(vec![UserInputQuestion {
+                id: question_id.clone(),
+                header: "Permission".into(),
+                question: format!("Allow {}?", req.request.tool_name),
+                options: vec!["Allow".into(), "Deny".into()],
+                multi_select: false,
+            }])
+            .await
+            .unwrap_or_default();
+            let allowed = answers.iter().any(|answer| {
+                answer.question_id == question_id
+                    && answer.labels.iter().any(|label| label == "Allow")
+            });
+            let response = if allowed {
+                allow_response(input)
+            } else {
+                wire::deny_response("Denied by user")
+            };
+            let line = control_response_line(&request_id, response);
+            let _ = stdin_tx.send(StdinMsg::Line(line));
+            return;
+        }
         let questions = parse_questions(&input);
         // The engine's input bridge is the SOLE emitter of
         // `InputRequested`/`InputResolved`: it mints the request id, parks the
@@ -782,6 +811,9 @@ mod tests {
             auto_approve: false,
             resume: None,
             attachments: Vec::new(),
+            seed: None,
+            seed_purpose: None,
+            seed_role: None,
         };
         let command = harness.build_command(&PathBuf::from("claude"), &request);
         let args = command

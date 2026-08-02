@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+import os
 import sys
 
 selected_model = "acp-fast"
@@ -27,6 +28,16 @@ for line in sys.stdin:
             },
         })
     elif method == "session/new":
+        if (
+            os.environ.get("FAKE_ACP_REJECT_MCP")
+            and message.get("params", {}).get("mcpServers")
+        ):
+            send({
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "error": {"code": -32603, "message": "MCP is unavailable during discovery"},
+            })
+            sys.exit(1)
         send({
             "jsonrpc": "2.0",
             "id": request_id,
@@ -68,6 +79,8 @@ for line in sys.stdin:
                 ],
             },
         })
+        if os.environ.get("FAKE_ACP_EXIT_AFTER_SESSION_NEW"):
+            sys.exit(1)
     elif method == "session/set_config_option":
         if message["params"]["configId"] == "model":
             selected_model = message["params"]["value"]

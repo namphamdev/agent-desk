@@ -32,11 +32,102 @@ struct Space: Identifiable, Hashable {
     }
 }
 
+enum PermissionMode: String, CaseIterable, Identifiable, Codable, Hashable {
+    case `default` = "default"
+    case plan = "plan"
+    case acceptEdits = "accept-edits"
+    case fullAccess = "full-access"
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .default: return "Default"
+        case .plan: return "Plan"
+        case .acceptEdits: return "Accept edits"
+        case .fullAccess: return "Full access"
+        }
+    }
+
+    var description: String {
+        switch self {
+        case .default: return "Prompts before writing files"
+        case .plan: return "Read-only mode, no file edits"
+        case .acceptEdits: return "Auto-approves workspace file edits"
+        case .fullAccess: return "Bypasses all sandbox and approval prompts"
+        }
+    }
+
+    var sandbox: String {
+        switch self {
+        case .default, .acceptEdits: return "workspace-write"
+        case .plan: return "read-only"
+        case .fullAccess: return "danger-full-access"
+        }
+    }
+
+    var autoApprove: Bool {
+        switch self {
+        case .default, .plan: return false
+        case .acceptEdits, .fullAccess: return true
+        }
+    }
+
+    var iconName: String {
+        switch self {
+        case .default: return "shield"
+        case .plan: return "doc.text"
+        case .acceptEdits: return "pencil.line"
+        case .fullAccess: return "exclamationmark.shield"
+        }
+    }
+}
+
 struct ChatConfig: Hashable, Codable {
     var harness: String
     var model: String?
     var reasoning: String?
     var sandbox: String?
+    var permissionMode: PermissionMode?
+
+    enum CodingKeys: String, CodingKey {
+        case harness, model, reasoning, sandbox, permissionMode
+    }
+
+    init(harness: String, model: String? = nil, reasoning: String? = nil, sandbox: String? = nil, permissionMode: PermissionMode? = nil) {
+        self.harness = harness
+        self.model = model
+        self.reasoning = reasoning
+        self.sandbox = sandbox
+        self.permissionMode = permissionMode
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.harness = try container.decodeIfPresent(String.self, forKey: .harness) ?? "claude-code"
+        self.model = try container.decodeIfPresent(String.self, forKey: .model)
+        self.reasoning = try container.decodeIfPresent(String.self, forKey: .reasoning)
+        self.sandbox = try container.decodeIfPresent(String.self, forKey: .sandbox)
+        self.permissionMode = try container.decodeIfPresent(PermissionMode.self, forKey: .permissionMode)
+    }
+
+    /// Derives effective permission mode with backward-compatible fallback based on `permissionMode`, `sandbox`, or default.
+    var effectivePermissionMode: PermissionMode {
+        if let permissionMode {
+            return permissionMode
+        }
+        if let sandbox {
+            switch sandbox {
+            case "read-only":
+                return .plan
+            case "danger-full-access":
+                return .fullAccess
+            default:
+                return .default
+            }
+        }
+        return .default
+    }
 }
 
 struct Chat: Identifiable, Hashable {
@@ -248,6 +339,7 @@ struct RunRequest: Codable {
     var cwd: String
     var sandbox: String = "workspace-write"
     var autoApprove: Bool = true
+    var permissionMode: PermissionMode? = nil
     var resume: String?
 }
 

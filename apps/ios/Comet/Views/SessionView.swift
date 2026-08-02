@@ -106,13 +106,19 @@ struct SessionView: View {
                                 ?? HarnessCatalog.defaultModel(for: harness).id
                         },
                         set: { newModel in
-                            writeConfig(model: newModel, reasoning: chat.config?.reasoning)
+                            writeConfig(model: newModel, reasoning: chat.config?.reasoning, permissionMode: chat.config?.effectivePermissionMode)
                         }
                     ),
                     reasoning: Binding(
                         get: { chat.config?.reasoning },
                         set: { newReasoning in
-                            writeConfig(model: chat.config?.model, reasoning: newReasoning)
+                            writeConfig(model: chat.config?.model, reasoning: newReasoning, permissionMode: chat.config?.effectivePermissionMode)
+                        }
+                    ),
+                    permissionMode: Binding(
+                        get: { chat.config?.effectivePermissionMode ?? .default },
+                        set: { newMode in
+                            writeConfig(model: chat.config?.model, reasoning: chat.config?.reasoning, permissionMode: newMode)
                         }
                     ),
                     lockedHarness: true,
@@ -162,14 +168,17 @@ struct SessionView: View {
         )
     }
 
-    /// Merge a model/effort change into the chat's config row (LWW; the host
+    /// Merge a model/effort/permission change into the chat's config row (LWW; the host
     /// picks it up on the next run dispatch).
-    private func writeConfig(model newModel: String?, reasoning newReasoning: String?) {
+    private func writeConfig(model newModel: String?, reasoning newReasoning: String?, permissionMode newMode: PermissionMode? = nil) {
         guard let chat else { return }
+        let currentMode = newMode ?? chat.config?.effectivePermissionMode ?? .default
         var config = chat.config ?? ChatConfig(harness: "claude-code", model: nil,
-                                               reasoning: nil, sandbox: "workspace-write")
+                                               reasoning: nil, sandbox: currentMode.sandbox, permissionMode: currentMode)
         config.model = newModel
         config.reasoning = newReasoning
+        config.permissionMode = currentMode
+        config.sandbox = currentMode.sandbox
         model.setChatConfig(chatId: chat.id, config: config)
     }
 

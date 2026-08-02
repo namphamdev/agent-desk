@@ -23,6 +23,22 @@ fn fixture_path() -> PathBuf {
     path
 }
 
+fn exiting_fixture_command() -> String {
+    serde_json::json!({
+        "command": fixture_path(),
+        "env": { "FAKE_ACP_EXIT_AFTER_SESSION_NEW": "1" },
+    })
+    .to_string()
+}
+
+fn mcp_rejecting_fixture_command() -> String {
+    serde_json::json!({
+        "command": fixture_path(),
+        "env": { "FAKE_ACP_REJECT_MCP": "1" },
+    })
+    .to_string()
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn samples_live_process_tree_memory() {
@@ -54,6 +70,35 @@ async fn lists_models_exposed_by_the_acp_agent() {
             ReasoningLevel::High,
             ReasoningLevel::XHigh,
         ]
+    );
+}
+
+#[tokio::test]
+async fn preserves_models_when_the_agent_exits_after_discovery() {
+    let harness = AcpHarness::with_command(exiting_fixture_command());
+    let models = harness.models().await.unwrap();
+
+    assert_eq!(
+        models
+            .iter()
+            .map(|model| model.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["acp-fast", "acp-smart"]
+    );
+}
+
+#[tokio::test]
+async fn does_not_attach_mcp_servers_during_model_discovery() {
+    let harness = AcpHarness::with_command(mcp_rejecting_fixture_command())
+        .with_mcp_server("http://127.0.0.1:6699/mcp");
+    let models = harness.models().await.unwrap();
+
+    assert_eq!(
+        models
+            .iter()
+            .map(|model| model.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["acp-fast", "acp-smart"]
     );
 }
 

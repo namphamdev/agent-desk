@@ -641,8 +641,11 @@ impl Shell {
     // ---- add-space flow (the ⌘K palette) ----
 
     pub(super) fn open_add_space(&mut self, cx: &mut Context<Self>) {
-        let devices: Vec<Device> = self.state.read(cx).devices.clone();
         let local = self.state.read(cx).local_device_id.clone();
+        let devices: Vec<Device> = crate::settings::devices::devices_for_display(
+            self.state.read(cx).devices.clone(),
+            local.as_deref(),
+        );
         // Land on this device's tab (else the first registered device).
         let device = devices
             .iter()
@@ -1059,7 +1062,11 @@ impl Shell {
                 flow.home.clone(),
             )
         };
-        let devices = self.state.read(cx).devices.clone();
+        let local_id = self.state.read(cx).local_device_id.clone();
+        let devices = crate::settings::devices::devices_for_display(
+            self.state.read(cx).devices.clone(),
+            local_id.as_deref(),
+        );
         let rows = self.add_space_filtered(cx);
         let query_empty = search.read(cx).is_empty();
         let hairline = crate::theme::white_alpha(0.06);

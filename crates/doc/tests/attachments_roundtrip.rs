@@ -16,6 +16,9 @@ fn run_request_attachments_survive_command_round_trip() {
         auto_approve: true,
         attachments: vec!["/tmp/a.png".into()],
         resume: None,
+        seed: None,
+        seed_purpose: None,
+        seed_role: None,
     };
     doc.queue_command(&SessionCommandEntry {
         id: "c1".into(),
