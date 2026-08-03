@@ -108,7 +108,7 @@ jobs:
       # `secrets` is not a valid context in step `if:` expressions — surface
       # the token through job env and gate on that instead.
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      CLOUDFLARE_ACCOUNT_ID: ba58d0968bc2131c0150f75a4a5ec241
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
     steps:
       - uses: actions/download-artifact@v4
         with:
