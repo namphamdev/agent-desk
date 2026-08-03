@@ -32,9 +32,15 @@ use crate::motion::{self, AnimationExt as _, MotionSpec, RESIZE, SPLASH_OUT};
 use crate::popover::{self, Loadable};
 use crate::rail;
 use crate::settings::accounts::AccountsPage;
+use crate::settings::acp_agents::AcpAgentsPage;
+use crate::settings::appearance::AppearancePage;
 use crate::settings::archived::ArchivedPage;
+use crate::settings::context_engine::ContextEnginePage;
 use crate::settings::devices::DevicesPage;
+use crate::settings::notifications::{NotificationsEvent, NotificationsPage};
+use crate::settings::providers::{ProvidersEvent, ProvidersPage};
 use crate::settings::shortcuts::{ShortcutsEvent, ShortcutsPage};
+use crate::settings::workflows::{WorkflowsEvent, WorkflowsPage};
 use crate::settings::{
     KeymapConfig, RIGHT_PANE_DEFAULT, RIGHT_PANE_MAX, RIGHT_PANE_MIN, SAVE_DEBOUNCE_MS,
     SIDEBAR_DEFAULT, SIDEBAR_MAX, SIDEBAR_MIN, TERMINAL_DEFAULT_HEIGHT, UiSettings, platform_combo,
@@ -45,7 +51,7 @@ use crate::state::{
 };
 use crate::terminal::panel::{TerminalPanel, ToggleTerminal, clamp_terminal_height};
 use crate::theme::Theme;
-use crate::transcript::{self, Transcript};
+use crate::transcript::{self, Transcript, TranscriptEvent};
 
 mod spaces;
 mod tabs;
@@ -142,16 +148,28 @@ pub fn apply_keymap(cx: &mut App, keymap: &KeymapConfig) {
 pub enum SettingsSection {
     Devices,
     Agents,
+    Providers,
+    AcpAgents,
+    ContextEngine,
+    Notifications,
+    Appearance,
     Shortcuts,
     Archived,
+    Workflows,
 }
 
 impl SettingsSection {
-    pub const ALL: [SettingsSection; 4] = [
+    pub const ALL: [SettingsSection; 10] = [
         SettingsSection::Devices,
         SettingsSection::Agents,
+        SettingsSection::Providers,
+        SettingsSection::AcpAgents,
+        SettingsSection::ContextEngine,
+        SettingsSection::Notifications,
+        SettingsSection::Appearance,
         SettingsSection::Shortcuts,
         SettingsSection::Archived,
+        SettingsSection::Workflows,
     ];
 
     /// Sidebar + header label (comet settings-sidebar.tsx SECTIONS / __root.tsx
@@ -160,8 +178,14 @@ impl SettingsSection {
         match self {
             SettingsSection::Devices => "Devices",
             SettingsSection::Agents => "Accounts",
+            SettingsSection::Providers => "Providers",
+            SettingsSection::AcpAgents => "ACP agents",
+            SettingsSection::ContextEngine => "Code context",
+            SettingsSection::Notifications => "Notifications",
+            SettingsSection::Appearance => "Appearance",
             SettingsSection::Shortcuts => "Shortcuts",
             SettingsSection::Archived => "Archived sessions",
+            SettingsSection::Workflows => "Workflows",
         }
     }
 }
@@ -425,13 +449,26 @@ pub struct Shell {
     changes: Option<Entity<Changes>>,
     /// Chat outlet vs settings pages.
     route: Route,
+    /// Sidebar surface: the normal Spaces/Sessions view or the flat Activity
+    /// feed.
+    activity_open: bool,
+    activity_done_open: bool,
     /// Route history behind the titlebar back/forward buttons (§ nav history).
     nav: NavHistory,
     devices_page: Option<Entity<DevicesPage>>,
     archived_page: Option<Entity<ArchivedPage>>,
+    workflows_page: Option<Entity<WorkflowsPage>>,
+    appearance_page: Option<Entity<AppearancePage>>,
     shortcuts_page: Option<Entity<ShortcutsPage>>,
     accounts_page: Option<Entity<AccountsPage>>,
+    providers_page: Option<Entity<ProvidersPage>>,
+    providers_sub: Option<Subscription>,
+    acp_agents_page: Option<Entity<AcpAgentsPage>>,
+    context_engine_page: Option<Entity<ContextEnginePage>>,
+    notifications_page: Option<Entity<NotificationsPage>>,
+    notifications_sub: Option<Subscription>,
     shortcuts_sub: Option<Subscription>,
+    workflows_sub: Option<Subscription>,
     /// Session-row context menu: (chat id, window position).
     chat_menu: Option<(String, Point<Pixels>)>,
     rename_dialog: Option<RenameChatDialog>,
@@ -440,6 +477,8 @@ pub struct Shell {
     /// Space-row context menu: (space id, window position).
     space_menu: Option<(String, Point<Pixels>)>,
     rename_space_dialog: Option<RenameSpaceDialog>,
+    /// Per-project agent setup for a space's folder.
+    project_harness: Option<spaces::ProjectHarnessFlow>,
     /// Space id awaiting delete confirmation (hard delete + session cascade).
     delete_space_confirm: Option<String>,
     /// The add-space palette (⌘K-style; device tabs + folder search), `Some`
@@ -543,6 +582,7 @@ pub struct Shell {
     _ticker: Task<()>,
     _state_observation: Subscription,
     _composer_events: Subscription,
+    _transcript_events: Subscription,
 }
 
 impl Shell {
@@ -562,6 +602,14 @@ impl Shell {
                 }
             }
         });
+        let transcript_events = cx.subscribe(
+            &transcript,
+            |this: &mut Shell, _, event: &TranscriptEvent, cx| match event {
+                TranscriptEvent::NewThread { text, role } => {
+                    this.start_message_thread(text.clone(), *role, cx);
+                }
+            },
+        );
         // Working-indicator heartbeat: notify once a second while a session is
         // live so elapsed time and the flavour word stay fresh.
         let ticker = cx.spawn(async move |this, cx| {
@@ -595,7 +643,13 @@ impl Shell {
                 Route::Settings(SettingsSection::Devices)
             }
             Some("settings/agents") => Route::Settings(SettingsSection::Agents),
+            Some("settings/providers") => Route::Settings(SettingsSection::Providers),
+            Some("settings/acp") => Route::Settings(SettingsSection::AcpAgents),
+            Some("settings/context") => Route::Settings(SettingsSection::ContextEngine),
+            Some("settings/notifications") => Route::Settings(SettingsSection::Notifications),
+            Some("settings/appearance") => Route::Settings(SettingsSection::Appearance),
             Some("settings/shortcuts") => Route::Settings(SettingsSection::Shortcuts),
+            Some("settings/workflows") => Route::Settings(SettingsSection::Workflows),
             Some("settings/archived") => Route::Settings(SettingsSection::Archived),
             // `new` pins the new-chat canvas (suppresses boot auto-select).
             Some("new") => {
@@ -630,17 +684,29 @@ impl Shell {
             terminal: None,
             changes: None,
             route,
+            activity_open: false,
+            activity_done_open: false,
             nav,
             devices_page: None,
             archived_page: None,
+            workflows_page: None,
+            appearance_page: None,
             shortcuts_page: None,
             accounts_page: None,
+            providers_page: None,
+            providers_sub: None,
+            acp_agents_page: None,
+            context_engine_page: None,
+            notifications_page: None,
+            notifications_sub: None,
             shortcuts_sub: None,
+            workflows_sub: None,
             chat_menu: None,
             rename_dialog: None,
             delete_confirm: None,
             space_menu: None,
             rename_space_dialog: None,
+            project_harness: None,
             delete_space_confirm: None,
             add_space: None,
             space_last_chat: std::collections::HashMap::new(),
@@ -690,7 +756,58 @@ impl Shell {
             _ticker: ticker,
             _state_observation: observation,
             _composer_events: composer_events,
+            _transcript_events: transcript_events,
         }
+    }
+
+    fn start_message_thread(
+        &mut self,
+        text: String,
+        role: comet_doc::MessageRole,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(source) = self.state.read(cx).selected_chat_row().cloned() else {
+            return;
+        };
+        let one_line = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        let title: String = one_line.chars().take(60).collect();
+        self.composer.update(cx, |composer, cx| {
+            composer.start_thread(source, text, role, "continue", title, None, cx);
+        });
+    }
+
+    pub(super) fn start_review_thread(&mut self, cx: &mut Context<Self>) {
+        let (source, entries, project) = {
+            let state = self.state.read(cx);
+            let Some(source) = state.selected_chat_row().cloned() else {
+                return;
+            };
+            let project = state
+                .space_for_chat(&source)
+                .map(|space| space.display_name().to_string());
+            (source, state.transcript.clone(), project)
+        };
+        let summary = comet_engine::session_summary::summarize_session_changes(
+            &entries,
+            source.title.as_deref(),
+            project.as_deref(),
+        );
+        if !summary.has_reviewable_content {
+            return;
+        }
+        let title =
+            comet_engine::session_summary::review_session_title(source.title.as_deref(), 56);
+        self.composer.update(cx, |composer, cx| {
+            composer.start_thread(
+                source,
+                summary.text,
+                comet_doc::MessageRole::Assistant,
+                "review",
+                title,
+                Some(comet_engine::session_summary::DEFAULT_REVIEW_PROMPT.to_string()),
+                cx,
+            );
+        });
     }
 
     // ---- splash ----
@@ -748,10 +865,21 @@ impl Shell {
             for (chat_id, status) in sessions {
                 let prev = self.sound_prev.insert(chat_id, status);
                 if let Some(prev) = prev
-                    && self.settings.sound_enabled
                     && let Some(sound) = crate::sound::sound_for_transition(prev, status)
                 {
-                    crate::sound::play(sound);
+                    // Notification chime (done / awaiting-input).
+                    if self.settings.sound_enabled {
+                        crate::sound::play(sound);
+                    }
+                    // OS desktop notification on the same transitions.
+                    if self.settings.notifications_enabled {
+                        crate::notify::show(match sound {
+                            crate::sound::Sound::Done => crate::notify::NotificationKind::Done,
+                            crate::sound::Sound::Request => {
+                                crate::notify::NotificationKind::Request
+                            }
+                        });
+                    }
                 }
             }
         }
@@ -1037,7 +1165,15 @@ impl Shell {
             cx.background_executor()
                 .timer(Duration::from_millis(SAVE_DEBOUNCE_MS))
                 .await;
-            let Ok(snapshot) = this.update(cx, |shell, _| shell.settings.clone()) else {
+            // Re-stamp the appearance from the global before writing. The View
+            // menu changes it through `appearance::set_mode`, which never touches
+            // this shell's in-memory copy — without this, the next pane resize
+            // would quietly write the boot-time appearance back over the user's
+            // choice.
+            let Ok(snapshot) = this.update(cx, |shell, cx| {
+                shell.settings.appearance = crate::appearance::mode(cx);
+                shell.settings.clone()
+            }) else {
                 return;
             };
             cx.background_executor()
@@ -1128,18 +1264,106 @@ impl Shell {
                     None => Empty.into_any_element(),
                 }
             }
+            SettingsSection::Providers => {
+                if self.providers_page.is_none() {
+                    let state = self.state.clone();
+                    let page = cx.new(|cx| ProvidersPage::new(state, cx));
+                    self.providers_sub = Some(cx.subscribe(
+                        &page,
+                        |this: &mut Shell, _, event: &ProvidersEvent, cx| {
+                            if matches!(event, ProvidersEvent::Changed) {
+                                this.composer.update(cx, |composer, cx| {
+                                    composer.invalidate_model_catalogs(cx);
+                                });
+                                cx.notify();
+                            }
+                        },
+                    ));
+                    self.providers_page = Some(page);
+                }
+                match &self.providers_page {
+                    Some(page) => page.clone().into_any_element(),
+                    None => Empty.into_any_element(),
+                }
+            }
+            SettingsSection::AcpAgents => {
+                if self.acp_agents_page.is_none() {
+                    let state = self.state.clone();
+                    self.acp_agents_page = Some(cx.new(|cx| AcpAgentsPage::new(state, cx)));
+                }
+                match &self.acp_agents_page {
+                    Some(page) => page.clone().into_any_element(),
+                    None => Empty.into_any_element(),
+                }
+            }
+            SettingsSection::ContextEngine => {
+                if self.context_engine_page.is_none() {
+                    let data_dir = self.data_dir.clone();
+                    self.context_engine_page = Some(cx.new(|_| ContextEnginePage::new(data_dir)));
+                }
+                match &self.context_engine_page {
+                    Some(page) => page.clone().into_any_element(),
+                    None => Empty.into_any_element(),
+                }
+            }
+            SettingsSection::Notifications => {
+                if self.notifications_page.is_none() {
+                    let data_dir = self.data_dir.clone();
+                    let settings = self.settings.clone();
+                    let page = cx.new(|_cx| NotificationsPage::new(data_dir, settings));
+                    let sub = cx.subscribe(&page, |this, _, event: &NotificationsEvent, cx| {
+                        let NotificationsEvent::Changed {
+                            notifications_enabled,
+                            sound_enabled,
+                        } = event;
+                        this.settings.notifications_enabled = *notifications_enabled;
+                        this.settings.sound_enabled = *sound_enabled;
+                        this.schedule_save(cx);
+                        cx.notify();
+                    });
+                    self.notifications_page = Some(page);
+                    self.notifications_sub = Some(sub);
+                }
+                match &self.notifications_page {
+                    Some(page) => page.clone().into_any_element(),
+                    None => Empty.into_any_element(),
+                }
+            }
+            SettingsSection::Appearance => {
+                if self.appearance_page.is_none() {
+                    self.appearance_page = Some(cx.new(AppearancePage::new));
+                }
+                match &self.appearance_page {
+                    Some(page) => page.clone().into_any_element(),
+                    None => Empty.into_any_element(),
+                }
+            }
             SettingsSection::Shortcuts => {
                 if self.shortcuts_page.is_none() {
                     let state = self.state.clone();
                     let keymap = self.settings.keymap.clone();
-                    let page = cx.new(|cx| ShortcutsPage::new(state, keymap, cx));
+                    let ai_shortcuts = self.settings.ai_shortcuts.clone();
+                    let page = cx.new(|cx| ShortcutsPage::new(state, keymap, ai_shortcuts, cx));
                     // Persist + re-apply the keymap whenever the page changes it.
                     self.shortcuts_sub = Some(cx.subscribe(
                         &page,
                         |this: &mut Shell, _, event: &ShortcutsEvent, cx| {
-                            let ShortcutsEvent::Changed(keymap) = event;
+                            let ShortcutsEvent::Changed {
+                                keymap,
+                                ai_shortcuts,
+                            } = event;
                             this.settings.keymap = keymap.clone();
+                            this.settings.ai_shortcuts = ai_shortcuts.clone();
                             apply_keymap(cx, keymap);
+                            if let Some(runtime) = cx
+                                .try_global::<crate::global_shortcuts::GlobalShortcutRuntimeHandle>(
+                                )
+                                .map(|runtime| runtime.0.clone())
+                            {
+                                runtime.update(cx, |runtime, cx| {
+                                    runtime.configure(ai_shortcuts.clone(), cx)
+                                });
+                            }
                             this.schedule_save(cx);
                             cx.notify();
                         },
@@ -1147,6 +1371,27 @@ impl Shell {
                     self.shortcuts_page = Some(page);
                 }
                 match &self.shortcuts_page {
+                    Some(page) => page.clone().into_any_element(),
+                    None => Empty.into_any_element(),
+                }
+            }
+            SettingsSection::Workflows => {
+                if self.workflows_page.is_none() {
+                    let state = self.state.clone();
+                    let workflows = self.settings.workflows.clone();
+                    let page = cx.new(|cx| WorkflowsPage::new(workflows, state, cx));
+                    self.workflows_sub = Some(cx.subscribe(
+                        &page,
+                        |this: &mut Shell, _, event: &WorkflowsEvent, cx| {
+                            let WorkflowsEvent::GlobalChanged(workflows) = event;
+                            this.settings.workflows = workflows.clone();
+                            this.schedule_save(cx);
+                            cx.notify();
+                        },
+                    ));
+                    self.workflows_page = Some(page);
+                }
+                match &self.workflows_page {
                     Some(page) => page.clone().into_any_element(),
                     None => Empty.into_any_element(),
                 }
@@ -1230,6 +1475,14 @@ impl Shell {
             serde_json::json!({ "op": "setChatArchived", "chatId": chat_id, "archived": true }),
             cx,
         );
+        cx.notify();
+    }
+
+    fn set_chat_settled(&mut self, chat_id: String, settled: bool, cx: &mut Context<Self>) {
+        self.chat_menu = None;
+        self.state.update(cx, |state, cx| {
+            state.set_chat_settled(&chat_id, settled, cx)
+        });
         cx.notify();
     }
 
@@ -1626,8 +1879,14 @@ impl Shell {
         let section_icon = |item: SettingsSection| match item {
             SettingsSection::Devices => icons::MONITOR,
             SettingsSection::Agents => icons::KEY_MINIMALISTIC,
+            SettingsSection::Providers => icons::GLOBAL,
+            SettingsSection::AcpAgents => icons::WIDGET,
+            SettingsSection::ContextEngine => icons::MAGNIFER,
+            SettingsSection::Notifications => icons::BELL_MINIMALISTIC,
+            SettingsSection::Appearance => icons::TUNING,
             SettingsSection::Shortcuts => icons::KEYBOARD,
             SettingsSection::Archived => icons::ARCHIVE_MINIMALISTIC,
+            SettingsSection::Workflows => icons::DOCUMENT,
         };
         // Match the user's dragged sidebar width — the pane container clips to
         // it, so a hardcoded default here left hover washes stopping short of
@@ -1677,10 +1936,7 @@ impl Shell {
                                     theme.text_muted
                                 })
                                 .cursor_pointer()
-                                .hover(|s| {
-                                    s.bg(crate::theme::wash(0.11))
-                                        .text_color(Theme::dark().text)
-                                })
+                                .hover(|s| s.bg(crate::theme::wash(0.11)).text_color(theme.text))
                                 .on_click(
                                     cx.listener(move |this, _, _, cx| this.open_settings(item, cx)),
                                 )
@@ -1708,10 +1964,7 @@ impl Shell {
                         .text_size(px(13.0))
                         .text_color(theme.text_muted)
                         .cursor_pointer()
-                        .hover(|s| {
-                            s.bg(crate::theme::wash(0.11))
-                                .text_color(Theme::dark().text)
-                        })
+                        .hover(|s| s.bg(crate::theme::wash(0.11)).text_color(theme.text))
                         .on_click(cx.listener(|this, _, _, cx| this.close_settings(cx)))
                         .child(
                             // AltArrowLeft chevron (comet settings-sidebar.tsx),
@@ -1768,7 +2021,7 @@ impl Shell {
                 .bg(dot_color)
                 .into_any_element()
         };
-        let (hover, text) = (theme.element_hover, theme.text);
+        let (hover, text) = (theme.glass_hover(), theme.text);
         let selected_wash = crate::theme::glass_selected_bg();
         let subline = theme.text_muted.opacity(0.5);
         let select_id = id.clone();
@@ -1896,6 +2149,185 @@ impl Shell {
         (scrolled > 1.0, scrolled < max_scroll - 1.0)
     }
 
+    fn render_activity_sidebar(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let now = Utc::now();
+        let (active, done): (Vec<_>, Vec<_>) = {
+            let state = self.state.read(cx);
+            let rows: Vec<_> = state
+                .activity_chats(now)
+                .into_iter()
+                .map(|(status, chat)| (status, chat.clone()))
+                .collect();
+            rows.into_iter()
+                .partition(|(_, chat)| chat.settled_at.is_none())
+        };
+        let has_activity = !active.is_empty() || !done.is_empty();
+        let selected = self.state.read(cx).selected_chat.clone();
+        let mut column = div().flex().flex_col().gap(px(2.0));
+        let groups = [
+            (
+                "Needs attention",
+                active
+                    .iter()
+                    .filter(|(status, _)| {
+                        matches!(
+                            status,
+                            comet_proto::ChatIndicator::AwaitingInput
+                                | comet_proto::ChatIndicator::Errored
+                        )
+                    })
+                    .collect::<Vec<_>>(),
+            ),
+            (
+                "Completed",
+                active
+                    .iter()
+                    .filter(|(status, _)| *status == comet_proto::ChatIndicator::Completed)
+                    .collect::<Vec<_>>(),
+            ),
+            (
+                "Running",
+                active
+                    .iter()
+                    .filter(|(status, _)| *status == comet_proto::ChatIndicator::Working)
+                    .collect::<Vec<_>>(),
+            ),
+            (
+                "Seen",
+                active
+                    .iter()
+                    .filter(|(status, _)| *status == comet_proto::ChatIndicator::Idle)
+                    .collect::<Vec<_>>(),
+            ),
+        ];
+        for (label, rows) in groups {
+            if rows.is_empty() {
+                continue;
+            }
+            column = column.child(
+                div()
+                    .px(px(Theme::SPACE_SM))
+                    .pt(px(8.0))
+                    .pb(px(2.0))
+                    .text_size(px(11.0))
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(theme.text_muted.opacity(0.6))
+                    .child(SharedString::from(label)),
+            );
+            for (status, chat) in rows {
+                let space = self
+                    .state
+                    .read(cx)
+                    .space_for_chat(chat)
+                    .map(|s| s.display_name().to_string())
+                    .unwrap_or_else(|| "?".into());
+                let branch = chat
+                    .branch
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|b| !b.is_empty())
+                    .map(SharedString::from);
+                let row = self.render_chat_row(
+                    chat.id.clone(),
+                    chat.title
+                        .clone()
+                        .unwrap_or_else(|| "New session".into())
+                        .into(),
+                    format_time_ago(chat.last_message_at.unwrap_or(chat.created_at), now).into(),
+                    space.into(),
+                    branch,
+                    chat.config.as_ref().map(|c| c.harness),
+                    *status,
+                    selected.as_deref() == Some(chat.id.as_str()),
+                    theme,
+                    cx,
+                );
+                column = column.child(row);
+            }
+        }
+        if !done.is_empty() {
+            let done_count = done.len();
+            let toggle = self.activity_done_open;
+            column = column.child(
+                div()
+                    .id("activity-done-toggle")
+                    .flex()
+                    .flex_row()
+                    .justify_between()
+                    .px(px(Theme::SPACE_SM))
+                    .pt(px(10.0))
+                    .pb(px(3.0))
+                    .text_size(px(11.0))
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(theme.text_muted.opacity(0.7))
+                    .cursor_pointer()
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.activity_done_open = !this.activity_done_open;
+                        cx.notify();
+                    }))
+                    .child(SharedString::from(format!("Done  {done_count}")))
+                    .child(
+                        icon(if toggle {
+                            icons::ALT_ARROW_DOWN
+                        } else {
+                            icons::ALT_ARROW_RIGHT
+                        })
+                        .size(px(12.0)),
+                    ),
+            );
+            if self.activity_done_open {
+                for (status, chat) in &done {
+                    let space = self
+                        .state
+                        .read(cx)
+                        .space_for_chat(chat)
+                        .map(|s| s.display_name().to_string())
+                        .unwrap_or_else(|| "?".into());
+                    let branch = chat
+                        .branch
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|b| !b.is_empty())
+                        .map(SharedString::from);
+                    column = column.child(
+                        div().opacity(0.6).child(
+                            self.render_chat_row(
+                                chat.id.clone(),
+                                chat.title
+                                    .clone()
+                                    .unwrap_or_else(|| "New session".into())
+                                    .into(),
+                                format_time_ago(
+                                    chat.last_message_at.unwrap_or(chat.created_at),
+                                    now,
+                                )
+                                .into(),
+                                space.into(),
+                                branch,
+                                chat.config.as_ref().map(|c| c.harness),
+                                *status,
+                                selected.as_deref() == Some(chat.id.as_str()),
+                                theme,
+                                cx,
+                            ),
+                        ),
+                    );
+                }
+            }
+        }
+        if !has_activity {
+            column = column.child(
+                div()
+                    .px(px(Theme::SPACE_SM))
+                    .pt(px(16.0))
+                    .text_size(px(12.0))
+                    .text_color(theme.text_faint)
+                    .child(SharedString::from("No activity yet")),
+            );
+        }
+        column.into_any_element()
+    }
+
     /// Chat-mode sidebar (spaces overhaul): window-control strip, the Spaces
     /// section (folder + device rows, add-space), the global Active sessions
     /// list, the notice strip, and the UserMenu (§1.6).
@@ -1966,7 +2398,7 @@ impl Shell {
         // shadow (user reports). Instead the ROWS fade themselves: prepaint-
         // measured bounds drive per-row opacity toward the viewport edges
         // ([`Shell::sidebar_row_alpha`]), dissolving the edge to pure glass.
-        let glass = Theme::GLASS_ALPHA < 1.0;
+        let glass = theme.is_glass();
         let sidebar_fade = theme.surface;
 
         let user_line: SharedString = user
@@ -1977,6 +2409,86 @@ impl Shell {
         let user_menu = self.render_user_menu(user_line.clone(), user_email.clone(), theme, cx);
 
         let spaces_section = self.render_spaces_section(theme, cx);
+        let activity_open = self.activity_open;
+        let surface_header = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .px(px(Theme::SPACE_SM))
+            .py(px(6.0))
+            .child(
+                div()
+                    .text_size(px(13.0))
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(theme.text)
+                    .child(SharedString::from(if activity_open {
+                        "Activity"
+                    } else {
+                        "Projects"
+                    })),
+            )
+            .child(
+                div()
+                    .id("sidebar-activity-toggle")
+                    .size(px(24.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(6.0))
+                    .cursor_pointer()
+                    .bg(if activity_open {
+                        theme.element_active
+                    } else {
+                        crate::theme::wash(0.0)
+                    })
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.activity_open = !this.activity_open;
+                        this.sidebar_scroll = gpui::ScrollHandle::new();
+                        cx.notify();
+                    }))
+                    .child(
+                        icon(icons::BELL_MINIMALISTIC)
+                            .size(px(15.0))
+                            .text_color(theme.text_muted),
+                    ),
+            );
+        let sidebar_content = if activity_open {
+            self.render_activity_sidebar(theme, cx)
+        } else {
+            div()
+                .flex()
+                .flex_col()
+                .child(spaces_section)
+                .child(
+                    div()
+                        .px(px(Theme::SPACE_SM))
+                        .pt(px(12.0))
+                        .pb(px(4.0))
+                        .text_size(px(11.0))
+                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .text_color(theme.text_muted.opacity(0.6))
+                        .child(SharedString::from("Sessions")),
+                )
+                .child(if !list_items.is_empty() {
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(2.0))
+                        .pb(px(Theme::SPACE_SM))
+                        .children(list_items)
+                        .into_any_element()
+                } else {
+                    div()
+                        .px(px(Theme::SPACE_SM))
+                        .pb(px(Theme::SPACE_SM))
+                        .text_size(px(12.0))
+                        .text_color(theme.text_faint)
+                        .child(SharedString::from("No sessions yet"))
+                        .into_any_element()
+                })
+                .into_any_element()
+        };
 
         div()
             .w(px(self.settings.sidebar_width))
@@ -2005,34 +2517,8 @@ impl Shell {
                             .px(px(Theme::SPACE_SM))
                             .flex()
                             .flex_col()
-                            .child(spaces_section)
-                            .child(
-                                div()
-                                    .px(px(Theme::SPACE_SM))
-                                    .pt(px(12.0))
-                                    .pb(px(4.0))
-                                    .text_size(px(11.0))
-                                    .font_weight(gpui::FontWeight::MEDIUM)
-                                    .text_color(theme.text_muted.opacity(0.6))
-                                    .child(SharedString::from("Sessions")),
-                            )
-                            .child(if !list_items.is_empty() {
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .gap(px(2.0))
-                                    .pb(px(Theme::SPACE_SM))
-                                    .children(list_items)
-                                    .into_any_element()
-                            } else {
-                                div()
-                                    .px(px(Theme::SPACE_SM))
-                                    .pb(px(Theme::SPACE_SM))
-                                    .text_size(px(12.0))
-                                    .text_color(theme.text_faint)
-                                    .child(SharedString::from("No sessions yet"))
-                                    .into_any_element()
-                            }),
+                            .child(surface_header)
+                            .child(sidebar_content),
                     )
                     .when(lists_fade_top && !glass, |el| {
                         el.child(div().absolute().top_0().left_0().right_0().h(px(24.0)).bg(
@@ -2268,12 +2754,12 @@ impl Shell {
             // (`data-[state=open]`) the slightly stronger `bg-white/[0.06]`;
             // the hover wash fades over `transition-colors`.
             .bg(if open {
-                theme.element_hover
+                theme.glass_hover()
             } else {
                 motion::hover_blend(
                     "user-menu-trigger",
-                    crate::theme::wash(0.0),
-                    crate::theme::wash(0.11),
+                    theme.glass_hover().opacity(0.0),
+                    theme.glass_hover().opacity(0.8),
                 )
             })
             .on_hover(motion::hover_listener("user-menu-trigger"))
@@ -2400,6 +2886,15 @@ impl Shell {
             let rename_id = chat_id.clone();
             let archive_id = chat_id.clone();
             let delete_id = chat_id.clone();
+            let settled = self
+                .state
+                .read(cx)
+                .chats
+                .iter()
+                .find(|chat| chat.id == chat_id)
+                .and_then(|chat| chat.settled_at)
+                .is_some();
+            let settle_id = chat_id.clone();
             let menu = popover::popover_card(&theme)
                 .w(px(170.0))
                 .on_mouse_down_out(cx.listener(|this, _, _, cx| {
@@ -2429,6 +2924,23 @@ impl Shell {
                                 .text_color(theme.text_muted),
                         )
                         .child(SharedString::from("Archive")),
+                )
+                .child(
+                    popover::menu_row(&theme, false, format!("chat-menu-settle-{chat_id}"))
+                        .id("chat-menu-settle")
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.set_chat_settled(settle_id.clone(), !settled, cx)
+                        }))
+                        .child(
+                            icon(icons::CHECK)
+                                .size(px(16.0))
+                                .text_color(theme.text_muted),
+                        )
+                        .child(SharedString::from(if settled {
+                            "Undo done"
+                        } else {
+                            "Done"
+                        })),
                 )
                 .child(popover::menu_separator())
                 .child(
@@ -2771,7 +3283,7 @@ impl Shell {
                     div()
                         .absolute()
                         .inset_0()
-                        .bg(gpui::hsla(0.0, 0.0, 0.0, 0.4))
+                        .bg(theme.scrim().opacity(0.4 / 0.6))
                         .flex()
                         .items_center()
                         .justify_center()
@@ -2825,7 +3337,7 @@ impl Shell {
                         .bg(motion::hover_blend(
                             "jump-pill",
                             theme.surface_raised,
-                            crate::theme::neutral(0.29),
+                            theme.surface_raised_hover,
                         ))
                         .on_hover(motion::hover_listener("jump-pill"))
                         .on_click(cx.listener(|this, _, _, cx| {
@@ -3076,7 +3588,7 @@ impl Shell {
                         .text_size(px(13.0))
                         .text_color(theme.text)
                         .cursor_pointer()
-                        .hover(|s| s.bg(Theme::dark().element_hover))
+                        .hover(|s| s.bg(theme.glass_hover()))
                         .on_click(cx.listener(|this, _, _, cx| this.retry_engine(cx)))
                         .child(SharedString::from("Retry")),
                 )
@@ -3090,7 +3602,7 @@ impl Shell {
                 .rounded(px(12.0))
                 .border_1()
                 .border_color(theme.border)
-                .bg(crate::theme::grey(0x0e))
+                .bg(theme.surface_card)
                 .shadow_lg()
                 .flex()
                 .flex_col()
@@ -3133,7 +3645,7 @@ impl Shell {
                         .bg(theme.text)
                         .text_size(px(14.0))
                         .font_weight(gpui::FontWeight::MEDIUM)
-                        .text_color(crate::theme::grey(0x0e))
+                        .text_color(theme.on_solid)
                         .cursor_pointer()
                         .hover(|s| s.opacity(0.9))
                         .on_click(cx.listener(|this, _, _, cx| this.start_sign_in(cx)))
@@ -3205,7 +3717,7 @@ impl Shell {
                                 .border_color(theme.border)
                                 .text_color(theme.text)
                                 .cursor_pointer()
-                                .hover(|s| s.bg(theme.element_hover))
+                                .hover(|s| s.bg(theme.glass_hover()))
                                 .on_click(cx.listener(|this, _, _, cx| this.load_orgs(cx)))
                                 .child(SharedString::from("Retry")),
                         ),
@@ -3271,7 +3783,7 @@ impl Shell {
             .rounded(px(12.0))
             .border_1()
             .border_color(theme.border)
-            .bg(crate::theme::grey(0x0e))
+            .bg(theme.surface_card)
             .shadow_lg()
             .flex()
             .flex_col()
@@ -3329,7 +3841,7 @@ impl Shell {
                             .bg(theme.text)
                             .text_size(px(14.0))
                             .font_weight(gpui::FontWeight::MEDIUM)
-                            .text_color(crate::theme::grey(0x0e))
+                            .text_color(theme.on_solid)
                             .when(submitting, |el| el.opacity(0.5))
                             .cursor_pointer()
                             .hover(|s| s.opacity(0.9))
@@ -3348,7 +3860,7 @@ impl Shell {
                         .mt(px(16.0))
                         .text_size(px(12.0))
                         .line_height(px(17.0))
-                        .text_color(crate::theme::oklch(0.81, 0.108, 19.6).opacity(0.9)) // red-300
+                        .text_color(theme.danger_muted.opacity(0.9)) // red-300
                         .child(message),
                 )
             })
@@ -3359,7 +3871,7 @@ impl Shell {
                         .text_size(px(12.0))
                         .text_color(theme.text_muted.opacity(0.6))
                         .cursor_pointer()
-                        .hover(|s| s.text_color(Theme::dark().text))
+                        .hover(|s| s.text_color(theme.text))
                         .on_click(cx.listener(|this, _, _, cx| this.sign_out(cx)))
                         .child(SharedString::from("Use a different account")),
                 ),
@@ -3387,7 +3899,7 @@ impl Shell {
 /// 44px hairlines at white 3.5%, with the radial mask approximated by edge
 /// gradients back into the page background (gpui has no mask-image).
 fn grid_backdrop(theme: &Theme) -> AnyElement {
-    let line = crate::theme::white_alpha(0.035);
+    let line = crate::theme::hairline(0.035);
     let bg = theme.bg;
     const STEP: f32 = 44.0;
     const SPAN: f32 = 2640.0;
@@ -3494,8 +4006,8 @@ fn window_control_button(
         // comet window-controls.tsx: `transition-colors` — the wash fades.
         .bg(motion::hover_blend(
             &fade_key,
-            crate::theme::wash(0.0),
-            Theme::dark().element_hover,
+            theme.glass_hover().opacity(0.0),
+            theme.glass_hover(),
         ))
         .on_hover(motion::hover_listener(fade_key))
         // Buttons in/over a titlebar drag strip must be EXCLUDED from the

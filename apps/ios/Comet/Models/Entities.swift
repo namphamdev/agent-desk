@@ -32,11 +32,102 @@ struct Space: Identifiable, Hashable {
     }
 }
 
+enum PermissionMode: String, CaseIterable, Identifiable, Codable, Hashable {
+    case `default` = "default"
+    case plan = "plan"
+    case acceptEdits = "accept-edits"
+    case fullAccess = "full-access"
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .default: return "Default"
+        case .plan: return "Plan"
+        case .acceptEdits: return "Accept edits"
+        case .fullAccess: return "Full access"
+        }
+    }
+
+    var description: String {
+        switch self {
+        case .default: return "Prompts before writing files"
+        case .plan: return "Read-only mode, no file edits"
+        case .acceptEdits: return "Auto-approves workspace file edits"
+        case .fullAccess: return "Bypasses all sandbox and approval prompts"
+        }
+    }
+
+    var sandbox: String {
+        switch self {
+        case .default, .acceptEdits: return "workspace-write"
+        case .plan: return "read-only"
+        case .fullAccess: return "danger-full-access"
+        }
+    }
+
+    var autoApprove: Bool {
+        switch self {
+        case .default, .plan: return false
+        case .acceptEdits, .fullAccess: return true
+        }
+    }
+
+    var iconName: String {
+        switch self {
+        case .default: return "shield"
+        case .plan: return "doc.text"
+        case .acceptEdits: return "pencil.line"
+        case .fullAccess: return "exclamationmark.shield"
+        }
+    }
+}
+
 struct ChatConfig: Hashable, Codable {
     var harness: String
     var model: String?
     var reasoning: String?
     var sandbox: String?
+    var permissionMode: PermissionMode?
+
+    enum CodingKeys: String, CodingKey {
+        case harness, model, reasoning, sandbox, permissionMode
+    }
+
+    init(harness: String, model: String? = nil, reasoning: String? = nil, sandbox: String? = nil, permissionMode: PermissionMode? = nil) {
+        self.harness = harness
+        self.model = model
+        self.reasoning = reasoning
+        self.sandbox = sandbox
+        self.permissionMode = permissionMode
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.harness = try container.decodeIfPresent(String.self, forKey: .harness) ?? "claude-code"
+        self.model = try container.decodeIfPresent(String.self, forKey: .model)
+        self.reasoning = try container.decodeIfPresent(String.self, forKey: .reasoning)
+        self.sandbox = try container.decodeIfPresent(String.self, forKey: .sandbox)
+        self.permissionMode = try container.decodeIfPresent(PermissionMode.self, forKey: .permissionMode)
+    }
+
+    /// Derives effective permission mode with backward-compatible fallback based on `permissionMode`, `sandbox`, or default.
+    var effectivePermissionMode: PermissionMode {
+        if let permissionMode {
+            return permissionMode
+        }
+        if let sandbox {
+            switch sandbox {
+            case "read-only":
+                return .plan
+            case "danger-full-access":
+                return .fullAccess
+            default:
+                return .default
+            }
+        }
+        return .default
+    }
 }
 
 struct Chat: Identifiable, Hashable {
@@ -53,6 +144,7 @@ struct Chat: Identifiable, Hashable {
     var createdAt: Int64
     var spaceId: String?
     var lastSeenAt: Int64?
+    var settledAt: Int64? = nil
 
     var displayTitle: String {
         if let title, !title.isEmpty { return title }
@@ -87,6 +179,18 @@ enum ChatIndicator: Int {
     case working = 2
     case completed = 3
     case idle = 4
+}
+
+extension ChatIndicator {
+    var activityLabel: String {
+        switch self {
+        case .awaitingInput: return "Needs input"
+        case .errored: return "Needs attention"
+        case .working: return "Running"
+        case .completed: return "Completed"
+        case .idle: return "Seen"
+        }
+    }
 }
 
 /// state.rs:277 — a Working/AwaitingInput row older than this reads as stale
@@ -233,6 +337,81 @@ struct RepoRef: Codable, Hashable, Identifiable {
     var id: String { name }
 }
 
+struct GitStatus: Codable, Hashable {
+    var branch: String?
+    var ahead: Int
+    var behind: Int
+    var files: [GitFileChange]
+    var isRepo: Bool
+}
+
+struct GitFileChange: Codable, Hashable, Identifiable {
+    var path: String
+    var oldPath: String?
+    var kind: String
+    var staged: Bool
+    var unstaged: Bool
+    var xy: String
+
+    var id: String { path }
+
+    var label: String {
+        switch kind {
+        case "added": return "Added"
+        case "deleted": return "Deleted"
+        case "renamed": return "Renamed"
+        case "untracked": return "Untracked"
+        default: return staged && unstaged ? "Staged + modified" : staged ? "Staged" : "Modified"
+        }
+    }
+}
+
+struct AcpRegistryAgent: Codable, Hashable, Identifiable {
+    var id: String
+    var name: String
+    var description: String
+    var version: String
+    var distribution: String?
+    var supported: Bool
+}
+
+struct InstalledAcpAgent: Codable, Hashable, Identifiable {
+    var id: String
+    var name: String
+    var version: String
+    var command: String
+    var distribution: String
+}
+
+struct AcpAgentsSnapshot: Codable, Hashable {
+    var activeAgentId: String?
+    var installed: [InstalledAcpAgent]
+    var registry: [AcpRegistryAgent]
+    var registryError: String?
+}
+
+struct CustomProvider: Codable, Hashable, Identifiable {
+    var id: String
+    var name: String
+    var baseUrl: String
+    var hasApiKey: Bool
+    var formats: [String]
+    var codexSubagentModel: String?
+}
+
+struct CustomProviderSnapshot: Codable, Hashable {
+    var providers: [CustomProvider]
+    var selection: [String: String]
+}
+
+struct CustomProviderDraft {
+    var id: String
+    var name: String
+    var baseUrl: String
+    var apiKey: String?
+    var formats: [String]
+}
+
 // MARK: - Command ledger (commands.rs port)
 
 let commandDefaultTtlMs: Int64 = 86_400_000
@@ -248,6 +427,7 @@ struct RunRequest: Codable {
     var cwd: String
     var sandbox: String = "workspace-write"
     var autoApprove: Bool = true
+    var permissionMode: PermissionMode? = nil
     var resume: String?
 }
 

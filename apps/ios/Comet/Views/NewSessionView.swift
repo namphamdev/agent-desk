@@ -6,6 +6,33 @@
 // run, and swaps straight into the live session.
 
 import SwiftUI
+import os
+
+/// Debug trace for the "Select model" sheet: logs every hop of a model
+/// selection (sheet → AppStorage/workspace row → read-back → run request) to
+/// unified logging (Console.app / `log stream --predicate 'subsystem ==
+/// "dev.cometnative.Comet"'`) and a `model-picks.log` file in Documents.
+/// Remove when model changes are confirmed working end-to-end.
+enum ConfigDebug {
+    static let log = Logger(subsystem: "dev.cometnative.Comet", category: "config")
+
+    static var logURL: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("model-picks.log")
+    }
+
+    static func trace(_ line: String) {
+        let stamped = "[\(Int(Date().timeIntervalSince1970))] \(line)"
+        log.info("\(stamped, privacy: .public)")
+        if let handle = try? FileHandle(forWritingTo: logURL) {
+            handle.seekToEndOfFile()
+            handle.write(Data((stamped + "\n").utf8))
+            try? handle.close()
+        } else {
+            try? Data((stamped + "\n").utf8).write(to: logURL)
+        }
+    }
+}
 
 struct NewSessionView: View {
     @Environment(AppModel.self) private var model
@@ -16,11 +43,15 @@ struct NewSessionView: View {
     @AppStorage("newSessionHarness") private var harness = "claude-code"
     @AppStorage("newSessionModel") private var storedModel = ""
     @AppStorage("newSessionReasoning") private var storedReasoning = ""
+    @AppStorage("newSessionPermissionMode") private var storedPermissionMode = PermissionMode.default.rawValue
+    @AppStorage("newSessionWorkflow") private var storedWorkflow = ""
+    @AppStorage("newSessionPrRef") private var storedPrRef = ""
 
     @State private var draft = ""
     @State private var showPicker = false
     @State private var showRefPicker = false
     @State private var showCheckoutPicker = false
+    @State private var showWorkflowPicker = false
     /// Live per-harness catalogs from the space's device (static fallback).
     @State private var catalogs: [String: [ModelInfo]] = [:]
     @State private var refs: [RepoRef] = []
@@ -45,6 +76,15 @@ struct NewSessionView: View {
         if selectedModel.reasoningLevels.isEmpty { return nil }
         if selectedModel.reasoningLevels.contains(storedReasoning) { return storedReasoning }
         return HarnessCatalog.defaultReasoning(for: selectedModel)
+    }
+
+    private var permissionMode: PermissionMode {
+        get { PermissionMode(rawValue: storedPermissionMode) ?? .default }
+        set { storedPermissionMode = newValue.rawValue }
+    }
+
+    private var workflow: WorkflowDefinition? {
+        WorkflowCatalog.all.first { $0.id == storedWorkflow }
     }
 
     var body: some View {
@@ -100,6 +140,9 @@ struct NewSessionView: View {
                 pickCheckout(kind)
             }
         }
+        .sheet(isPresented: $showWorkflowPicker) {
+            WorkflowPickerSheet(selectedId: $storedWorkflow, prRef: $storedPrRef)
+        }
         .task(id: spaceId) {
             // Load refs for the branch chip (git spaces only).
             guard let space, space.gitDetected else { return }
@@ -118,10 +161,16 @@ struct NewSessionView: View {
         .sheet(isPresented: $showPicker) {
             ModelPickerSheet(harness: $harness, modelId: Binding(
                 get: { selectedModel.id },
-                set: { storedModel = $0 }
+                set: { newModel in
+                    ConfigDebug.trace("new-session binding set model \(storedModel) -> \(newModel) (harness \(harness))")
+                    storedModel = newModel
+                }
             ), reasoning: Binding(
                 get: { reasoning },
                 set: { storedReasoning = $0 ?? "" }
+            ), permissionMode: Binding(
+                get: { permissionMode },
+                set: { storedPermissionMode = $0.rawValue }
             ), catalogs: catalogs)
         }
         .onAppear {
@@ -175,6 +224,19 @@ struct NewSessionView: View {
             }
             .buttonStyle(ChipPressButtonStyle())
 
+            // Permission mode chip
+            chip(systemIcon: permissionMode.iconName, label: permissionMode.label) {
+                focused = false
+                showPicker = true
+            }
+            .layoutPriority(-1)
+
+            chip(systemIcon: "arrow.triangle.branch", label: workflow?.label ?? "Workflow") {
+                focused = false
+                showWorkflowPicker = true
+            }
+            .layoutPriority(-1)
+
             // Checkout + ref chips — the desktop footer (git spaces only).
             if space?.gitDetected == true {
                 chip(icon: checkoutIcon, label: checkoutLabel) {
@@ -195,6 +257,24 @@ struct NewSessionView: View {
         Button(action: action) {
             HStack(spacing: 6) {
                 LineIconView(icon, size: 13, color: Theme.textMuted)
+                Text(label)
+                    .font(Theme.sans(13, weight: .medium))
+                    .foregroundStyle(Theme.text.opacity(0.9))
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 12)
+            .frame(height: 36)
+            .background(whiteAlpha(0.10), in: Capsule())
+        }
+        .buttonStyle(ChipPressButtonStyle())
+    }
+
+    private func chip(systemIcon: String, label: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Image(systemName: systemIcon)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(Theme.textMuted)
                 Text(label)
                     .font(Theme.sans(13, weight: .medium))
                     .foregroundStyle(Theme.text.opacity(0.9))
@@ -287,10 +367,13 @@ struct NewSessionView: View {
     /// picked ref's worktree, or CreateWorktree off the base first).
     private func send() {
         guard let space, canSend else { return }
-        let prompt = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        let prompt = workflow?.prompt(task: draft, prRef: storedPrRef)
+            ?? draft.trimmingCharacters(in: .whitespacesAndNewlines)
         busy = true
         let config = ChatConfig(harness: harness, model: selectedModel.id,
-                                reasoning: reasoning, sandbox: "workspace-write")
+                                reasoning: reasoning, sandbox: permissionMode.sandbox,
+                                permissionMode: permissionMode)
+        ConfigDebug.trace("new-session send config harness=\(config.harness) model=\(config.model ?? "nil") reason=\(config.reasoning ?? "nil") mode=\(config.permissionMode?.rawValue ?? "nil")")
         Task { @MainActor in
             var cwd: String?
             var branch = selectedRef
@@ -351,6 +434,7 @@ struct ModelPickerSheet: View {
     @Binding var harness: String
     @Binding var modelId: String
     @Binding var reasoning: String?
+    @Binding var permissionMode: PermissionMode
     /// True when reconfiguring a live chat: the harness can't change mid-chat.
     var lockedHarness = false
     /// Live per-harness catalogs from the device (static fallback when absent).
@@ -415,6 +499,46 @@ struct ModelPickerSheet: View {
                         }
                     }
 
+                    VStack(alignment: .leading, spacing: 8) {
+                        SheetLabel("Permission mode")
+                        SheetCard {
+                            ForEach(Array(PermissionMode.allCases.enumerated()), id: \.element.id) { ix, mode in
+                                SheetSelectRow(title: mode.label,
+                                               subtitle: mode.description,
+                                               selected: mode == permissionMode,
+                                               leading: AnyView(
+                                                Image(systemName: mode.iconName)
+                                                    .font(.system(size: 14))
+                                                    .foregroundStyle(Theme.textMuted)
+                                                    .frame(width: 20)
+                                               )) {
+                                    permissionMode = mode
+                                }
+                                if ix < PermissionMode.allCases.count - 1 {
+                                    SheetSeparator()
+                                }
+                            }
+                        }
+                    }
+
+                    // DEBUG: live config readout — what the sheet believes it
+                    // just wrote. Remove with the ConfigDebug instrumentation.
+                    VStack(alignment: .leading, spacing: 8) {
+                        SheetLabel("Debug: effective config")
+                        SheetCard {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("model: \(modelId)")
+                                Text("reasoning: \(reasoning ?? "nil")")
+                                Text("mode: \(permissionMode.rawValue)")
+                            }
+                            .font(Theme.mono(12))
+                            .foregroundStyle(Theme.textMuted)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 11)
+                        }
+                    }
+
                     if let checkout {
                         checkoutSection(checkout)
                     }
@@ -456,6 +580,7 @@ struct ModelPickerSheet: View {
             let fallback = HarnessCatalog.defaultModel(for: h.id)
             modelId = fallback.id
             reasoning = HarnessCatalog.defaultReasoning(for: fallback)
+            ConfigDebug.trace("picker harness switch -> \(h.id) model=\(fallback.id) reason=\(reasoning ?? "nil")")
         } label: {
             HStack(spacing: 7) {
                 HarnessBadge(harness: h.id, size: 15, dimmed: !selected)
@@ -473,9 +598,11 @@ struct ModelPickerSheet: View {
     private func select(model m: ModelInfo) {
         modelId = m.id
         if let current = reasoning, m.reasoningLevels.contains(current) {
+            ConfigDebug.trace("picker select model=\(m.id) harness=\(harness) reason kept=\(current)")
             return
         }
         reasoning = HarnessCatalog.defaultReasoning(for: m)
+        ConfigDebug.trace("picker select model=\(m.id) harness=\(harness) reason=\(reasoning ?? "nil")")
     }
 
     /// Checkout: read-only kind (fixed at creation — resume is cwd-scoped)
@@ -803,5 +930,59 @@ struct CheckoutPickerSheet: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(SheetRowButtonStyle())
+    }
+}
+
+struct WorkflowPickerSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @Binding var selectedId: String
+    @Binding var prRef: String
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 8) {
+                    SheetLabel("Workflow")
+                    SheetCard {
+                        ForEach(Array(WorkflowCatalog.all.enumerated()), id: \.element.id) { index, workflow in
+                            SheetSelectRow(title: workflow.label,
+                                           subtitle: workflow.description,
+                                           selected: selectedId == workflow.id,
+                                           leading: nil) {
+                                selectedId = workflow.id
+                                dismiss()
+                            }
+                            if index < WorkflowCatalog.all.count - 1 {
+                                SheetSeparator()
+                            }
+                        }
+                        if WorkflowCatalog.all.first(where: { $0.id == selectedId })?.needsPrRef == true {
+                            TextField("PR or branch reference", text: $prRef)
+                                .textInputAutocapitalization(.never)
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 10)
+                        }
+                        if !selectedId.isEmpty {
+                            SheetSeparator()
+                            SheetSelectRow(title: "No workflow",
+                                           subtitle: "Use the normal session prompt",
+                                           selected: false,
+                                           leading: nil) {
+                                selectedId = ""
+                                dismiss()
+                            }
+                        }
+                    }
+                }
+                .padding(20)
+            }
+            .background(SheetStyle.panel)
+            .navigationTitle("Workflow")
+            .navigationBarTitleDisplayMode(.inline)
+        }
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+        .presentationCornerRadius(32)
+        .preferredColorScheme(.dark)
     }
 }

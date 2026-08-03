@@ -30,9 +30,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    AnyElement, ClipboardItem, Context, Entity, ListAlignment, ListScrollEvent, ListState,
-    ObjectFit, SharedString, StyledImage as _, Subscription, Task, Window, div, img, list,
-    prelude::*, px,
+    AnyElement, BorderStyle, ClipboardItem, Context, Entity, EventEmitter, ListAlignment,
+    ListScrollEvent, ListState, ObjectFit, SharedString, StyledImage as _, StyledText,
+    Subscription, Task, TextRun, Window, canvas, div, img, list, prelude::*, px, quad,
 };
 
 use comet_doc::{MessagePart, MessageRole, MessageStatus, SessionMessageEntry};
@@ -198,8 +198,14 @@ pub struct ToolItem {
 #[derive(Clone)]
 pub enum RowKind {
     User {
-        /// Visible prompt (attachment-ref trailer already stripped).
+        /// Visible prompt (attachment-ref trailer already stripped). When the
+        /// prompt carries file mentions this is the *projected* display text —
+        /// chip labels in place of the raw Markdown links.
         text: SharedString,
+        /// File-mention chips over `text`, in display-byte terms. Computed
+        /// once per entry change in [`rows_for_entry`] (rows are cached by
+        /// fingerprint), never per frame. Empty for ordinary prompts.
+        mentions: Arc<Vec<crate::composer::SentMentionSpan>>,
         /// Image refs parsed out of the message text (message-attachments.ts):
         /// thumbnails load from the owning device via ReadAttachmentChunk.
         attachments: Arc<Vec<crate::attachments::UserImageAttachment>>,
@@ -248,10 +254,11 @@ pub struct Row {
     /// The owning message entry — hover anywhere on the entry's rows reveals
     /// its timestamp strip (comet chat-view.tsx `group`/`group-hover`).
     pub entry_id: SharedString,
-    /// Epoch-ms for the 16px hover-timestamp strip UNDER this row: set on the
-    /// LAST row of a completed entry (user rows always; assistant rows only
-    /// once streaming ends — "the turn isn't at a time yet", chat-view.tsx).
     pub timestamp: Option<i64>,
+    /// Full raw text for the completed owning message. Present only on the
+    /// entry's last row so message actions render exactly once.
+    pub raw_text: Option<SharedString>,
+    pub role: Option<MessageRole>,
 }
 
 /// Absolute hover-timestamp label, e.g. "Jul 1, 3:45 PM" — the exact
@@ -319,16 +326,27 @@ pub fn rows_for_entry(
         // Attachment refs ride the plain text (the `withAttachments`
         // transport); split them back out for the thumbnail strip.
         let parsed = crate::attachments::parse_user_message_images(&raw);
+        let actions = (!pending && !raw.trim().is_empty()).then(|| raw.clone().into());
+        // File mentions render as chips here too, not just in the composer.
+        // The projection is pure over the text, so the raw-length row version
+        // below stays a valid cache/diff key.
+        let (text, mentions) = match crate::composer::sent_mention_display(&parsed.text) {
+            Some((display, spans)) => (display, spans),
+            None => (parsed.text, Vec::new()),
+        };
         return vec![Row {
             id: entry.id.clone().into(),
             version: (raw.len() as u64) << 1 | pending as u64,
             turn_start: true,
             kind: RowKind::User {
-                text: parsed.text.into(),
+                text: text.into(),
+                mentions: Arc::new(mentions),
                 attachments: Arc::new(parsed.attachments),
                 pending,
             },
             entry_id,
+            raw_text: actions,
+            role: (!pending).then_some(MessageRole::User),
             // User rows always carry the strip (chat-view.tsx: whenever
             // `createdAt` exists — the optimistic echo included).
             timestamp: Some(entry.created_at),
@@ -358,6 +376,8 @@ pub fn rows_for_entry(
                 },
                 entry_id: entry.id.clone().into(),
                 timestamp: None,
+                raw_text: None,
+                role: None,
             });
             *group_ix += 1;
         };
@@ -412,6 +432,8 @@ pub fn rows_for_entry(
                                 turn_start: false,
                                 entry_id: entry_id.clone(),
                                 timestamp: None,
+                                raw_text: None,
+                                role: None,
                                 kind: if streaming {
                                     RowKind::LiveMarkdown {
                                         tree: tree.clone(),
@@ -450,22 +472,39 @@ pub fn rows_for_entry(
                             },
                             entry_id: entry_id.clone(),
                             timestamp: None,
+                            raw_text: None,
+                            role: None,
                         });
                     }
                     MessagePart::Error {
                         id: part_id,
                         message,
                     } => {
+                        // Older docs may contain the same terminal failure as
+                        // both Error and Done(error). Keep replay clean too,
+                        // not only newly folded events.
+                        if matches!(
+                            rows.last(),
+                            Some(Row {
+                                kind: RowKind::ErrorChip { message: previous },
+                                ..
+                            }) if previous.as_ref() == message.as_str()
+                        ) {
+                            continue;
+                        }
                         rows.push(Row {
                             id: format!("{}#{}", entry.id, part_id).into(),
                             version: message.len() as u64,
                             turn_start: false,
                             kind: RowKind::ErrorChip {
-                                // Harness-generated; the chip is one line.
-                                message: single_line(message).into(),
+                                // Keep the raw error for clipboard copying;
+                                // rendering normalizes it to one line.
+                                message: message.clone().into(),
                             },
                             entry_id: entry_id.clone(),
                             timestamp: None,
+                            raw_text: None,
+                            role: None,
                         });
                     }
                     // Tools are grouped by the outer arm; nothing reaches here.
@@ -490,6 +529,19 @@ pub fn rows_for_entry(
     // change when streaming flips off (chips).
     if !streaming && let Some(last) = rows.last_mut() {
         last.timestamp = Some(entry.created_at);
+        let raw = entry
+            .parts
+            .iter()
+            .filter_map(|p| match p {
+                MessagePart::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        if !raw.trim().is_empty() {
+            last.raw_text = Some(raw.into());
+            last.role = Some(entry.role.clone());
+        }
         last.version ^= 1 << 62;
     }
     rows
@@ -847,6 +899,11 @@ struct FoldState {
     toggled_at: Option<Instant>,
 }
 
+#[derive(Clone)]
+pub enum TranscriptEvent {
+    NewThread { text: String, role: MessageRole },
+}
+
 pub struct Transcript {
     state: Entity<AppState>,
     list: ListState,
@@ -909,6 +966,12 @@ pub struct Transcript {
     /// the companion task after ~1.2s.
     copied_code: Option<(SharedString, usize)>,
     copied_clear: Option<Task<()>>,
+    /// Message footer showing transient "Copied" feedback.
+    copied_message: Option<SharedString>,
+    copied_message_clear: Option<Task<()>>,
+    /// Error chip showing transient copied feedback.
+    copied_error: Option<SharedString>,
+    copied_error_clear: Option<Task<()>>,
     /// Transcript attachment being viewed full-size (click a user thumbnail).
     attachment_preview: Option<crate::attachments::PreviewImage>,
     /// In-flight ReadAttachmentChunk loads, keyed `(deviceId, path)` — one per
@@ -960,6 +1023,10 @@ impl Transcript {
             hovered_entry: None,
             copied_code: None,
             copied_clear: None,
+            copied_message: None,
+            copied_message_clear: None,
+            copied_error: None,
+            copied_error_clear: None,
             attachment_preview: None,
             attachment_loads: HashMap::new(),
             attachment_retries: HashMap::new(),
@@ -1178,11 +1245,15 @@ impl Transcript {
 
     /// Rebuild rows from app state; splice minimal ranges into the list.
     fn sync(&mut self, cx: &mut Context<Self>) {
-        let (selected, entries, echoes) = {
+        let (selected, entries, seed, echoes) = {
             let s = self.state.read(cx);
+            let selected = s.selected_chat.clone();
             (
-                s.selected_chat.clone(),
+                selected.clone(),
                 s.transcript.clone(),
+                selected
+                    .as_deref()
+                    .and_then(|chat_id| s.thread_seed_entry(chat_id)),
                 s.pending_echoes().to_vec(),
             )
         };
@@ -1208,6 +1279,9 @@ impl Transcript {
         }
 
         let mut new_rows: Vec<Row> = Vec::new();
+        if let Some(seed) = &seed {
+            new_rows.extend(self.rows_for(seed, false));
+        }
         for entry in &entries {
             new_rows.extend(self.rows_for(entry, false));
         }
@@ -1484,8 +1558,8 @@ impl Transcript {
                     frame
                         .id(SharedString::from(format!("{row_id}#att{aix}")))
                         .border_1()
-                        .border_color(crate::theme::white_alpha(0.11))
-                        .bg(crate::theme::white_alpha(0.035))
+                        .border_color(crate::theme::hairline(0.11))
+                        .bg(crate::theme::ink(0.035))
                         .cursor_pointer()
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.attachment_preview = Some(preview.clone());
@@ -1502,14 +1576,14 @@ impl Transcript {
                 AttachmentSnapshot::Error { .. } => frame
                     .border_1()
                     .border_dashed()
-                    .border_color(crate::theme::white_alpha(0.14))
-                    .bg(crate::theme::white_alpha(0.025))
+                    .border_color(crate::theme::hairline(0.14))
+                    .bg(crate::theme::ink(0.025))
                     .into_any_element(),
                 // Loading: the pulsing skeleton (same wash as popover skeletons).
                 AttachmentSnapshot::Loading => frame
                     .border_1()
-                    .border_color(crate::theme::white_alpha(0.08))
-                    .bg(crate::theme::white_alpha(0.055))
+                    .border_color(crate::theme::hairline(0.08))
+                    .bg(crate::theme::ink(0.055))
                     .with_animation(
                         SharedString::from(format!("{row_id}#att-pulse{aix}")),
                         motion::COMET_PULSE.repeating(),
@@ -1539,11 +1613,13 @@ impl Transcript {
         let inner: AnyElement = match &row.kind {
             RowKind::User {
                 text,
+                mentions,
                 attachments,
                 pending,
             } => {
                 let attachments = attachments.clone();
                 let text = text.clone();
+                let mentions = mentions.clone();
                 let pending = *pending;
                 // Attachment thumbnails ride ABOVE the bubble, right-aligned
                 // (chat-view.tsx RowView: UserAttachmentStrip then the text
@@ -1572,7 +1648,11 @@ impl Transcript {
                                 .line_height(px(22.0))
                                 .text_color(theme.text)
                                 .when(pending, |el| el.opacity(0.65))
-                                .child(text),
+                                .child(if mentions.is_empty() {
+                                    text.into_any_element()
+                                } else {
+                                    user_mention_text(text, mentions, &theme)
+                                }),
                         ),
                     );
                 }
@@ -1668,7 +1748,9 @@ impl Transcript {
             RowKind::InputChip { header, resolved } => {
                 input_chip(header.clone(), *resolved, &theme)
             }
-            RowKind::ErrorChip { message } => error_chip(message.clone(), &theme),
+            RowKind::ErrorChip { message } => {
+                self.render_error_chip(&row.id, message.clone(), &theme, cx)
+            }
         };
 
         // Hover-revealed timestamp strip (comet chat-view.tsx `Timestamp`):
@@ -1713,6 +1795,95 @@ impl Transcript {
                     ))
                 })
         });
+        let actions = row.raw_text.clone().zip(row.role).map(|(text, role)| {
+            let copied = self
+                .copied_message
+                .as_ref()
+                .is_some_and(|id| id == &row.entry_id);
+            let copy_text = text.clone();
+            let copy_entry = row.entry_id.clone();
+            let thread_text = text;
+            let align_end = role == MessageRole::User;
+            div()
+                .w_full()
+                .mt(px(8.0))
+                .flex()
+                .gap(px(6.0))
+                .when(align_end, |el| el.justify_end())
+                .child(
+                    div()
+                        .id(SharedString::from(format!("message-copy-{}", row.entry_id)))
+                        .h(px(24.0))
+                        .px(px(8.0))
+                        .flex()
+                        .items_center()
+                        .gap(px(4.0))
+                        .rounded(px(Theme::CONTROL_RADIUS))
+                        .border_1()
+                        .border_color(theme.border)
+                        .text_size(px(11.0))
+                        .text_color(theme.text_muted)
+                        .cursor_pointer()
+                        .hover(|el| el.bg(crate::theme::wash(0.11)))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(copy_text.to_string()));
+                            this.copied_message = Some(copy_entry.clone());
+                            this.copied_message_clear = Some(cx.spawn(async move |this, cx| {
+                                cx.background_executor()
+                                    .timer(Duration::from_millis(1500))
+                                    .await;
+                                this.update(cx, |this, cx| {
+                                    this.copied_message = None;
+                                    this.copied_message_clear = None;
+                                    cx.notify();
+                                })
+                                .ok();
+                            }));
+                            cx.notify();
+                        }))
+                        .child(
+                            crate::icons::icon(if copied {
+                                crate::icons::CHECK
+                            } else {
+                                crate::icons::COPY
+                            })
+                            .size(px(12.0))
+                            .text_color(theme.text_muted),
+                        )
+                        .child(if copied { "Copied" } else { "Copy" }),
+                )
+                .child(
+                    div()
+                        .id(SharedString::from(format!(
+                            "message-new-thread-{}",
+                            row.entry_id
+                        )))
+                        .h(px(24.0))
+                        .px(px(8.0))
+                        .flex()
+                        .items_center()
+                        .gap(px(4.0))
+                        .rounded(px(Theme::CONTROL_RADIUS))
+                        .border_1()
+                        .border_color(theme.border)
+                        .text_size(px(11.0))
+                        .text_color(theme.text_muted)
+                        .cursor_pointer()
+                        .hover(|el| el.bg(crate::theme::wash(0.11)))
+                        .on_click(cx.listener(move |_, _, _, cx| {
+                            cx.emit(TranscriptEvent::NewThread {
+                                text: thread_text.to_string(),
+                                role,
+                            });
+                        }))
+                        .child(
+                            crate::icons::icon(crate::icons::CHAT_ROUND_LINE)
+                                .size(px(12.0))
+                                .text_color(theme.text_muted),
+                        )
+                        .child("New thread"),
+                )
+        });
         let entry_id = row.entry_id.clone();
         let row_id = row.id.clone();
         div()
@@ -1755,6 +1926,7 @@ impl Transcript {
                     .max_w(px(MAX_CONTENT_WIDTH))
                     .min_w_0()
                     .child(inner)
+                    .children(actions)
                     .children(strip),
             )
             .into_any_element()
@@ -1855,7 +2027,7 @@ impl Transcript {
             // chips (destructive tint, comet tool-chip.tsx) and in the
             // summary's "· N failed" count.
             .text_color(theme.text_muted)
-            .hover(|s| s.text_color(Theme::dark().text))
+            .hover(|s| s.text_color(theme.text))
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.toggle_fold(toggle_id.clone(), tool_count, auto_open);
                 cx.notify();
@@ -1865,7 +2037,7 @@ impl Transcript {
                     .size(px(18.0))
                     .flex_none()
                     .rounded(px(5.0))
-                    .bg(crate::theme::white_alpha(0.06))
+                    .bg(crate::theme::ink(0.06))
                     .flex()
                     .items_center()
                     .justify_center()
@@ -1923,6 +2095,188 @@ impl Transcript {
             .child(body)
             .into_any_element()
     }
+
+    /// Render a visible run error with a trailing control that copies the full
+    /// message, including text hidden by the chip's one-line truncation.
+    fn render_error_chip(
+        &mut self,
+        row_id: &SharedString,
+        message: SharedString,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let red_300 = crate::theme::oklch(0.808, 0.114, 19.571); // tailwind red-300
+        let danger = theme.danger; // red-400
+        let copied = self.copied_error.as_ref().is_some_and(|id| id == row_id);
+        let copy_id = row_id.clone();
+        let copy_message = message.clone();
+        let display_message: SharedString = single_line(&message).into();
+
+        div()
+            .py(px(4.0))
+            .w_full()
+            .child(
+                div()
+                    .id(SharedString::from(format!("error-copy-{row_id}")))
+                    .h(px(34.0))
+                    .w_full()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .overflow_hidden()
+                    .rounded(px(10.0))
+                    .border_1()
+                    .border_color(danger.opacity(0.16))
+                    .bg(danger.opacity(0.05))
+                    .px(px(8.0))
+                    .text_size(px(12.0))
+                    .cursor_pointer()
+                    .hover(|el| el.bg(danger.opacity(0.1)))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(copy_message.to_string()));
+                        this.copied_error = Some(copy_id.clone());
+                        this.copied_error_clear = Some(cx.spawn(async move |this, cx| {
+                            cx.background_executor()
+                                .timer(Duration::from_millis(1500))
+                                .await;
+                            this.update(cx, |this, cx| {
+                                this.copied_error = None;
+                                this.copied_error_clear = None;
+                                cx.notify();
+                            })
+                            .ok();
+                        }));
+                        cx.notify();
+                    }))
+                    .child(
+                        div()
+                            .flex_none()
+                            .size(px(20.0))
+                            .rounded(px(6.0))
+                            .bg(danger.opacity(0.12))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(
+                                crate::icons::icon(crate::icons::DANGER_TRIANGLE)
+                                    .size(px(12.0))
+                                    .text_color(red_300.opacity(0.8)),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .text_color(red_300.opacity(0.8))
+                            .child(SharedString::from("Error")),
+                    )
+                    .child(
+                        div()
+                            .min_w_0()
+                            .flex_1()
+                            .truncate()
+                            .text_color(theme.text.opacity(0.8))
+                            .child(display_message),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .size(px(22.0))
+                            .rounded(px(6.0))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .text_color(theme.text_muted)
+                            .child(
+                                crate::icons::icon(if copied {
+                                    crate::icons::CHECK
+                                } else {
+                                    crate::icons::COPY
+                                })
+                                .size(px(12.0)),
+                            ),
+                    ),
+            )
+            .into_any_element()
+    }
+}
+
+impl EventEmitter<TranscriptEvent> for Transcript {}
+
+/// A sent message's text with its file-mention chips. The same recipe as the
+/// markdown renderer's inline code (`flat_text_element`): chip ranges shape in
+/// the mono font at `code_text` violet, [`StyledText`] supplies wrapped glyph
+/// geometry through its layout handle, and a canvas paints the rounded
+/// `code_wash` *beneath* the glyphs — so chips wrap, clip, and scroll exactly
+/// like the text they decorate.
+///
+/// Per-frame cost while an assistant message streams below: shaping hits
+/// gpui's line-layout cache (identical text + runs ⇒ reuse) and the underlay
+/// repaints O(chips) quads — no layout work, no re-projection (spans were
+/// computed once in [`rows_for_entry`]).
+fn user_mention_text(
+    text: SharedString,
+    mentions: Arc<Vec<crate::composer::SentMentionSpan>>,
+    theme: &Theme,
+) -> AnyElement {
+    // Split runs at chip boundaries (spans are in order): body text keeps the
+    // sans font, chips read as inline code. Size/line-height flow from the
+    // bubble's div like every text child.
+    let body_run = |len: usize| TextRun {
+        len,
+        font: gpui::font(theme.font_sans.clone()),
+        color: theme.text,
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    let chip_run = |len: usize| TextRun {
+        len,
+        font: gpui::font(theme.font_mono.clone()),
+        color: theme.code_text,
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    let mut runs = Vec::with_capacity(mentions.len() * 2 + 1);
+    let mut at = 0;
+    for span in mentions.iter() {
+        if at < span.range.start {
+            runs.push(body_run(span.range.start - at));
+        }
+        runs.push(chip_run(span.range.len()));
+        at = span.range.end;
+    }
+    if at < text.len() {
+        runs.push(body_run(text.len() - at));
+    }
+    let styled = StyledText::new(text.clone()).with_runs(runs);
+    let layout = styled.layout().clone();
+    let wash = theme.code_wash;
+    let underlay = canvas(
+        |_, _, _| (),
+        move |_, _, window, _| {
+            for span in mentions.iter() {
+                for rect in render::range_rects(&layout, &span.range, 0.0, 2.0) {
+                    window.paint_quad(quad(
+                        rect,
+                        px(5.0),
+                        wash,
+                        px(0.0),
+                        gpui::transparent_black(),
+                        BorderStyle::default(),
+                    ));
+                }
+            }
+        },
+    )
+    .absolute()
+    .size_full();
+    div()
+        .relative()
+        .child(underlay)
+        .child(styled)
+        .into_any_element()
 }
 
 /// The transcript ErrorChip — an exact port of comet chat-view.tsx
@@ -1932,7 +2286,7 @@ impl Transcript {
 /// "Error" label, then the human message truncating at `text-foreground/80` —
 /// a subtle red-tinted wash, never a bare red-stroke box.
 fn error_chip(message: SharedString, theme: &Theme) -> AnyElement {
-    let red_300 = crate::theme::oklch(0.808, 0.114, 19.571); // tailwind red-300
+    let red_300 = theme.danger_muted; // tailwind red-300
     let danger = theme.danger; // red-400
     div()
         .py(px(4.0))
@@ -2011,8 +2365,8 @@ fn input_chip(header: SharedString, resolved: bool, theme: &Theme) -> AnyElement
                 .overflow_hidden()
                 .rounded(px(10.0))
                 .border_1()
-                .border_color(crate::theme::white_alpha(0.08))
-                .bg(crate::theme::white_alpha(0.045))
+                .border_color(crate::theme::hairline(0.08))
+                .bg(crate::theme::ink(0.045))
                 .px(px(8.0))
                 .text_size(px(12.0))
                 .child(
@@ -2020,7 +2374,7 @@ fn input_chip(header: SharedString, resolved: bool, theme: &Theme) -> AnyElement
                         .flex_none()
                         .size(px(20.0))
                         .rounded(px(6.0))
-                        .bg(crate::theme::white_alpha(0.09))
+                        .bg(crate::theme::ink(0.09))
                         .flex()
                         .items_center()
                         .justify_center()
@@ -2090,7 +2444,7 @@ fn tool_chip(tool: &ToolItem, theme: &Theme) -> AnyElement {
                 .h_full()
                 .w(px(1.0))
                 .flex_none()
-                .bg(crate::theme::white_alpha(0.08)),
+                .bg(crate::theme::ink(0.08)),
         )
         .child(
             div()
@@ -2105,8 +2459,8 @@ fn tool_chip(tool: &ToolItem, theme: &Theme) -> AnyElement {
                 .overflow_hidden()
                 .rounded(px(9.0))
                 .border_1()
-                .border_color(crate::theme::white_alpha(0.07))
-                .bg(crate::theme::white_alpha(0.03))
+                .border_color(crate::theme::hairline(0.07))
+                .bg(crate::theme::ink(0.03))
                 .px(px(8.0))
                 .text_size(px(12.0))
                 .child(
@@ -2116,7 +2470,7 @@ fn tool_chip(tool: &ToolItem, theme: &Theme) -> AnyElement {
                         .size(px(18.0))
                         .flex_none()
                         .rounded(px(5.0))
-                        .bg(crate::theme::white_alpha(0.08))
+                        .bg(crate::theme::ink(0.08))
                         .flex()
                         .items_center()
                         .justify_center()
@@ -2647,6 +3001,44 @@ mod tests {
         assert_eq!(attachments.len(), 1);
     }
 
+    /// A sent prompt's file mentions render as chips in the transcript: the
+    /// row carries the projected display text plus spans, while ordinary
+    /// prompts keep the empty-spans fast path. The row version derives from
+    /// the RAW text either way, so projection never perturbs the diff key.
+    #[test]
+    fn user_rows_project_file_mentions_into_chips() {
+        let raw = "look at [composer.rs](comet-file:crates/ui/src/composer.rs) please";
+        let mut entry = assistant("u3", MessageStatus::Complete, vec![]);
+        entry.role = MessageRole::User;
+        entry.status = None;
+        entry.parts = vec![text_part("t0", raw)];
+        let rows = rows_for_entry(&entry, false, &mut parse);
+        let RowKind::User { text, mentions, .. } = &rows[0].kind else {
+            panic!("expected a user row");
+        };
+        assert!(
+            !text.contains("comet-file:"),
+            "raw link left visible: {text}"
+        );
+        assert!(text.contains("composer.rs"));
+        assert_eq!(mentions.len(), 1);
+        assert!(!mentions[0].is_dir);
+        assert_eq!(mentions[0].path.as_ref(), "crates/ui/src/composer.rs");
+        assert_eq!(&text[mentions[0].range.clone()], {
+            let projected: &str = "\u{00A0}@composer.rs\u{00A0}";
+            projected
+        });
+        assert_eq!(rows[0].version, (raw.len() as u64) << 1);
+
+        entry.parts = vec![text_part("t0", "no mentions here")];
+        let rows = rows_for_entry(&entry, false, &mut parse);
+        let RowKind::User { text, mentions, .. } = &rows[0].kind else {
+            panic!("expected a user row");
+        };
+        assert_eq!(text.as_ref(), "no mentions here");
+        assert!(mentions.is_empty());
+    }
+
     #[test]
     fn diff_rows_appends_and_middle_edits() {
         let entry1 = assistant("m1", MessageStatus::Complete, vec![text_part("t0", "one")]);
@@ -2745,6 +3137,32 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_adjacent_error_parts_render_once() {
+        let entry = assistant(
+            "m1",
+            MessageStatus::Complete,
+            vec![
+                MessagePart::Error {
+                    id: "e0".into(),
+                    message: "connection refused".into(),
+                },
+                MessagePart::Error {
+                    id: "e1".into(),
+                    message: "connection refused".into(),
+                },
+            ],
+        );
+
+        let rows = rows_for_entry(&entry, false, &mut parse);
+        assert_eq!(
+            rows.iter()
+                .filter(|row| matches!(row.kind, RowKind::ErrorChip { .. }))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
     fn tool_chip_labels_per_kind() {
         assert_eq!(
             tool_chip_content(&ToolCall::Exec {
@@ -2830,6 +3248,10 @@ mod tests {
         let rows = rows_for_entry(&user, true, &mut parse);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].timestamp, Some(ms));
+        assert!(rows[0].raw_text.is_none(), "pending echoes have no actions");
+        let rows = rows_for_entry(&user, false, &mut parse);
+        assert_eq!(rows[0].raw_text.as_deref(), Some("hi"));
+        assert_eq!(rows[0].role, Some(MessageRole::User));
 
         // Assistant entries: strip on the LAST row once settled…
         let done = assistant(
@@ -2841,6 +3263,8 @@ mod tests {
         assert!(rows.len() >= 2);
         assert_eq!(rows.last().unwrap().timestamp, Some(done.created_at));
         assert!(rows[..rows.len() - 1].iter().all(|r| r.timestamp.is_none()));
+        assert_eq!(rows.last().unwrap().raw_text.as_deref(), Some("one\n\ntwo"));
+        assert!(rows[..rows.len() - 1].iter().all(|r| r.raw_text.is_none()));
 
         // …but never mid-stream (chat-view.tsx: no hover under a moving reply).
         let live = assistant(
@@ -2850,6 +3274,7 @@ mod tests {
         );
         let rows = rows_for_entry(&live, false, &mut parse);
         assert!(rows.iter().all(|r| r.timestamp.is_none()));
+        assert!(rows.iter().all(|r| r.raw_text.is_none()));
         // Every row knows its entry (the hover group).
         assert!(rows.iter().all(|r| r.entry_id.as_ref() == live.id));
     }

@@ -192,6 +192,32 @@ impl ChatDocHandle {
         })
     }
 
+    /// Persist starting context for a forked/review thread before its first
+    /// visible user prompt. The deterministic id makes retries idempotent.
+    pub fn write_seed_message(
+        &self,
+        message_id: &str,
+        text: &str,
+        role: MessageRole,
+        created_at: i64,
+    ) -> Result<(), DocError> {
+        if self.doc.read_entries()?.iter().any(|e| e.id == message_id) {
+            return Ok(());
+        }
+        self.doc.push_message(&SessionMessageEntry {
+            id: message_id.to_string(),
+            role,
+            parts: vec![MessagePart::Text {
+                id: "t0".into(),
+                text: text.to_string(),
+            }],
+            created_at,
+            device_id: self.device_id.clone(),
+            status: Some(MessageStatus::Complete),
+            continuation_of: None,
+        })
+    }
+
     /// Recovery sweep: stamp this device's abandoned `streaming` entries `aborted`, appending
     /// `note` as a visible error part so the transcript says WHY the turn
     /// ended (comet folded "Run interrupted by backend restart" the same
@@ -551,6 +577,14 @@ impl DocHost {
                     ws.claim_chat(chat_id, Some(&request.cwd))?;
                 }
                 let harness = self.harness_for(chat_id);
+                let row_config = self.workspace().and_then(|ws| ws.chat_config(chat_id));
+                tracing::info!(
+                    chat = %chat_id,
+                    harness = ?harness,
+                    request_model = %request.model.clone().unwrap_or_else(|| "<none>".into()),
+                    row_model = %row_config.as_ref().and_then(|c| c.model.clone()).unwrap_or_else(|| "<none>".into()),
+                    "debug: dispatch run (model change trace)"
+                );
                 sessions
                     .dispatch(chat_id, harness, request.clone(), Some(message_id.clone()))
                     .await?;
@@ -693,6 +727,9 @@ impl DocHost {
         Some(comet_proto::RunRequest {
             prompt: prompt.to_string(),
             model: config.as_ref().and_then(|c| c.model.clone()),
+            seed: None,
+            seed_purpose: None,
+            seed_role: None,
             reasoning: config.as_ref().and_then(|c| c.reasoning),
             model_options: config
                 .as_ref()

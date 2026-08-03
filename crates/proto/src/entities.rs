@@ -6,7 +6,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::{HarnessId, ReasoningLevel, SandboxLevel};
+use crate::{HarnessId, PermissionMode, ReasoningLevel, SandboxLevel};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -81,6 +81,8 @@ pub struct ChatConfig {
     #[serde(default)]
     pub model_options: serde_json::Map<String, serde_json::Value>,
     pub sandbox: SandboxLevel,
+    #[serde(default)]
+    pub permission_mode: PermissionMode,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -120,6 +122,10 @@ pub struct Chat {
     /// device clears the badge everywhere.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_seen_at: Option<DateTime<Utc>>,
+    /// Synced completion marker used by the Activity surface. Settled chats
+    /// remain in history but no longer compete with active work.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settled_at: Option<DateTime<Utc>>,
 }
 
 impl Chat {
@@ -178,6 +184,15 @@ pub struct Session {
     pub status: SessionStatus,
     pub started_at: Option<DateTime<Utc>>,
     pub updated_at: DateTime<Utc>,
+    /// Whether this chat still owns a warm harness process.
+    #[serde(default)]
+    pub agent_running: bool,
+    /// Resident set size of the harness process tree, in bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_rss_bytes: Option<u64>,
+    /// Time of the latest memory sample.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_sampled_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -234,6 +249,16 @@ pub struct FolderListing {
     /// True when the listing hit the entry cap.
     #[serde(default)]
     pub truncated: bool,
+}
+
+/// A workspace-relative file or directory returned by `SearchFiles`.
+/// Contents deliberately never cross this boundary: mentioning a path leaves
+/// the harness to read it through its normal workspace tools when needed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileSearchMatch {
+    pub path: String,
+    pub is_dir: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

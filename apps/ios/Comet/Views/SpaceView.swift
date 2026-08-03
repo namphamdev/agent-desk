@@ -42,7 +42,6 @@ struct SpaceView: View {
         .listStyle(.plain)
         .environment(\.defaultMinListRowHeight, 10)
         .scrollContentBackground(.hidden)
-        .scrollEdgeEffectStyle(.soft, for: .top)
         .background(Theme.surface.ignoresSafeArea())
         .navigationTitle(space?.displayName ?? "Space")  // feeds the back menu
         .navigationBarTitleDisplayMode(.inline)
@@ -100,7 +99,7 @@ struct SpaceView: View {
                     .padding(.horizontal, 16)
                     .frame(height: 36)
             }
-            .buttonStyle(.glass)
+            .buttonStyle(PressWashButtonStyle(cornerRadius: 18))
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 48)

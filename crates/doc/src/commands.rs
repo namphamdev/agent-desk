@@ -312,6 +312,9 @@ mod tests {
             auto_approve: false,
             attachments: Vec::new(),
             resume: None,
+            seed: None,
+            seed_purpose: None,
+            seed_role: None,
         }
     }
 }

@@ -1,6 +1,7 @@
 # Comet
 
-Control your coding agents (Claude Code, Codex) from any of your devices.
+Control your coding agents (Claude Code, Codex, or any ACP-compatible CLI)
+from any of your devices.
 
 ![Comet running a Claude Code session](docs/screenshot.png)
 
@@ -27,6 +28,30 @@ comet daemon start|stop|restart|status
 ```
 
 On macOS: build `comet` from source, then `comet daemon install` (launchd).
+
+## Use an ACP agent
+
+Comet can launch any CLI that implements the
+[Agent Client Protocol](https://agentclientprotocol.com/). Open
+**Settings → ACP agents** to browse the official registry, add an agent, and
+choose the active one. Binary distributions are downloaded and checksum
+verified when the registry provides a SHA-256 digest. For `npx` distributions,
+Comet reuses a matching CLI already installed on the device, or falls back to
+the package runner. `uvx` distributions are fetched by their package runner
+when first launched.
+
+For custom or unpublished agents, configure the official Rust SDK adapter with
+a command (or SDK JSON configuration):
+
+```bash
+export COMET_ACP_AGENT='your-agent --acp'
+export COMET_HARNESS=acp              # optional: make it the default
+comet
+```
+
+The adapter supports streamed text and reasoning, tool lifecycle events,
+permission prompts, image attachments, cancellation, session resume, and
+turn-boundary steering.
 
 ---
 

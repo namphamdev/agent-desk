@@ -12,7 +12,7 @@
 //! rendered as skeletons / inline errors with Retry.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use gpui::{
@@ -22,7 +22,7 @@ use gpui::{
 
 use comet_engine::registry::HarnessDescriptor;
 use comet_proto::{
-    ChatConfig, FolderListing, HarnessId, Model, ReasoningLevel, RepoRef, SandboxLevel,
+    ChatConfig, FolderListing, HarnessId, Model, PermissionMode, ReasoningLevel, RepoRef,
 };
 use comet_rpc::methods;
 
@@ -52,6 +52,7 @@ pub struct DraftConfig {
     pub reasoning: Option<ReasoningLevel>,
     /// option id → choice id (only non-defaults are meaningful).
     pub model_options: serde_json::Map<String, serde_json::Value>,
+    pub permission_mode: PermissionMode,
     /// The picked ref (base branch in NewWorktree mode; a worktree's branch
     /// when reusing one). `None` = the repo's current branch.
     pub branch: Option<String>,
@@ -96,6 +97,7 @@ pub struct ResolvedRunConfig {
     pub model: Option<String>,
     pub reasoning: Option<ReasoningLevel>,
     pub model_options: serde_json::Map<String, serde_json::Value>,
+    pub permission_mode: PermissionMode,
 }
 
 impl ResolvedRunConfig {
@@ -106,7 +108,8 @@ impl ResolvedRunConfig {
             model: self.model.clone(),
             reasoning: self.reasoning,
             model_options: self.model_options.clone(),
-            sandbox: SandboxLevel::WorkspaceWrite,
+            sandbox: self.permission_mode.sandbox(),
+            permission_mode: self.permission_mode,
         })
     }
 }
@@ -120,6 +123,27 @@ impl ResolvedRunConfig {
 /// the same row here).
 pub fn default_model(models: &[Model]) -> Option<&Model> {
     models.first()
+}
+
+/// Model rows matching a picker query, ranked with the same fuzzy matcher as
+/// the other searchable pickers. IDs and descriptions are searchable too,
+/// since ACP agents may expose a friendly label that omits the provider name.
+pub fn filter_models<'a>(query: &str, models: &'a [Model]) -> Vec<&'a Model> {
+    let labels = models
+        .iter()
+        .map(|model| {
+            format!(
+                "{} {} {}",
+                model.label,
+                model.id,
+                model.description.as_deref().unwrap_or_default()
+            )
+        })
+        .collect::<Vec<_>>();
+    popover::filter_indices(query, &labels)
+        .into_iter()
+        .map(|ix| &models[ix])
+        .collect()
 }
 
 /// A model's default reasoning: X-High when the ladder offers it (comet
@@ -226,6 +250,12 @@ pub fn child_path(base: &str, name: &str) -> String {
     }
 }
 
+/// Whether input should be treated as a direct filesystem path rather than a
+/// name filter for the current folder.
+pub fn is_absolute_path(path: &str) -> bool {
+    Path::new(path.trim()).is_absolute()
+}
+
 /// Breadcrumb segments for a path: `(label, full path)`, root first.
 pub fn breadcrumbs(path: &str) -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = vec![("/".to_string(), "/".to_string())];
@@ -256,6 +286,7 @@ pub enum PickerKind {
     Checkout,
     HarnessModel,
     Traits,
+    Permission,
 }
 
 pub struct Pickers {
@@ -317,7 +348,13 @@ impl Pickers {
             }
             ComposerInputEvent::Submitted => this.on_search_submit(cx),
             // Pasted images/files don't apply to a search box.
-            ComposerInputEvent::PastedImages(_) | ComposerInputEvent::PastedPaths(_) => {}
+            ComposerInputEvent::PastedImages(_)
+            | ComposerInputEvent::PastedPaths(_)
+            | ComposerInputEvent::CursorMoved
+            | ComposerInputEvent::ViewportChanged
+            | ComposerInputEvent::MentionNavigate(_)
+            | ComposerInputEvent::MentionAccept
+            | ComposerInputEvent::MentionDismiss => {}
         });
         // Chat selection / config changes must re-render the chips (child views
         // only re-render on their own notify). A selection change also drops
@@ -407,6 +444,21 @@ impl Pickers {
 
     pub fn draft(&self) -> &DraftConfig {
         &self.config
+    }
+
+    /// Drop device-local model catalogs after provider settings change. The
+    /// next render/open reloads through `ListModels`, which discovers from the
+    /// newly selected provider.
+    pub fn invalidate_model_catalogs(&mut self, cx: &mut Context<Self>) {
+        self.models.clear();
+        self.config.model = None;
+        self.config.reasoning = None;
+        self.config.model_options.clear();
+        // Never send a remembered built-in model while the replacement
+        // provider catalog is still loading.
+        self.defaults.model_by_harness.clear();
+        self.save_defaults();
+        cx.notify();
     }
 
     /// Harness is locked once the chat exists (feature-inventory §1.7).
@@ -523,6 +575,15 @@ impl Pickers {
         }
     }
 
+    fn effective_permission_mode(&self, cx: &App) -> PermissionMode {
+        self.state
+            .read(cx)
+            .selected_chat_row()
+            .and_then(|chat| chat.config.as_ref())
+            .map(|config| config.permission_mode)
+            .unwrap_or(self.config.permission_mode)
+    }
+
     /// The fully-resolved config the composer threads into the Run request and
     /// `Mutate createChat`: concrete model + reasoning whenever the catalog is
     /// loaded (no "engine picks a default" passthrough).
@@ -536,6 +597,7 @@ impl Pickers {
                 .or_else(|| self.effective_model_id(cx).map(str::to_string)),
             reasoning: self.effective_reasoning(cx),
             model_options: self.explicit_options(cx),
+            permission_mode: self.effective_permission_mode(cx),
         }
     }
 
@@ -589,6 +651,7 @@ impl Pickers {
                 CheckoutKind::Local => 0,
                 CheckoutKind::NewWorktree => 1,
             },
+            PickerKind::Permission => self.effective_permission_mode(cx) as usize,
             PickerKind::Branch => self.selected_ref_index(cx),
             _ => 0,
         };
@@ -607,6 +670,13 @@ impl Pickers {
                 });
                 window.focus(&handle, cx);
             }
+            PickerKind::HarnessModel => {
+                let handle = self.search.read(cx).focus_handle(cx);
+                self.search.update(cx, |input, cx| {
+                    input.set_placeholder("Search models…", cx);
+                });
+                window.focus(&handle, cx);
+            }
             _ => window.focus(&self.focus, cx),
         }
         match kind {
@@ -617,9 +687,15 @@ impl Pickers {
             PickerKind::HarnessModel | PickerKind::Traits => {
                 self.ensure_harnesses(cx);
                 if let Some(harness) = self.effective_harness(cx) {
+                    // Provider selection is device-local settings outside this
+                    // entity. Refresh on every picker open so switching to a
+                    // custom provider immediately replaces a previously
+                    // cached built-in catalog.
+                    self.models.remove(&harness);
                     self.ensure_models(harness, cx);
                 }
             }
+            PickerKind::Permission => {}
         }
         cx.notify();
     }
@@ -990,7 +1066,9 @@ impl Pickers {
         self.config.harness = Some(harness);
         self.defaults.harness = Some(harness);
         self.save_defaults();
+        self.active = 0;
         self.model_scroll.set_offset(gpui::Point::default());
+        self.models.remove(&harness);
         self.ensure_models(harness, cx);
         cx.notify();
     }
@@ -1027,6 +1105,19 @@ impl Pickers {
             self.config.reasoning = Some(level);
             self.defaults.reasoning = Some(level);
             self.save_defaults();
+        }
+        cx.notify();
+    }
+
+    fn pick_permission(&mut self, mode: PermissionMode, cx: &mut Context<Self>) {
+        self.open = None;
+        if self.state.read(cx).selected_chat.is_some() {
+            self.update_chat_config(cx, move |config| {
+                config.permission_mode = mode;
+                config.sandbox = mode.sandbox();
+            });
+        } else {
+            self.config.permission_mode = mode;
         }
         cx.notify();
     }
@@ -1079,6 +1170,7 @@ impl Pickers {
             .and_then(|c| c.config.as_ref())
         {
             config.sandbox = existing.sandbox;
+            config.permission_mode = existing.permission_mode;
         }
         change(&mut config);
         // Reasoning must stay concrete for whatever model the row now names —
@@ -1143,23 +1235,30 @@ impl Pickers {
             .unwrap_or_default()
     }
 
-    /// The viewed harness's model list, when loaded (keyboard nav rows).
-    fn model_rows_len(&self, cx: &App) -> usize {
-        self.effective_harness(cx)
+    /// The viewed harness's filtered model list, when loaded.
+    fn filtered_model_rows(&self, cx: &App) -> Vec<Model> {
+        let Some(models) = self
+            .effective_harness(cx)
             .and_then(|h| self.models.get(&h))
             .and_then(|l| l.ready())
-            .map(|m| m.len())
-            .unwrap_or(0)
+        else {
+            return Vec::new();
+        };
+        let query = self.search.read(cx).text().to_string();
+        filter_models(&query, models).into_iter().cloned().collect()
+    }
+
+    /// The viewed harness's filtered model list (keyboard nav rows).
+    fn model_rows_len(&self, cx: &App) -> usize {
+        self.filtered_model_rows(cx).len()
     }
 
     /// Enter on the harness/model popover: pick the highlighted model.
     fn activate_model_row(&mut self, cx: &mut Context<Self>) {
         let Some(id) = self
-            .effective_harness(cx)
-            .and_then(|h| self.models.get(&h))
-            .and_then(|l| l.ready())
-            .and_then(|m| m.get(self.active))
-            .map(|m| m.id.clone())
+            .filtered_model_rows(cx)
+            .get(self.active)
+            .map(|model| model.id.clone())
         else {
             return;
         };
@@ -1268,6 +1367,8 @@ impl Pickers {
             && let Some(row) = self.filtered_ref_rows(cx).into_iter().nth(self.active)
         {
             self.pick_ref(row, cx);
+        } else if self.open == Some(PickerKind::HarnessModel) {
+            self.activate_model_row(cx);
         }
     }
 
@@ -1292,6 +1393,7 @@ impl Pickers {
                     // chips below (reasoning ladder, model options) are
                     // mouse-only.
                     Some(PickerKind::HarnessModel) => self.model_rows_len(cx),
+                    Some(PickerKind::Permission) => 4,
                     Some(PickerKind::Traits) => 0, // merged into HarnessModel
                     None => 0,
                 };
@@ -1317,6 +1419,14 @@ impl Pickers {
                         CheckoutKind::NewWorktree
                     };
                     self.pick_checkout(kind, cx);
+                } else if self.open == Some(PickerKind::Permission) {
+                    let mode = [
+                        PermissionMode::Default,
+                        PermissionMode::Plan,
+                        PermissionMode::AcceptEdits,
+                        PermissionMode::FullAccess,
+                    ][self.active.min(3)];
+                    self.pick_permission(mode, cx);
                 } else {
                     self.on_search_submit(cx);
                 }
@@ -1342,6 +1452,7 @@ impl Pickers {
             PickerKind::Checkout => "picker-checkout",
             PickerKind::HarnessModel => "picker-model",
             PickerKind::Traits => "picker-traits",
+            PickerKind::Permission => "picker-permission",
         };
         let open = self.open == Some(kind)
             || (kind == PickerKind::Traits && self.open == Some(PickerKind::HarnessModel));
@@ -1369,7 +1480,7 @@ impl Pickers {
                 } else {
                     theme.text_muted
                 },
-                Theme::dark().text,
+                theme.text,
             ))
             .bg(if open {
                 theme.element_hover
@@ -1654,6 +1765,7 @@ impl Pickers {
                             this.models.clear();
                             this.ensure_harnesses(cx);
                         }
+                        PickerKind::Permission => {}
                     }))
                     .child(SharedString::from("Retry")),
             )
@@ -1859,6 +1971,67 @@ impl Pickers {
             .into_any_element()
     }
 
+    fn render_permission_popover(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = Theme::of(cx).clone();
+        let current = self.effective_permission_mode(cx);
+        let options = [
+            (
+                PermissionMode::Default,
+                "Default",
+                "Ask before sensitive actions",
+            ),
+            (PermissionMode::Plan, "Plan", "Read-only exploration"),
+            (
+                PermissionMode::AcceptEdits,
+                "Accept edits",
+                "Allow workspace changes",
+            ),
+            (
+                PermissionMode::FullAccess,
+                "Full access",
+                "Allow all actions without approval",
+            ),
+        ];
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(2.0))
+            .children(
+                options
+                    .into_iter()
+                    .enumerate()
+                    .map(|(ix, (mode, label, description))| {
+                        let selected = current == mode;
+                        popover::menu_row_nav(
+                            &theme,
+                            selected,
+                            ix == self.active,
+                            format!("permission-row-{ix}"),
+                        )
+                        .id(("permission-row", ix))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.pick_permission(mode, cx);
+                        }))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .child(label)
+                                .child(
+                                    div()
+                                        .text_size(px(10.5))
+                                        .text_color(theme.text_muted)
+                                        .child(description),
+                                ),
+                        )
+                        .when(selected, |el| el.child(popover::menu_check(&theme)))
+                    }),
+            )
+            .into_any_element()
+    }
+
     /// The combined harness + model switcher (comet harness-model-picker.tsx):
     /// a vertical harness rail of square brand-icon tabs on the left, the
     /// viewed harness's models on the right. On an existing chat the other
@@ -1925,13 +2098,12 @@ impl Pickers {
                                 theme.text_muted
                             })
                             .when(is_viewed, |el| {
-                                el.bg(crate::theme::glass_selected_bg())
+                                el.bg(crate::theme::card_selected_bg())
                                     .shadow(crate::theme::glass_selected_shadows())
                             })
                             .when(is_disabled, |el| el.opacity(0.35))
                             .when(!is_disabled, |el| {
-                                el.cursor_pointer()
-                                    .hover(|s| s.bg(crate::theme::white_alpha(0.06)))
+                                el.cursor_pointer().hover(|s| s.bg(crate::theme::ink(0.06)))
                             })
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.pick_harness(harness, cx);
@@ -1958,59 +2130,72 @@ impl Pickers {
         // direct children so `scroll_to_item(active)` maps 1:1 (the palette's
         // keyboard-follow standard).
         let model_children: Vec<AnyElement> = match effective.map(|h| (h, self.models.get(&h))) {
-            Some((_, Some(Loadable::Ready(models)))) => {
+            Some((_, Some(Loadable::Ready(_)))) => {
                 // The check mirrors the chip: the resolved concrete pick (draft
                 // / chat config / remembered, else the harness default row).
                 let selected = self.selected_model(cx).map(|m| m.id.clone());
                 let active = self.active;
-                let models = models.clone();
-                models
-                    .into_iter()
-                    .enumerate()
-                    .map(|(ix, model)| {
-                        let label: SharedString = model.label.clone().into();
-                        let description: Option<SharedString> =
-                            model.description.clone().map(Into::into);
-                        let id = model.id.clone();
-                        let is_selected = selected.as_deref() == Some(model.id.as_str())
-                            || (selected.is_none() && ix == 0);
-                        popover::menu_row_nav(
-                            &theme,
-                            is_selected,
-                            ix == active,
-                            format!("model-row-{ix}"),
-                        )
-                        .when(is_selected || ix == active, |el| {
-                            el.shadow(crate::theme::glass_selected_shadows())
+                let models = self.filtered_model_rows(cx);
+                if models.is_empty() {
+                    vec![
+                        div()
+                            .px(px(8.0))
+                            .py(px(24.0))
+                            .text_size(px(12.0))
+                            .text_color(theme.text_muted.opacity(0.6))
+                            .text_center()
+                            .child(SharedString::from("No models found."))
+                            .into_any_element(),
+                    ]
+                } else {
+                    models
+                        .into_iter()
+                        .enumerate()
+                        .map(|(ix, model)| {
+                            let label: SharedString = model.label.clone().into();
+                            let description: Option<SharedString> =
+                                model.description.clone().map(Into::into);
+                            let id = model.id.clone();
+                            let is_selected = selected.as_deref() == Some(model.id.as_str())
+                                || (selected.is_none() && ix == 0);
+                            popover::menu_row_nav(
+                                &theme,
+                                is_selected,
+                                ix == active,
+                                format!("model-row-{ix}"),
+                            )
+                            .when(is_selected || ix == active, |el| {
+                                el.shadow(crate::theme::glass_selected_shadows())
+                            })
+                            .id(("model-row", ix))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.pick_model(id.clone(), cx);
+                            }))
+                            .child(
+                                // Name + 11px muted description subline, per
+                                // harness-model-picker.tsx (`min-w-0 flex-1` column).
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .flex()
+                                    .flex_col()
+                                    .child(div().w_full().truncate().child(label))
+                                    .when_some(description, |el, description| {
+                                        el.child(
+                                            div()
+                                                .w_full()
+                                                .truncate()
+                                                .text_size(px(11.0))
+                                                .text_color(theme.text_muted.opacity(0.7))
+                                                .child(description),
+                                        )
+                                    }),
+                            )
+                            .when(is_selected, |el| el.child(popover::menu_check(&theme)))
+                            .into_any_element()
                         })
-                        .id(("model-row", ix))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.pick_model(id.clone(), cx);
-                        }))
-                        .child(
-                            // Name + 11px muted description subline, per
-                            // harness-model-picker.tsx (`min-w-0 flex-1` column).
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .flex()
-                                .flex_col()
-                                .child(div().w_full().truncate().child(label))
-                                .when_some(description, |el, description| {
-                                    el.child(
-                                        div()
-                                            .w_full()
-                                            .truncate()
-                                            .text_size(px(11.0))
-                                            .text_color(theme.text_muted.opacity(0.7))
-                                            .child(description),
-                                    )
-                                }),
-                        )
-                        .when(is_selected, |el| el.child(popover::menu_check(&theme)))
-                        .into_any_element()
-                    })
-                    .collect()
+                        .collect()
+                }
             }
             Some((_, Some(Loadable::Error(message)))) => {
                 let message = message.clone();
@@ -2059,7 +2244,7 @@ impl Pickers {
                             .w(px(148.0))
                             .flex_none()
                             .border_r_1()
-                            .border_color(crate::theme::white_alpha(0.06))
+                            .border_color(crate::theme::hairline(0.06))
                             .child(rail),
                     )
                     .child(
@@ -2076,6 +2261,7 @@ impl Pickers {
                                     .pt(px(4.0))
                                     .child(popover::menu_heading(&theme, "Models")),
                             )
+                            .child(div().p(px(4.0)).child(self.search_box(&theme)))
                             .child(
                                 // Models scroll — gutters on the WRAPPER,
                                 // outside the scroll viewport (in-content
@@ -2104,7 +2290,7 @@ impl Pickers {
                                     .max_h(px(190.0))
                                     .overflow_y_scroll()
                                     .border_t_1()
-                                    .border_color(crate::theme::white_alpha(0.06))
+                                    .border_color(crate::theme::hairline(0.06))
                                     .p(px(4.0))
                                     .child(traits),
                             ),
@@ -2116,7 +2302,7 @@ impl Pickers {
                     .flex_none()
                     .bg(popover::band())
                     .border_t_1()
-                    .border_color(crate::theme::white_alpha(0.06))
+                    .border_color(crate::theme::hairline(0.06))
                     .px(px(12.0))
                     .py(px(8.0))
                     .flex()
@@ -2250,11 +2436,11 @@ fn trait_chip(theme: &Theme, active: bool) -> gpui::Div {
         .text_size(px(11.5))
         .cursor_pointer()
         .when(active, |el| {
-            el.bg(crate::theme::glass_selected_bg())
+            el.bg(crate::theme::card_selected_bg())
                 .text_color(theme.text)
         })
         .when(!active, |el| {
-            el.bg(crate::theme::white_alpha(0.04))
+            el.bg(crate::theme::ink(0.04))
                 .text_color(theme.text_muted.opacity(0.7))
                 .hover(|s| s.bg(theme.element_hover))
         })
@@ -2273,6 +2459,7 @@ pub(crate) fn harness_brand_icon(harness: HarnessId) -> (&'static str, Option<gp
             Some(crate::icons::claude_brand()),
         ),
         HarnessId::Codex => (crate::icons::OPENAI_MARK, None),
+        HarnessId::Acp => (crate::icons::WIDGET, None),
         HarnessId::Cursor => (crate::icons::CURSOR_MARK, None),
     }
 }
@@ -2290,7 +2477,7 @@ fn toggle_switch(theme: &Theme, on: bool) -> gpui::Div {
         .bg(if on {
             theme.text
         } else {
-            crate::theme::white_alpha(0.15)
+            crate::theme::ink(0.15)
         })
         .relative()
         .child(
@@ -2301,9 +2488,9 @@ fn toggle_switch(theme: &Theme, on: bool) -> gpui::Div {
                 .size(px(14.0))
                 .rounded_full()
                 .bg(if on {
-                    crate::theme::grey(0x0e)
+                    theme.on_solid
                 } else {
-                    crate::theme::white_alpha(0.7)
+                    crate::theme::ink(0.7)
                 }),
         )
 }
@@ -2380,9 +2567,14 @@ impl Render for Pickers {
         // first-paint fallback focuses the composer after our first render).
         if self.boot_focus_pending {
             match self.open {
-                Some(PickerKind::Branch) => {
+                Some(PickerKind::Branch) | Some(PickerKind::HarnessModel) => {
+                    let placeholder = if self.open == Some(PickerKind::HarnessModel) {
+                        "Search models…"
+                    } else {
+                        "Search refs…"
+                    };
                     self.search.update(cx, |input, cx| {
-                        input.set_placeholder("Search refs…", cx);
+                        input.set_placeholder(placeholder, cx);
                     });
                     let handle = self.search.read(cx).focus_handle(cx);
                     if handle.is_focused(window) {
@@ -2457,6 +2649,12 @@ impl Render for Pickers {
             .clone()
             .map(SharedString::from)
             .unwrap_or_else(|| SharedString::from("Traits"));
+        let permission_label = SharedString::from(match self.effective_permission_mode(cx) {
+            PermissionMode::Default => "Default",
+            PermissionMode::Plan => "Plan",
+            PermissionMode::AcceptEdits => "Accept edits",
+            PermissionMode::FullAccess => "Full access",
+        });
 
         // Render the open popover's body first (mutable borrow), then the
         // chips. Branch/Checkout render in the composer FOOTER row (see
@@ -2468,6 +2666,13 @@ impl Render for Pickers {
                 Some((
                     PickerKind::HarnessModel,
                     self.popover_frame_flush(460.0, content, cx),
+                ))
+            }
+            Some(PickerKind::Permission) => {
+                let content = self.render_permission_popover(cx);
+                Some((
+                    PickerKind::Permission,
+                    self.popover_frame(260.0, content, cx),
                 ))
             }
             // Traits merged into the HarnessModel popover.
@@ -2496,6 +2701,15 @@ impl Render for Pickers {
             &theme,
             cx,
         );
+        let permission_chip = self.trigger_chip(
+            PickerKind::Permission,
+            permission_label,
+            true,
+            None,
+            None,
+            &theme,
+            cx,
+        );
         let _ = traits_set;
         let right = div()
             .flex()
@@ -2503,6 +2717,12 @@ impl Render for Pickers {
             .items_center()
             .flex_none()
             .gap(px(4.0))
+            .child(attach_overlay_end(
+                permission_chip,
+                &mut overlay,
+                PickerKind::Permission,
+                "permission-popover",
+            ))
             // End-anchored: the menu's right edge sits flush with the chip's
             // right edge (user request), same as the footer's ref popover.
             .child(attach_overlay_end(
@@ -2527,7 +2747,7 @@ impl Render for Pickers {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use comet_proto::{FolderEntry, Model, ModelOption, ModelOptionChoice};
+    use comet_proto::{FolderEntry, Model, ModelOption, ModelOptionChoice, SandboxLevel};
 
     #[test]
     fn traits_summary_formats_non_defaults() {
@@ -2605,6 +2825,10 @@ mod tests {
         assert_eq!(parent_path(""), None);
         assert_eq!(child_path("/home", "w"), "/home/w");
         assert_eq!(child_path("/", "home"), "/home");
+        assert!(is_absolute_path(
+            "/Users/admin/Documents/NP/antigravity-cursor"
+        ));
+        assert!(!is_absolute_path("antigravity-cursor"));
         let crumbs = breadcrumbs("/home/w/dev");
         let labels: Vec<&str> = crumbs.iter().map(|(l, _)| l.as_str()).collect();
         assert_eq!(labels, ["/", "home", "w", "dev"]);
@@ -2673,6 +2897,40 @@ mod tests {
         ];
         assert_eq!(default_model(&models).map(|m| &*m.id), Some("flagship"));
         assert!(default_model(&[]).is_none());
+    }
+
+    #[test]
+    fn model_search_matches_labels_ids_and_descriptions() {
+        let models = vec![
+            Model {
+                id: "claude-sonnet-4-5".into(),
+                label: "Sonnet 4.5".into(),
+                description: Some("Balanced Anthropic model".into()),
+                reasoning_levels: vec![],
+                options: vec![],
+            },
+            Model {
+                id: "gpt-5-codex".into(),
+                label: "GPT-5".into(),
+                description: Some("OpenAI coding model".into()),
+                reasoning_levels: vec![],
+                options: vec![],
+            },
+        ];
+
+        assert_eq!(
+            filter_models("sonnet", &models)
+                .into_iter()
+                .map(|model| model.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["claude-sonnet-4-5"]
+        );
+        assert_eq!(filter_models("codex", &models)[0].id, "gpt-5-codex");
+        assert_eq!(
+            filter_models("anthropic", &models)[0].id,
+            "claude-sonnet-4-5"
+        );
+        assert_eq!(filter_models("", &models).len(), 2);
     }
 
     #[test]

@@ -11,11 +11,17 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 pub mod accounts;
+pub mod acp_agents;
+pub mod appearance;
 pub mod archived;
 pub mod composer;
+pub mod context_engine;
 pub mod devices;
+pub mod notifications;
+pub mod providers;
 pub mod shortcuts;
 pub mod widgets;
+pub mod workflows;
 
 /// Sidebar drag-resize bounds (px).
 pub const SIDEBAR_MIN: f32 = 208.0;
@@ -62,6 +68,8 @@ pub struct UiSettings {
     /// Session notification chimes (done / awaiting-input). `COMET_DISABLE_SOUND`
     /// overrides.
     pub sound_enabled: bool,
+    /// OS-level desktop notifications on run completion / awaiting input.
+    pub notifications_enabled: bool,
     pub right_pane_width: f32,
     /// Legacy: panel *open* flags are session-scoped in-memory state now
     /// (`shell::SessionPanels`, comet `sessionPanels` parity). Kept for file
@@ -72,6 +80,16 @@ pub struct UiSettings {
     pub terminal_open: bool,
     /// Customizable shortcut combos (feature-inventory §1.4).
     pub keymap: KeymapConfig,
+    /// User-defined global AI shortcuts. These are listened for while Comet is
+    /// running even when another application has focus.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ai_shortcuts: Vec<AiShortcut>,
+    /// Global workflow overrides. Empty implies built-ins.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub workflows: Vec<crate::workflows::WorkflowDefinition>,
+    /// Light/dark preference. Defaults to following the OS.
+    #[serde(default)]
+    pub appearance: crate::appearance::AppearanceMode,
 }
 
 impl Default for UiSettings {
@@ -84,12 +102,58 @@ impl Default for UiSettings {
             tab_order: std::collections::HashMap::new(),
             space_order: Vec::new(),
             sound_enabled: true,
+            notifications_enabled: true,
             right_pane_width: RIGHT_PANE_DEFAULT,
             right_pane_open: false,
             terminal_height: TERMINAL_DEFAULT_HEIGHT,
             terminal_open: false,
             keymap: KeymapConfig::default(),
+            ai_shortcuts: Vec::new(),
+            workflows: Vec::new(),
+            appearance: crate::appearance::AppearanceMode::default(),
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct AiShortcut {
+    pub id: String,
+    pub name: String,
+    /// Platform-neutral combo, for example `mod-shift-l`.
+    pub combo: String,
+    pub provider_id: String,
+    pub model: String,
+    pub prompt: String,
+    /// When enabled the shortcut captures selected text, falling back to the
+    /// current clipboard. Otherwise a small input window is shown.
+    pub use_clipboard: bool,
+    pub enabled: bool,
+}
+
+impl Default for AiShortcut {
+    fn default() -> Self {
+        Self {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: "New shortcut".into(),
+            combo: "mod-shift-l".into(),
+            provider_id: String::new(),
+            model: String::new(),
+            prompt: "Help me with the following text.".into(),
+            use_clipboard: true,
+            enabled: true,
+        }
+    }
+}
+
+impl AiShortcut {
+    pub fn is_valid(&self) -> bool {
+        !self.id.trim().is_empty()
+            && !self.name.trim().is_empty()
+            && !self.combo.trim().is_empty()
+            && !self.provider_id.trim().is_empty()
+            && !self.model.trim().is_empty()
+            && !self.prompt.trim().is_empty()
     }
 }
 
@@ -339,6 +403,7 @@ mod tests {
             )]),
             space_order: vec!["space-2".to_string(), "space-1".to_string()],
             sound_enabled: false,
+            notifications_enabled: false,
             right_pane_width: 700.0,
             right_pane_open: true,
             terminal_height: 320.0,
@@ -347,9 +412,34 @@ mod tests {
                 toggle_sidebar: "mod-shift-s".into(),
                 ..KeymapConfig::default()
             },
+            ai_shortcuts: vec![AiShortcut {
+                name: "Explain".into(),
+                provider_id: "proxy".into(),
+                model: "model-a".into(),
+                ..AiShortcut::default()
+            }],
+            workflows: crate::workflows::builtin_workflows(),
+            appearance: crate::appearance::AppearanceMode::Light,
         };
         settings.save(dir.path()).unwrap();
         assert_eq!(UiSettings::load(dir.path()), settings);
+    }
+
+    /// A settings file written before light mode existed has no `appearance`
+    /// key; it must load as "follow the OS" rather than failing the whole parse
+    /// and resetting every other preference to defaults.
+    #[test]
+    fn settings_without_appearance_default_to_system() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            UiSettings::path(dir.path()),
+            r#"{"sidebarWidth": 300, "soundEnabled": false}"#,
+        )
+        .unwrap();
+        let loaded = UiSettings::load(dir.path());
+        assert_eq!(loaded.appearance, crate::appearance::AppearanceMode::System);
+        assert_eq!(loaded.sidebar_width, 300.0);
+        assert!(!loaded.sound_enabled, "other keys still parse");
     }
 
     #[test]

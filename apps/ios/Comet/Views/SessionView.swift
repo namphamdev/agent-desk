@@ -3,11 +3,13 @@
 // marks the chat seen (the synced LWW marker behind the green dot everywhere).
 
 import SwiftUI
+import os
 
 struct SessionView: View {
     @Environment(AppModel.self) private var model
     let chatId: String
     @State private var showConfig = false
+    @State private var showChanges = false
     @State private var refs: [RepoRef] = []
     @State private var catalogs: [String: [ModelInfo]] = [:]
 
@@ -93,6 +95,16 @@ struct SessionView: View {
                     }
                     .buttonStyle(.plain)
                 }
+                ToolbarItem(placement: .topBarTrailing) {
+                    if chat.cwd != nil {
+                        Button {
+                            showChanges = true
+                        } label: {
+                            Image(systemName: "rectangle.and.pencil.and.ellipsis")
+                        }
+                        .accessibilityLabel("Git changes")
+                    }
+                }
             }
         }
         .sheet(isPresented: $showConfig) {
@@ -106,19 +118,31 @@ struct SessionView: View {
                                 ?? HarnessCatalog.defaultModel(for: harness).id
                         },
                         set: { newModel in
-                            writeConfig(model: newModel, reasoning: chat.config?.reasoning)
+                            ConfigDebug.trace("session \(chat.id.prefix(8)) pick model \(chat.config?.model ?? "nil") -> \(newModel)")
+                            writeConfig(model: newModel, reasoning: chat.config?.reasoning, permissionMode: chat.config?.effectivePermissionMode)
                         }
                     ),
                     reasoning: Binding(
                         get: { chat.config?.reasoning },
                         set: { newReasoning in
-                            writeConfig(model: chat.config?.model, reasoning: newReasoning)
+                            writeConfig(model: chat.config?.model, reasoning: newReasoning, permissionMode: chat.config?.effectivePermissionMode)
+                        }
+                    ),
+                    permissionMode: Binding(
+                        get: { chat.config?.effectivePermissionMode ?? .default },
+                        set: { newMode in
+                            writeConfig(model: chat.config?.model, reasoning: chat.config?.reasoning, permissionMode: newMode)
                         }
                     ),
                     lockedHarness: true,
                     catalogs: catalogs,
                     checkout: checkoutContext(chat: chat)
                 )
+            }
+        }
+        .sheet(isPresented: $showChanges) {
+            if let chat {
+                ChangesView(chat: chat)
             }
         }
         .task(id: chatId) {
@@ -132,6 +156,7 @@ struct SessionView: View {
         }
         .onAppear {
             model.markSeen(chatId: chatId)
+            model.notifications.activeChatId = chatId
             if model.launchSheet == "config" {
                 model.launchSheet = nil
                 showConfig = true
@@ -139,6 +164,9 @@ struct SessionView: View {
         }
         .onDisappear {
             model.markSeen(chatId: chatId)
+            if model.notifications.activeChatId == chatId {
+                model.notifications.activeChatId = nil
+            }
             model.releaseSessionStore(chatId: chatId)
         }
     }
@@ -162,15 +190,19 @@ struct SessionView: View {
         )
     }
 
-    /// Merge a model/effort change into the chat's config row (LWW; the host
+    /// Merge a model/effort/permission change into the chat's config row (LWW; the host
     /// picks it up on the next run dispatch).
-    private func writeConfig(model newModel: String?, reasoning newReasoning: String?) {
+    private func writeConfig(model newModel: String?, reasoning newReasoning: String?, permissionMode newMode: PermissionMode? = nil) {
         guard let chat else { return }
+        let currentMode = newMode ?? chat.config?.effectivePermissionMode ?? .default
         var config = chat.config ?? ChatConfig(harness: "claude-code", model: nil,
-                                               reasoning: nil, sandbox: "workspace-write")
+                                               reasoning: nil, sandbox: currentMode.sandbox, permissionMode: currentMode)
         config.model = newModel
         config.reasoning = newReasoning
+        config.permissionMode = currentMode
+        config.sandbox = currentMode.sandbox
         model.setChatConfig(chatId: chat.id, config: config)
+        ConfigDebug.trace("writeConfig chat=\(chat.id.prefix(8)) model=\(config.model ?? "nil") reason=\(config.reasoning ?? "nil") mode=\(config.permissionMode?.rawValue ?? "nil")")
     }
 
     private var subtitle: String? {
@@ -179,6 +211,11 @@ struct SessionView: View {
         if let cwd = chat.cwd { parts.append((cwd as NSString).lastPathComponent) }
         if let branch = chat.branch, !branch.isEmpty { parts.append(branch) }
         parts.append(model.deviceName(chat.deviceId))
+        // DEBUG: model the session believes it's running with. Remove with
+        // the ConfigDebug instrumentation.
+        if let model = chat.config?.model {
+            parts.append("model:\(model)")
+        }
         return parts.joined(separator: " · ")
     }
 

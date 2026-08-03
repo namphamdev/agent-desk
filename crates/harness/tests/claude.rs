@@ -44,6 +44,9 @@ fn request(prompt: &str) -> RunRequest {
         auto_approve: true,
         attachments: Vec::new(),
         resume: None,
+        seed: None,
+        seed_purpose: None,
+        seed_role: None,
     }
 }
 
@@ -68,6 +71,7 @@ fn controls(
         }),
         steering: steer_rx,
         interrupt: token.clone(),
+        report_memory: Box::new(|_| {}),
     };
     (controls, steer_tx, token)
 }
@@ -210,6 +214,7 @@ async fn ask_user_question_round_trips_through_the_control_channel() {
         }),
         steering: steer_rx,
         interrupt: token.clone(),
+        report_memory: Box::new(|_| {}),
     };
     let events = run_to_end(&harness(), request("scenario:askuser"), controls).await;
 

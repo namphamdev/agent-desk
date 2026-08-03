@@ -21,8 +21,12 @@ final class AppModel {
     private var sessionStores: [String: SessionStore] = [:]
     private var config: AppConfig?
 
+    /// Local push notification manager — tracks session status transitions
+    /// and fires notifications when tasks complete or input is needed.
+    let notifications = NotificationManager.shared
+
     // Persisted connection settings.
-    @ObservationIgnored @AppStorage("edgeURL") var edgeURLString = "https://edge.comet.zeron.sh"
+    @ObservationIgnored @AppStorage("edgeURL") var edgeURLString = AppEnvironment.edgeURL.absoluteString
     @ObservationIgnored @AppStorage("authMode") var authModeRaw = AppConfig.Mode.workos.rawValue
     @ObservationIgnored @AppStorage("userId") var storedUserId = ""
     @ObservationIgnored @AppStorage("orgId") var storedOrgId = ""
@@ -187,6 +191,7 @@ final class AppModel {
         Keychain.delete(key: "accessToken")
         Keychain.delete(key: "refreshToken")
         DocDisk.wipeAll()  // local doc state belongs to the signed-in identity
+        notifications.clearAll()
         storedUserId = ""
         storedOrgId = ""
         phase = .signedOut
@@ -205,6 +210,8 @@ final class AppModel {
         let store = WorkspaceStore(config: config)
         workspace = store
         store.start()
+        // Request notification permission once the user is connected.
+        Task { await notifications.requestPermissionIfNeeded() }
         phase = .ready
     }
 
@@ -221,6 +228,19 @@ final class AppModel {
             return sortActive(live)
         }
         return workspace?.overviewChats ?? []
+    }
+
+    /// Flat cross-space feed used by the Activity surface.
+    var activityChats: [Chat] {
+        let liveSpaceIds = Set(spaces.map(\.id))
+        let chats = (demo?.chats ?? workspace?.chats ?? [])
+            .filter { !$0.archived && $0.spaceId.map(liveSpaceIds.contains) == true }
+        return chats.sorted {
+            let left = $0.lastMessageAt ?? $0.createdAt
+            let right = $1.lastMessageAt ?? $1.createdAt
+            if left != right { return left > right }
+            return $0.id < $1.id
+        }
     }
 
     func chats(in spaceId: String) -> [Chat] {
@@ -285,6 +305,36 @@ final class AppModel {
             return demo.listRefs(spacePath: space.path)
         }
         return await workspace?.listRefs(deviceId: space.deviceId, repoPath: space.path)
+    }
+
+    func gitStatus(chat: Chat) async -> GitStatus? {
+        guard let cwd = chat.cwd else { return nil }
+        if demo != nil { return GitStatus(branch: chat.branch, ahead: 0, behind: 0, files: [], isRepo: true) }
+        return await workspace?.gitStatus(deviceId: chat.deviceId, cwd: cwd)
+    }
+
+    func acpAgents(deviceId: String) async -> AcpAgentsSnapshot? {
+        await workspace?.listAcpAgents(deviceId: deviceId)
+    }
+
+    func acpAgentAction(deviceId: String, method: String, agentId: String) async -> AcpAgentsSnapshot? {
+        await workspace?.acpAgentAction(deviceId: deviceId, method: method, agentId: agentId)
+    }
+
+    func customProviders(deviceId: String) async -> CustomProviderSnapshot? {
+        await workspace?.customProviders(deviceId: deviceId)
+    }
+
+    func selectCustomProvider(deviceId: String, harness: String, providerId: String?) async -> CustomProviderSnapshot? {
+        await workspace?.selectCustomProvider(deviceId: deviceId, harness: harness, providerId: providerId)
+    }
+
+    func upsertCustomProvider(deviceId: String, provider: CustomProviderDraft) async -> CustomProviderSnapshot? {
+        await workspace?.upsertCustomProvider(deviceId: deviceId, provider: provider)
+    }
+
+    func deleteCustomProvider(deviceId: String, providerId: String) async -> CustomProviderSnapshot? {
+        await workspace?.deleteCustomProvider(deviceId: deviceId, providerId: providerId)
     }
 
     /// Draft-mode checkout switch: `git checkout` in the SPACE's folder.
@@ -401,6 +451,7 @@ final class AppModel {
         if let demo {
             if let ix = demo.chats.firstIndex(where: { $0.id == chatId }) {
                 demo.chats[ix].config = config
+                ConfigDebug.trace("AppModel.setChatConfig (demo) chat=\(chatId.prefix(8)) model=\(config.model ?? "nil") reason=\(config.reasoning ?? "nil")")
             }
             return
         }
@@ -415,6 +466,22 @@ final class AppModel {
             return
         }
         workspace?.markSeen(chatId: chatId)
+    }
+
+    func setSettled(chatId: String, settled: Bool) {
+        if let demo {
+            if let ix = demo.chats.firstIndex(where: { $0.id == chatId }) {
+                demo.chats[ix].settledAt = settled ? nowMs() : nil
+            }
+            return
+        }
+        workspace?.setSettled(chatId: chatId, settled: settled)
+    }
+
+    func markAllActivityRead() {
+        for chat in activityChats where chat.unseen {
+            markSeen(chatId: chat.id)
+        }
     }
 
     /// Persist every open doc now (app backgrounding).
@@ -452,6 +519,54 @@ final class AppModel {
     func preloadSessions() {
         for chat in overviewChats {
             _ = sessionStore(for: chat)
+        }
+    }
+
+    // MARK: Notification status scan
+
+    /// A string that changes whenever any session's status or updatedAt
+    /// changes. Used as the `id:` of a `.task(id:)` in HomeView so the scan
+    /// fires on every status transition — not just when chat ids change.
+    var sessionStatusFingerprint: String {
+        let sessions: [String: SessionRow]
+        if let demo {
+            sessions = demo.sessions
+        } else if let workspace {
+            sessions = workspace.sessions
+        } else {
+            return "empty"
+        }
+        return sessions
+            .map { "\($0.key):\($0.value.status.rawValue):\($0.value.updatedAt)" }
+            .sorted()
+            .joined(separator: ",")
+    }
+
+    /// Scan all sessions for status transitions and fire notifications.
+    /// Called from HomeView's `.task(id:)` — once keyed on chat ids (new
+    /// sessions), once keyed on `sessionStatusFingerprint` (status changes).
+    func scanSessionStatuses() {
+        let allChats: [Chat]
+        let sessions: [String: SessionRow]
+        if let demo {
+            allChats = demo.chats
+            sessions = demo.sessions
+        } else if let workspace {
+            allChats = workspace.chats
+            sessions = workspace.sessions
+        } else {
+            return
+        }
+        let now = nowMs()
+        for chat in allChats where !chat.archived {
+            let row = sessions[chat.id]
+            notifications.observeStatus(
+                chatId: chat.id,
+                rawStatus: row?.status,
+                updatedAt: row?.updatedAt,
+                now: now,
+                chatTitle: chat.displayTitle
+            )
         }
     }
 }

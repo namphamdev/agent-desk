@@ -8,9 +8,11 @@
 
 use super::*;
 use crate::motion::TAB_SLIDE;
-use crate::pickers::{breadcrumbs, browser_rows, parent_path};
+use crate::pickers::{breadcrumbs, browser_rows, is_absolute_path, parent_path};
 use crate::terminal::panel::{drop_index, reorder_tabs, slide_offset};
-use comet_proto::{ChatIndicator, Device, FolderListing, Space};
+use comet_proto::{
+    ApplyHarnessResult, ChatIndicator, Device, FolderListing, ProjectHarness, Space,
+};
 use gpui::FocusHandle;
 
 /// Space-row slot height for drag drop-index math: py(6)×2 + 17px line ≈ 29,
@@ -95,6 +97,8 @@ pub(super) struct AddSpaceFlow {
     /// Folder-list scroll — keyboard navigation keeps the highlighted row in
     /// view (`scroll_to_item`).
     list_scroll: gpui::ScrollHandle,
+    /// Reject late responses from a previous path while the user is typing.
+    load_generation: u64,
     focus_pending: bool,
     load_task: Option<Task<()>>,
     submit_task: Option<Task<()>>,
@@ -109,13 +113,25 @@ pub(super) struct RenameSpaceDialog {
     pub _events: Subscription,
 }
 
+pub(super) struct ProjectHarnessFlow {
+    space_id: String,
+    project: String,
+    cwd: String,
+    device_id: String,
+    status: Loadable<ProjectHarness>,
+    busy_id: Option<String>,
+    flash: Option<SharedString>,
+    error: Option<SharedString>,
+    task: Option<Task<()>>,
+}
+
 /// Dot color for a chat's display status (tab dots + Sessions rows).
 pub(super) fn status_dot_color(status: ChatIndicator, theme: &Theme) -> gpui::Hsla {
     match status {
         // Pink, not amber — the harsh yellow read as a warning; running is
         // routine (user request).
         ChatIndicator::Working => {
-            crate::theme::oklch(0.718, 0.202, 349.761).opacity(0.85) // pink-400
+            theme.busy.opacity(0.85) // pink-400
         }
         // Blue: "asking you a question" must read differently from "busy
         // working" at a glance.
@@ -123,9 +139,9 @@ pub(super) fn status_dot_color(status: ChatIndicator, theme: &Theme) -> gpui::Hs
         ChatIndicator::Errored => theme.danger,
         // Green: finished-but-unseen reads as "ready for you".
         ChatIndicator::Completed => {
-            crate::theme::oklch(0.765, 0.177, 163.223).opacity(0.9) // emerald-400
+            theme.success.opacity(0.9) // emerald-400
         }
-        ChatIndicator::Idle => crate::theme::white_alpha(0.14),
+        ChatIndicator::Idle => crate::theme::ink(0.14),
     }
 }
 
@@ -308,12 +324,12 @@ impl Shell {
                     .text_color(motion::hover_blend(
                         "add-space-ghost",
                         theme.text_muted,
-                        Theme::dark().text,
+                        theme.text,
                     ))
                     .bg(motion::hover_blend(
                         "add-space-ghost",
-                        crate::theme::wash(0.0),
-                        Theme::dark().element_hover,
+                        theme.glass_hover().opacity(0.0),
+                        theme.glass_hover(),
                     ))
                     .on_hover(motion::hover_listener("add-space-ghost"))
                     .cursor_pointer()
@@ -493,7 +509,7 @@ impl Shell {
             .px(px(Theme::SPACE_SM))
             .py(px(6.0))
             .text_color(motion::hover_blend(&fade_key, rest_text, theme.text))
-            .bg(motion::hover_blend(&fade_key, rest_bg, theme.element_hover))
+            .bg(motion::hover_blend(&fade_key, rest_bg, theme.glass_hover()))
             .when(selected, |el| {
                 el.shadow(crate::theme::glass_selected_shadows())
             })
@@ -526,7 +542,7 @@ impl Shell {
             .child(
                 div().size(px(6.0)).rounded_full().flex_none().bg(attention
                     .map(|status| status_dot_color(status, theme))
-                    .unwrap_or_else(|| crate::theme::white_alpha(0.14))),
+                    .unwrap_or_else(|| crate::theme::ink(0.14))),
             )
             .child(
                 icon(icons::FOLDER)
@@ -625,8 +641,11 @@ impl Shell {
     // ---- add-space flow (the ⌘K palette) ----
 
     pub(super) fn open_add_space(&mut self, cx: &mut Context<Self>) {
-        let devices: Vec<Device> = self.state.read(cx).devices.clone();
         let local = self.state.read(cx).local_device_id.clone();
+        let devices: Vec<Device> = crate::settings::devices::devices_for_display(
+            self.state.read(cx).devices.clone(),
+            local.as_deref(),
+        );
         // Land on this device's tab (else the first registered device).
         let device = devices
             .iter()
@@ -640,8 +659,19 @@ impl Shell {
             cx.new(|cx| ComposerInput::with_context("Search folders…", "PaletteSearch", cx));
         let search_events = cx.subscribe(&search, |this: &mut Shell, _, event, cx| {
             if matches!(event, ComposerInputEvent::Edited) {
+                let direct_path = this
+                    .add_space
+                    .as_ref()
+                    .map(|flow| flow.search.read(cx).text().trim().to_string())
+                    .filter(|query| is_absolute_path(query));
                 if let Some(flow) = this.add_space.as_mut() {
                     flow.active = 0;
+                }
+                // An absolute path is navigation input, not a folder-name
+                // filter. Browse it directly so `/Users/.../repo` resolves
+                // even when the current listing has no matching child name.
+                if let Some(path) = direct_path {
+                    this.load_space_folders(Some(path), cx);
                 }
                 cx.notify();
             }
@@ -659,6 +689,7 @@ impl Shell {
             error: None,
             focus: cx.focus_handle(),
             list_scroll: gpui::ScrollHandle::new(),
+            load_generation: 0,
             focus_pending: true,
             load_task: None,
             submit_task: None,
@@ -701,7 +732,18 @@ impl Shell {
             return Vec::new();
         };
         let dirs = browser_rows(listing);
-        let query = flow.search.read(cx).text().to_string();
+        let raw_query = flow.search.read(cx).text().to_string();
+        // Once a direct path has resolved, show that directory's children.
+        // The path remains in the input as navigation context, but must not
+        // be applied as a child-name filter.
+        let query = if is_absolute_path(&raw_query)
+            && (listing.path == raw_query.trim()
+                || listing.path == raw_query.trim().trim_end_matches('/'))
+        {
+            String::new()
+        } else {
+            raw_query
+        };
         let names: Vec<&str> = dirs.iter().map(|e| e.name.as_str()).collect();
         popover::filter_indices(&query, &names)
             .into_iter()
@@ -757,6 +799,8 @@ impl Shell {
         flow.browser = Loadable::Loading;
         flow.active = 0;
         flow.list_scroll.set_offset(gpui::Point::default());
+        flow.load_generation = flow.load_generation.wrapping_add(1);
+        let load_generation = flow.load_generation;
         flow.load_task = Some(cx.spawn(async move |this, cx| {
             let mut params = serde_json::Map::new();
             if let Some(p) = &path {
@@ -777,6 +821,9 @@ impl Shell {
                 .await;
             this.update(cx, |shell, cx| {
                 if let Some(flow) = shell.add_space.as_mut() {
+                    if flow.load_generation != load_generation {
+                        return;
+                    }
                     flow.browser = match result {
                         Ok(value) => match serde_json::from_value::<FolderListing>(value) {
                             Ok(listing) => {
@@ -1015,10 +1062,14 @@ impl Shell {
                 flow.home.clone(),
             )
         };
-        let devices = self.state.read(cx).devices.clone();
+        let local_id = self.state.read(cx).local_device_id.clone();
+        let devices = crate::settings::devices::devices_for_display(
+            self.state.read(cx).devices.clone(),
+            local_id.as_deref(),
+        );
         let rows = self.add_space_filtered(cx);
         let query_empty = search.read(cx).is_empty();
-        let hairline = crate::theme::white_alpha(0.06);
+        let hairline = crate::theme::hairline(0.06);
         let now = Utc::now();
         // (browsed device name, online) per rail row — presence is the same
         // signal the sidebar space rows use.
@@ -1046,7 +1097,7 @@ impl Shell {
                 .flex_row()
                 .items_center()
                 .gap(px(2.0))
-                .bg(crate::theme::white_alpha(0.05))
+                .bg(crate::theme::ink(0.05))
                 .text_size(px(11.0))
                 .font_family(theme.font_mono.clone())
                 .text_color(theme.text_muted.opacity(0.7))
@@ -1075,7 +1126,7 @@ impl Shell {
                 el.child(
                     icon(icons::COMMAND)
                         .size(px(11.0))
-                        .text_color(crate::theme::grey(0x0e).opacity(0.8)),
+                        .text_color(theme.on_solid.opacity(0.8)),
                 )
                 .child(SharedString::from("Enter"))
             })
@@ -1117,7 +1168,7 @@ impl Shell {
                 key_chip(&theme)
                     .id("add-space-esc")
                     .cursor_pointer()
-                    .hover(|s| s.bg(crate::theme::white_alpha(0.09)))
+                    .hover(|s| s.bg(crate::theme::ink(0.09)))
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.add_space = None;
                         cx.notify();
@@ -1168,7 +1219,7 @@ impl Shell {
                             crumb
                                 .text_color(theme.text_muted.opacity(0.55))
                                 .cursor_pointer()
-                                .hover(|s| s.text_color(Theme::dark().text))
+                                .hover(|s| s.text_color(theme.text))
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     if let Some(flow) = this.add_space.as_mut() {
                                         flow.browser_repo = false;
@@ -1206,7 +1257,7 @@ impl Shell {
                                     } else {
                                         crumb
                                             .cursor_pointer()
-                                            .hover(|s| s.text_color(Theme::dark().text))
+                                            .hover(|s| s.text_color(theme.text))
                                             .on_click(cx.listener(move |this, _, _, cx| {
                                                 if let Some(flow) = this.add_space.as_mut() {
                                                     flow.browser_repo = false;
@@ -1377,9 +1428,9 @@ impl Shell {
                     .text_size(px(12.5))
                     .cursor_pointer()
                     .when(is_active, |el| {
-                        // The sidebar's selection language: glass wash +
+                        // The floating-card selection language: wash +
                         // ring-only inset outline.
-                        el.bg(crate::theme::glass_selected_bg())
+                        el.bg(crate::theme::card_selected_bg())
                             .shadow(crate::theme::glass_selected_shadows())
                             .text_color(theme.text)
                     })
@@ -1405,7 +1456,7 @@ impl Shell {
                             .when(online, |el| {
                                 // The Devices-page presence emerald, soft glow
                                 // included.
-                                let emerald = crate::theme::oklch(0.765, 0.177, 163.223);
+                                let emerald = theme.success;
                                 el.bg(emerald.opacity(0.9)).shadow(vec![gpui::BoxShadow {
                                     color: emerald.opacity(0.55),
                                     offset: gpui::point(px(0.0), px(0.0)),
@@ -1414,7 +1465,7 @@ impl Shell {
                                     inset: false,
                                 }])
                             })
-                            .when(!online, |el| el.bg(crate::theme::white_alpha(0.22))),
+                            .when(!online, |el| el.bg(crate::theme::ink(0.22))),
                     )
             }))
             .child(div().h(px(1.0)).mx(px(2.0)).my(px(6.0)).bg(hairline))
@@ -1496,14 +1547,14 @@ impl Shell {
                 .w(px(680.0))
                 .rounded(px(14.0))
                 .border_1()
-                .border_color(crate::theme::white_alpha(0.10))
+                .border_color(crate::theme::hairline(0.10))
                 // The popover_card glass recipe: a translucent tint over the
                 // frosted backdrop blur (`popover::modal` wraps in `frosted`) —
                 // an opaque fill here killed the vibrancy every other float has.
-                .bg(if Theme::GLASS_ALPHA < 1.0 {
-                    crate::theme::grey(0x16).opacity(0.65)
+                .bg(if theme.is_glass() {
+                    theme.glass_overlay()
                 } else {
-                    crate::theme::grey(0x16)
+                    theme.surface_overlay
                 })
                 .shadow_lg()
                 .overflow_hidden()
@@ -1579,6 +1630,138 @@ impl Shell {
         cx.notify();
     }
 
+    pub(super) fn open_project_harness(&mut self, space_id: String, cx: &mut Context<Self>) {
+        self.space_menu = None;
+        let Some(space) = self.state.read(cx).space_row(&space_id).cloned() else {
+            return;
+        };
+        self.project_harness = Some(ProjectHarnessFlow {
+            space_id,
+            project: space.display_name().to_string(),
+            cwd: space.path,
+            device_id: space.device_id,
+            status: Loadable::Loading,
+            busy_id: None,
+            flash: None,
+            error: None,
+            task: None,
+        });
+        self.load_project_harness(cx);
+        cx.notify();
+    }
+
+    fn project_harness_params(
+        &self,
+        cx: &Context<Self>,
+    ) -> Option<serde_json::Map<String, serde_json::Value>> {
+        let flow = self.project_harness.as_ref()?;
+        let mut params = serde_json::Map::new();
+        params.insert("cwd".into(), flow.cwd.clone().into());
+        params.insert("projectName".into(), flow.project.clone().into());
+        if self.state.read(cx).local_device_id.as_deref() != Some(flow.device_id.as_str()) {
+            params.insert("targetDeviceId".into(), flow.device_id.clone().into());
+        }
+        Some(params)
+    }
+
+    fn load_project_harness(&mut self, cx: &mut Context<Self>) {
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            return;
+        };
+        let Some(params) = self.project_harness_params(cx) else {
+            return;
+        };
+        let Some(flow) = self.project_harness.as_mut() else {
+            return;
+        };
+        flow.status = Loadable::Loading;
+        flow.error = None;
+        let space_id = flow.space_id.clone();
+        flow.task = Some(cx.spawn(async move |this, cx| {
+            let result = engine
+                .client()
+                .call(methods::GET_PROJECT_HARNESS, params.into())
+                .await;
+            this.update(cx, |shell, cx| {
+                let Some(flow) = shell
+                    .project_harness
+                    .as_mut()
+                    .filter(|f| f.space_id == space_id)
+                else {
+                    return;
+                };
+                flow.status = match result {
+                    Ok(value) => serde_json::from_value(value)
+                        .map(Loadable::Ready)
+                        .unwrap_or_else(|err| Loadable::Error(err.to_string())),
+                    Err(err) => Loadable::Error(err.to_string()),
+                };
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
+    fn apply_project_harness(&mut self, optimization_id: String, cx: &mut Context<Self>) {
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            return;
+        };
+        let Some(mut params) = self.project_harness_params(cx) else {
+            return;
+        };
+        let Some(flow) = self.project_harness.as_mut() else {
+            return;
+        };
+        if flow.busy_id.is_some() {
+            return;
+        }
+        params.insert("optimizationId".into(), optimization_id.clone().into());
+        flow.busy_id = Some(optimization_id);
+        flow.flash = None;
+        flow.error = None;
+        let space_id = flow.space_id.clone();
+        flow.task = Some(cx.spawn(async move |this, cx| {
+            let result = engine
+                .client()
+                .call(methods::APPLY_PROJECT_HARNESS, params.into())
+                .await;
+            this.update(cx, |shell, cx| {
+                let Some(flow) = shell.project_harness.as_mut().filter(|f| f.space_id == space_id) else {
+                    return;
+                };
+                flow.busy_id = None;
+                match result {
+                    Ok(value) => match serde_json::from_value::<ApplyHarnessResult>(value) {
+                        Ok(applied) if applied.ok => {
+                            let count = applied.written.as_ref().map_or(0, Vec::len);
+                            if let Some(harness) = applied.harness {
+                                flow.status = Loadable::Ready(harness);
+                            }
+                            flow.flash = Some(if count == 0 {
+                                "Already up to date.".into()
+                            } else {
+                                format!(
+                                    "Applied to {count} project file{}. New sessions pick it up automatically.",
+                                    if count == 1 { "" } else { "s" }
+                                )
+                                .into()
+                            });
+                        }
+                        Ok(applied) => {
+                            flow.error = Some(
+                                applied.error.unwrap_or_else(|| "Could not apply optimization".into()).into(),
+                            );
+                        }
+                        Err(err) => flow.error = Some(err.to_string().into()),
+                    },
+                    Err(err) => flow.error = Some(err.to_string().into()),
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
     /// Space context menu + rename dialog + delete confirm (appended to the
     /// shell's overlay list).
     pub(super) fn render_space_overlays(
@@ -1592,6 +1775,7 @@ impl Shell {
 
         if let Some((space_id, position)) = self.space_menu.clone() {
             let rename_id = space_id.clone();
+            let harness_id = space_id.clone();
             let delete_id = space_id.clone();
             let menu = popover::popover_card(&theme)
                 .w(px(170.0))
@@ -1609,6 +1793,19 @@ impl Shell {
                         }))
                         .child(icon(icons::PEN).size(px(16.0)).text_color(theme.text_muted))
                         .child(SharedString::from("Rename…")),
+                )
+                .child(
+                    popover::menu_row(&theme, false, format!("space-menu-harness-{space_id}"))
+                        .id("space-menu-harness")
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.open_project_harness(harness_id.clone(), cx)
+                        }))
+                        .child(
+                            icon(icons::SETTINGS_MINIMALISTIC)
+                                .size(px(16.0))
+                                .text_color(theme.text_muted),
+                        )
+                        .child(SharedString::from("AI Harness…")),
                 )
                 .child(popover::menu_separator())
                 .child(
@@ -1674,6 +1871,233 @@ impl Shell {
                 )
                 .into_any_element();
             overlays.push(popover::modal("rename-space-dialog", viewport, card));
+        }
+
+        if let Some(flow) = self.project_harness.as_ref() {
+            let project = flow.project.clone();
+            let cwd = flow.cwd.clone();
+            let status = flow.status.clone();
+            let busy_id = flow.busy_id.clone();
+            let flash = flow.flash.clone();
+            let error = flow.error.clone();
+            let harness = status.ready().cloned();
+            let (applied, total) = harness
+                .as_ref()
+                .map(|h| (h.applied_count, h.optimizations.len()))
+                .unwrap_or((0, 0));
+
+            let mut body = div().flex().flex_col().gap(px(10.0));
+            if status.is_loading() {
+                body = body.child(
+                    div()
+                        .py(px(36.0))
+                        .text_color(theme.text_muted)
+                        .text_size(px(13.0))
+                        .text_align(gpui::TextAlign::Center)
+                        .child("Loading harness…"),
+                );
+            }
+            if let Some(message) = status
+                .error()
+                .map(str::to_string)
+                .or_else(|| error.map(|e| e.to_string()))
+            {
+                body = body.child(
+                    div()
+                        .rounded(px(8.0))
+                        .border_1()
+                        .border_color(theme.danger.opacity(0.35))
+                        .bg(theme.danger.opacity(0.08))
+                        .p(px(10.0))
+                        .text_size(px(12.0))
+                        .text_color(theme.danger)
+                        .child(message),
+                );
+            }
+            if let Some(message) = flash {
+                body = body.child(
+                    div()
+                        .rounded(px(8.0))
+                        .bg(crate::theme::oklch(0.765, 0.177, 163.223).opacity(0.10))
+                        .p(px(10.0))
+                        .text_size(px(12.0))
+                        .text_color(crate::theme::oklch(0.765, 0.177, 163.223))
+                        .child(message),
+                );
+            }
+            if let Some(harness) = harness {
+                for optimization in harness.optimizations {
+                    let id = optimization.id.clone();
+                    let is_busy = busy_id.as_deref() == Some(id.as_str());
+                    let button_label = if is_busy {
+                        "Applying…"
+                    } else if optimization.applied {
+                        "Re-apply"
+                    } else {
+                        "Apply"
+                    };
+                    let badge_color = if optimization.applied {
+                        crate::theme::oklch(0.765, 0.177, 163.223)
+                    } else {
+                        theme.text_muted
+                    };
+                    let mut copy = div()
+                        .min_w_0()
+                        .flex_1()
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(8.0))
+                                .child(
+                                    div()
+                                        .font_weight(gpui::FontWeight::MEDIUM)
+                                        .text_size(px(13.0))
+                                        .child(optimization.name),
+                                )
+                                .child(
+                                    div()
+                                        .rounded(px(4.0))
+                                        .px(px(6.0))
+                                        .py(px(2.0))
+                                        .bg(badge_color.opacity(0.10))
+                                        .text_color(badge_color)
+                                        .text_size(px(9.0))
+                                        .child(if optimization.applied {
+                                            "APPLIED"
+                                        } else {
+                                            "NOT APPLIED"
+                                        }),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .mt(px(6.0))
+                                .text_size(px(12.0))
+                                .line_height(gpui::relative(1.45))
+                                .text_color(theme.text_muted)
+                                .child(optimization.description),
+                        )
+                        .child(
+                            div()
+                                .mt(px(7.0))
+                                .text_size(px(10.0))
+                                .text_color(theme.text_faint)
+                                .child(optimization.source_label),
+                        );
+                    if let Some(details) = optimization.details {
+                        copy = copy.child(
+                            div()
+                                .mt(px(7.0))
+                                .text_size(px(10.0))
+                                .text_color(theme.text_faint)
+                                .child(details),
+                        );
+                    }
+                    body = body.child(
+                        div()
+                            .rounded(px(10.0))
+                            .border_1()
+                            .border_color(theme.border)
+                            .bg(theme.surface)
+                            .p(px(14.0))
+                            .flex()
+                            .items_start()
+                            .gap(px(12.0))
+                            .child(copy)
+                            .child(
+                                popover::btn_primary(&theme, button_label)
+                                    .id(SharedString::from(format!("apply-harness-{id}")))
+                                    .opacity(if busy_id.is_some() { 0.55 } else { 1.0 })
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.apply_project_harness(id.clone(), cx)
+                                    })),
+                            ),
+                    );
+                }
+            }
+
+            let card = popover::dialog_card(&theme)
+                .w(px(560.0))
+                .max_h(px(640.0))
+                .on_key_down(cx.listener(|this, ev: &gpui::KeyDownEvent, _, cx| {
+                    if ev.keystroke.key == "escape"
+                        && this.project_harness.as_ref().and_then(|f| f.busy_id.as_ref()).is_none()
+                    {
+                        this.project_harness = None;
+                        cx.notify();
+                    }
+                }))
+                .child(
+                    div()
+                        .flex()
+                        .items_start()
+                        .justify_between()
+                        .gap(px(12.0))
+                        .child(
+                            div()
+                                .min_w_0()
+                                .child(popover::dialog_title(&theme, &format!("AI Harness · {project}")))
+                                .child(
+                                    div()
+                                        .mt(px(4.0))
+                                        .truncate()
+                                        .text_size(px(11.0))
+                                        .text_color(theme.text_faint)
+                                        .child(cwd),
+                                ),
+                        )
+                        .child(
+                            popover::btn_ghost(&theme, "Refresh", "harness-refresh")
+                                .id("harness-refresh")
+                                .opacity(if busy_id.is_some() { 0.55 } else { 1.0 })
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    if this.project_harness.as_ref().and_then(|f| f.busy_id.as_ref()).is_none() {
+                                        this.load_project_harness(cx);
+                                    }
+                                })),
+                        ),
+                )
+                .child(
+                    div()
+                        .mt(px(12.0))
+                        .pb(px(12.0))
+                        .border_b_1()
+                        .border_color(theme.border)
+                        .text_size(px(12.0))
+                        .text_color(theme.text_muted)
+                        .child(format!(
+                            "{applied}/{total} applied · Project-level guidelines, shared memory, architecture docs, commands, and skills."
+                        )),
+                )
+                .child(
+                    div()
+                        .id("project-harness-list")
+                        .mt(px(12.0))
+                        .overflow_y_scroll()
+                        .child(body),
+                )
+                .child(
+                    div()
+                        .mt(px(12.0))
+                        .pt(px(12.0))
+                        .border_t_1()
+                        .border_color(theme.border)
+                        .flex()
+                        .justify_end()
+                        .child(
+                            popover::btn_ghost(&theme, "Close", "harness-close")
+                                .id("harness-close")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    if this.project_harness.as_ref().and_then(|f| f.busy_id.as_ref()).is_none() {
+                                        this.project_harness = None;
+                                        cx.notify();
+                                    }
+                                })),
+                        ),
+                )
+                .into_any_element();
+            overlays.push(popover::modal("project-harness-dialog", viewport, card));
         }
 
         if let Some(space_id) = self.delete_space_confirm.clone() {

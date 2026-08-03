@@ -13,15 +13,18 @@
 //! - [`loaders`] — comet pulse loader, gradient spinner, boot splash.
 
 pub mod app_menus;
+pub mod appearance;
 pub mod attachments;
 pub mod changes;
 pub mod composer;
 pub mod edge_fade;
 pub mod frost;
+pub mod global_shortcuts;
 pub mod icons;
 pub mod loaders;
 pub mod markdown;
 pub mod motion;
+pub mod notify;
 pub mod pickers;
 pub mod popover;
 pub mod rail;
@@ -32,6 +35,7 @@ pub mod state;
 pub mod terminal;
 pub mod theme;
 pub mod transcript;
+pub mod workflows;
 
 use std::borrow::Cow;
 use std::path::PathBuf;
@@ -135,13 +139,32 @@ pub fn run_app(config: UiConfig) {
         // NB: pinned-rev API — `gpui_tokio::init(cx)` free function (not `Tokio::init`).
         gpui_tokio::init(cx);
         register_fonts(cx);
-        cx.set_global(theme::Theme::dark());
+        // Appearance before anything paints: the theme global has to be the
+        // final one on the very first frame, or the window flashes the wrong
+        // palette while settings load.
+        let data_dir = config.boot().data_dir.clone();
+        appearance::init(
+            settings::UiSettings::load(&data_dir).appearance,
+            data_dir,
+            cx,
+        );
         composer::init(cx);
         terminal::panel::init(cx);
         app_menus::init(cx);
 
         let state = cx.new(|_| state::AppState::new());
         state::AppState::bootstrap(state.clone(), config.boot(), cx);
+        let shortcut_settings = settings::UiSettings::load(&config.data_dir);
+        let shortcut_runtime = cx.new(|cx| {
+            global_shortcuts::GlobalShortcutRuntime::new(
+                state.clone(),
+                shortcut_settings.ai_shortcuts,
+                cx,
+            )
+        });
+        cx.set_global(global_shortcuts::GlobalShortcutRuntimeHandle(
+            shortcut_runtime,
+        ));
 
         // Graceful teardown: an in-process engine drains live runs and flushes
         // doc snapshots before the process exits (remote engines outlive us).
@@ -215,15 +238,24 @@ fn open_main_window(state: gpui::Entity<state::AppState>, boot: EngineBootConfig
             // shell paints its frost surface translucent so the sidebar reads
             // as glass (shell.rs root). Elsewhere blur support is compositor
             // roulette — stay opaque.
-            window_background: if cfg!(target_os = "macos") {
-                gpui::WindowBackgroundAppearance::Blurred
-            } else {
-                gpui::WindowBackgroundAppearance::Opaque
-            },
+            // One source of truth with the re-apply loop in `appearance::apply`
+            // — if these two ever disagree, vibrancy dies on the first theme
+            // change and never comes back.
+            window_background: theme::Theme::of(cx).window_background_appearance(),
             app_id: Some("comet".into()),
             ..Default::default()
         },
-        move |_, cx| cx.new(|cx| shell::Shell::new(state, boot, cx)),
+        move |window, cx| {
+            // React to the user flipping macOS between light and dark. Detached:
+            // the subscription lives as long as the window does, and the window
+            // owns nothing that would drop it early.
+            appearance::observe_window(window, cx).detach();
+            cx.new(|cx| shell::Shell::new(state, boot, cx))
+        },
     )
     .expect("failed to open window");
+    // Belt and braces: assert the blur once the window actually exists. The
+    // `WindowOptions` value is applied during creation, before the view is
+    // attached; re-pushing it here means a window is never left opaque.
+    appearance::reapply_window_background(cx);
 }

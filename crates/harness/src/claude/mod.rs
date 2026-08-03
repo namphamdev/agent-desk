@@ -30,8 +30,8 @@ use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::mpsc;
 
 use comet_proto::{
-    AgentEvent, DoneStatus, HarnessId, Model, ReasoningLevel, RunRequest, SteeringMode,
-    UserInputAnswer, UserInputQuestion,
+    AgentEvent, DoneStatus, HarnessId, Model, PermissionMode, ReasoningLevel, RunRequest,
+    SteeringMode, UserInputAnswer, UserInputQuestion,
 };
 
 use crate::{Harness, HarnessError, RunControls};
@@ -96,6 +96,8 @@ fn option_is_on(options: &serde_json::Map<String, Value>, key: &str) -> bool {
 /// it at a fake CLI with [`ClaudeHarness::with_executable`].
 pub struct ClaudeHarness {
     executable: Option<PathBuf>,
+    mcp_server_url: Option<String>,
+    custom_providers_path: Option<PathBuf>,
     /// Grace between the interrupt control request and SIGTERM.
     interrupt_grace: Duration,
     /// Grace between SIGTERM and SIGKILL.
@@ -106,6 +108,8 @@ impl Default for ClaudeHarness {
     fn default() -> Self {
         Self {
             executable: None,
+            mcp_server_url: None,
+            custom_providers_path: None,
             interrupt_grace: Duration::from_secs(2),
             kill_grace: Duration::from_secs(3),
         }
@@ -120,6 +124,18 @@ impl ClaudeHarness {
     /// Use a fixed CLI binary instead of PATH/known-location resolution.
     pub fn with_executable(mut self, path: impl Into<PathBuf>) -> Self {
         self.executable = Some(path.into());
+        self
+    }
+
+    /// Add Comet's managed code-context MCP server to this invocation.
+    pub fn with_mcp_server(mut self, url: impl Into<String>) -> Self {
+        self.mcp_server_url = Some(url.into());
+        self
+    }
+
+    /// Set the custom providers settings file path.
+    pub fn with_custom_providers(mut self, path: impl Into<PathBuf>) -> Self {
+        self.custom_providers_path = Some(path.into());
         self
     }
 
@@ -161,6 +177,20 @@ impl ClaudeHarness {
             "--permission-prompt-tool",
             "stdio",
         ]);
+        if let Some(url) = &self.mcp_server_url {
+            cmd.arg("--mcp-config");
+            cmd.arg(
+                serde_json::json!({
+                    "mcpServers": {
+                        "codebase-retrieval": {
+                            "type": "http",
+                            "url": url,
+                        }
+                    }
+                })
+                .to_string(),
+            );
+        }
         // The 1M context window is selected via a model-id suffix
         // (`sonnet[1m]`), exactly how the CLI itself does it; fast mode and
         // always-on thinking are settings overrides.
@@ -180,15 +210,16 @@ impl ClaudeHarness {
         if let Some(effort) = to_effort(request.reasoning, request.model.as_deref()) {
             cmd.args(["--effort", effort]);
         }
-        if request.auto_approve {
-            cmd.args([
+        match request.effective_permission_mode() {
+            PermissionMode::Default => cmd.args(["--permission-mode", "default"]),
+            PermissionMode::Plan => cmd.args(["--permission-mode", "plan"]),
+            PermissionMode::AcceptEdits => cmd.args(["--permission-mode", "acceptEdits"]),
+            PermissionMode::FullAccess => cmd.args([
                 "--permission-mode",
                 "bypassPermissions",
                 "--dangerously-skip-permissions",
-            ]);
-        } else {
-            cmd.args(["--permission-mode", "default"]);
-        }
+            ]),
+        };
         if let Some(resume) = &request.resume {
             cmd.arg(format!("--resume={resume}"));
         }
@@ -209,6 +240,38 @@ impl ClaudeHarness {
         if !request.cwd.is_empty() {
             cmd.current_dir(&request.cwd);
         }
+
+        if let Some(path) = &self.custom_providers_path {
+            if let Ok(json) = std::fs::read_to_string(path) {
+                if let Ok(config) = serde_json::from_str::<serde_json::Value>(&json) {
+                    if let Some(id) = config
+                        .get("selection")
+                        .and_then(|s| s.get("claude-code"))
+                        .and_then(|v| v.as_str())
+                    {
+                        if let Some(providers) = config.get("providers").and_then(|p| p.as_array())
+                        {
+                            if let Some(provider) = providers
+                                .iter()
+                                .find(|p| p.get("id").and_then(|i| i.as_str()) == Some(id))
+                            {
+                                if let Some(base_url) =
+                                    provider.get("baseUrl").and_then(|u| u.as_str())
+                                {
+                                    cmd.env("ANTHROPIC_BASE_URL", base_url);
+                                }
+                                if let Some(api_key) =
+                                    provider.get("apiKey").and_then(|k| k.as_str())
+                                {
+                                    cmd.env("ANTHROPIC_API_KEY", api_key);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -246,6 +309,15 @@ impl Harness for ClaudeHarness {
     /// like the TS harness's discovery call.
     async fn models(&self) -> Result<Vec<Model>, HarnessError> {
         self.resolve_executable()?;
+        if let Some(models) = crate::provider_models::discover_selected_provider_models(
+            self.custom_providers_path.as_deref(),
+            HarnessId::ClaudeCode,
+            self.reasoning_levels(),
+        )
+        .await?
+        {
+            return Ok(models);
+        }
         Ok(static_models())
     }
 
@@ -308,6 +380,7 @@ impl Harness for ClaudeHarness {
             event_tx,
             controls,
             reasoning: request.reasoning,
+            permission_mode: request.effective_permission_mode(),
             interrupt_grace: self.interrupt_grace,
             kill_grace: self.kill_grace,
             stderr_tail,
@@ -431,6 +504,7 @@ struct Session {
     event_tx: mpsc::Sender<Result<AgentEvent, HarnessError>>,
     controls: RunControls,
     reasoning: Option<ReasoningLevel>,
+    permission_mode: PermissionMode,
     interrupt_grace: Duration,
     kill_grace: Duration,
     /// Rolling stderr tail for the crash message on an unexpected exit.
@@ -447,6 +521,7 @@ async fn run_session(session: Session) {
         event_tx,
         controls,
         reasoning,
+        permission_mode,
         interrupt_grace,
         kill_grace,
         stderr_tail,
@@ -455,6 +530,7 @@ async fn run_session(session: Session) {
         request_input,
         mut steering,
         interrupt,
+        report_memory: _,
     } = controls;
     let request_input = Arc::new(request_input);
 
@@ -482,7 +558,7 @@ async fn run_session(session: Session) {
                         }
                     };
                     if let Frame::ControlRequest(req) = frame {
-                        handle_control_request(req, &request_input, &stdin_tx);
+                        handle_control_request(req, permission_mode, &request_input, &stdin_tx);
                         continue;
                     }
                     for ev in norm.normalize(frame, interrupted) {
@@ -635,6 +711,7 @@ type RequestInputFn = Box<
 /// expects.
 fn handle_control_request(
     req: ControlRequestFrame,
+    permission_mode: PermissionMode,
     request_input: &Arc<RequestInputFn>,
     stdin_tx: &mpsc::UnboundedSender<StdinMsg>,
 ) {
@@ -645,7 +722,7 @@ fn handle_control_request(
         );
         return;
     }
-    if req.request.tool_name != "AskUserQuestion" {
+    if req.request.tool_name != "AskUserQuestion" && permission_mode == PermissionMode::FullAccess {
         let line = control_response_line(&req.request_id, allow_response(req.request.input));
         let _ = stdin_tx.send(StdinMsg::Line(line));
         return;
@@ -655,6 +732,30 @@ fn handle_control_request(
     tokio::spawn(async move {
         let request_id = req.request_id;
         let input = req.request.input;
+        if req.request.tool_name != "AskUserQuestion" {
+            let question_id = uuid::Uuid::new_v4().to_string();
+            let answers = (request_input)(vec![UserInputQuestion {
+                id: question_id.clone(),
+                header: "Permission".into(),
+                question: format!("Allow {}?", req.request.tool_name),
+                options: vec!["Allow".into(), "Deny".into()],
+                multi_select: false,
+            }])
+            .await
+            .unwrap_or_default();
+            let allowed = answers.iter().any(|answer| {
+                answer.question_id == question_id
+                    && answer.labels.iter().any(|label| label == "Allow")
+            });
+            let response = if allowed {
+                allow_response(input)
+            } else {
+                wire::deny_response("Denied by user")
+            };
+            let line = control_response_line(&request_id, response);
+            let _ = stdin_tx.send(StdinMsg::Line(line));
+            return;
+        }
         let questions = parse_questions(&input);
         // The engine's input bridge is the SOLE emitter of
         // `InputRequested`/`InputResolved`: it mints the request id, parks the
@@ -745,6 +846,95 @@ fn updated_input_with_answers(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn managed_context_engine_is_added_as_http_mcp_server() {
+        let harness = ClaudeHarness::new().with_mcp_server("http://127.0.0.1:6699/mcp");
+        let request = RunRequest {
+            prompt: "p".into(),
+            model: None,
+            reasoning: None,
+            model_options: serde_json::Map::new(),
+            cwd: String::new(),
+            sandbox: comet_proto::SandboxLevel::WorkspaceWrite,
+            auto_approve: false,
+            resume: None,
+            attachments: Vec::new(),
+            seed: None,
+            seed_purpose: None,
+            seed_role: None,
+        };
+        let command = harness.build_command(&PathBuf::from("claude"), &request);
+        let args = command
+            .as_std()
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        let config = args
+            .windows(2)
+            .find(|pair| pair[0] == "--mcp-config")
+            .map(|pair| &pair[1])
+            .expect("mcp config argument");
+        let config: Value = serde_json::from_str(config).unwrap();
+        assert_eq!(
+            config["mcpServers"]["codebase-retrieval"]["url"],
+            "http://127.0.0.1:6699/mcp"
+        );
+    }
+
+    #[test]
+    fn selected_anthropic_provider_is_applied_to_new_processes() {
+        let temp = tempfile::tempdir().unwrap();
+        let providers = temp.path().join("custom-providers.json");
+        std::fs::write(
+            &providers,
+            r#"{
+                "providers": [{
+                    "id": "proxy",
+                    "name": "Proxy",
+                    "baseUrl": "https://proxy.example",
+                    "apiKey": "secret",
+                    "formats": ["anthropic"]
+                }],
+                "selection": {"claude-code": "proxy"}
+            }"#,
+        )
+        .unwrap();
+        let harness = ClaudeHarness::new().with_custom_providers(providers);
+        let request = RunRequest {
+            prompt: "p".into(),
+            model: None,
+            reasoning: None,
+            model_options: serde_json::Map::new(),
+            cwd: String::new(),
+            sandbox: comet_proto::SandboxLevel::WorkspaceWrite,
+            auto_approve: false,
+            resume: None,
+            attachments: Vec::new(),
+            seed: None,
+            seed_purpose: None,
+            seed_role: None,
+        };
+        let command = harness.build_command(&PathBuf::from("claude"), &request);
+        let env = command
+            .as_std()
+            .get_envs()
+            .map(|(key, value)| {
+                (
+                    key.to_string_lossy().into_owned(),
+                    value.map(|value| value.to_string_lossy().into_owned()),
+                )
+            })
+            .collect::<std::collections::HashMap<_, _>>();
+        assert_eq!(
+            env.get("ANTHROPIC_BASE_URL").and_then(Option::as_deref),
+            Some("https://proxy.example")
+        );
+        assert_eq!(
+            env.get("ANTHROPIC_API_KEY").and_then(Option::as_deref),
+            Some("secret")
+        );
+    }
 
     #[test]
     fn parses_questions_tolerantly() {

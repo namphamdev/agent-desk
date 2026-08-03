@@ -50,14 +50,18 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use futures::stream::BoxStream;
 use serde::Deserialize;
+use std::collections::HashSet;
+use std::time::Duration;
 use tokio::sync::watch;
 
-use comet_doc::SessionCommandPayload;
-use comet_proto::{ChatConfig, HarnessId};
+use comet_doc::{MessagePart, SessionCommandPayload};
+use comet_proto::{ChatConfig, CustomProviderFormat, HarnessId, ToolCall};
 use comet_rpc::{LinkCache, RpcError, RpcReply, RpcService, methods, parse_params};
 
+use crate::acp_agents::AcpAgents;
 use crate::agent_accounts::AgentAccounts;
 use crate::auth::Auth;
+use crate::custom_providers::CustomProviders;
 use crate::diff_sync::CheckoutDiffSync;
 use crate::doc_host::DocHost;
 use crate::registry::HarnessRegistry;
@@ -66,6 +70,9 @@ use crate::sessions::SessionsEngine;
 use crate::terminals::Terminals;
 use crate::uploads::Uploads;
 use crate::workspace_host::WorkspaceHost;
+
+const FILE_SEARCH_RPC_TIMEOUT: Duration = Duration::from_secs(6);
+const FILE_SEARCH_FEATURED_PATHS: usize = 32;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -77,6 +84,23 @@ struct ChatParams {
 #[serde(rename_all = "camelCase")]
 struct ListModelsParams {
     harness: HarnessId,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GetProjectHarnessParams {
+    cwd: String,
+    #[serde(default)]
+    project_name: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ApplyProjectHarnessParams {
+    cwd: String,
+    optimization_id: String,
+    #[serde(default)]
+    project_name: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -124,6 +148,36 @@ struct DeleteWorktreeParams {
 struct ListFoldersParams {
     #[serde(default)]
     path: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FileSearchParams {
+    query: String,
+    #[serde(default)]
+    chat_id: Option<String>,
+    #[serde(default)]
+    space_id: Option<String>,
+    /// Existing linked worktree selected for a new chat. The engine accepts it
+    /// only after verifying it against the space repository's worktree list.
+    #[serde(default)]
+    path: Option<String>,
+}
+
+fn tool_file_path(call: &ToolCall) -> Option<&str> {
+    match call {
+        ToolCall::ReadFile { path }
+        | ToolCall::WriteFile { path, .. }
+        | ToolCall::EditFile { path, .. } => Some(path),
+        ToolCall::ApplyPatch { path } | ToolCall::Search { path, .. } => path.as_deref(),
+        ToolCall::Exec { .. }
+        | ToolCall::Glob { .. }
+        | ToolCall::WebFetch { .. }
+        | ToolCall::WebSearch { .. }
+        | ToolCall::Todo { .. }
+        | ToolCall::Mcp { .. }
+        | ToolCall::Unknown { .. } => None,
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -199,6 +253,61 @@ struct CompleteAgentLoginParams {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct AcpAgentParams {
+    agent_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpsertCustomProviderParams {
+    id: String,
+    name: String,
+    base_url: String,
+    #[serde(default)]
+    api_key: Option<String>,
+    formats: Vec<CustomProviderFormat>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DeleteCustomProviderParams {
+    id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SelectCustomProviderParams {
+    harness: HarnessId,
+    #[serde(default)]
+    provider_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetCodexSubagentModelParams {
+    provider_id: String,
+    #[serde(default)]
+    model: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CustomProviderIdParams {
+    provider_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RunAiShortcutParams {
+    provider_id: String,
+    model: String,
+    prompt: String,
+    #[serde(default)]
+    input: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct UploadChunkParams {
     upload_id: String,
     /// Base64 payload chunk.
@@ -224,6 +333,15 @@ struct ReadAttachmentChunkParams {
 
 /// The Mutate surface (feature-inventory §2 DataRpc), tagged by `op`.
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SeedContextParams {
+    text: String,
+    role: String,
+    purpose: String,
+    created_at: i64,
+}
+
+#[derive(Debug, Deserialize)]
 #[serde(tag = "op", rename_all = "camelCase")]
 enum MutateParams {
     #[serde(rename_all = "camelCase")]
@@ -240,6 +358,8 @@ enum MutateParams {
         /// Cwd override (isolated-worktree path); default = the space's folder.
         #[serde(default)]
         cwd: Option<String>,
+        #[serde(default)]
+        seed_context: Option<SeedContextParams>,
     },
     /// Create a space (device + folder pair). Idempotent by id; a live
     /// duplicate `(deviceId, path)` no-ops. `gitDetected` is seeded from the
@@ -310,6 +430,10 @@ enum MutateParams {
         #[serde(default)]
         at: Option<i64>,
     },
+    /// Keep a finished chat in history without letting it compete with active
+    /// work in the Activity surface.
+    #[serde(rename_all = "camelCase")]
+    SetChatSettled { chat_id: String, settled: bool },
 }
 
 pub struct EngineRpc {
@@ -322,6 +446,8 @@ pub struct EngineRpc {
     diff_sync: CheckoutDiffSync,
     uploads: Uploads,
     agent_accounts: AgentAccounts,
+    acp_agents: AcpAgents,
+    custom_providers: CustomProviders,
     auth: Option<Auth>,
     links: Option<std::sync::Arc<LinkCache>>,
     updater: Option<comet_update::Updater>,
@@ -339,6 +465,8 @@ impl EngineRpc {
         diff_sync: CheckoutDiffSync,
         uploads: Uploads,
         agent_accounts: AgentAccounts,
+        acp_agents: AcpAgents,
+        custom_providers: CustomProviders,
     ) -> Self {
         Self {
             sessions,
@@ -350,6 +478,8 @@ impl EngineRpc {
             diff_sync,
             uploads,
             agent_accounts,
+            acp_agents,
+            custom_providers,
             auth: None,
             links: None,
             updater: None,
@@ -384,6 +514,142 @@ impl EngineRpc {
         self.updater
             .as_ref()
             .ok_or_else(|| RpcError::Failed("updates unavailable".into()))
+    }
+
+    /// Resolve a mention-search root from synced workspace rows. A client may
+    /// name an existing linked worktree for a new chat, but it is verified
+    /// against the space repository before any filesystem walk begins.
+    async fn file_search_root(&self, p: &FileSearchParams) -> Result<std::path::PathBuf, RpcError> {
+        let local_device = self.doc_host.device_id();
+        match (&p.chat_id, &p.space_id) {
+            (Some(_), Some(_)) | (None, None) => Err(RpcError::BadParams(
+                "SearchFiles needs exactly one of chatId or spaceId".into(),
+            )),
+            (Some(chat_id), None) => {
+                if p.path.is_some() {
+                    return Err(RpcError::BadParams(
+                        "SearchFiles path applies only to a space".into(),
+                    ));
+                }
+                let chat = self
+                    .workspace
+                    .doc()
+                    .chat(chat_id)
+                    .map_err(|e| RpcError::Failed(e.to_string()))?
+                    .ok_or_else(|| RpcError::Failed("chat not found".into()))?;
+                if chat.device_id != local_device {
+                    return Err(RpcError::Failed("chat belongs to another device".into()));
+                }
+                let cwd = chat
+                    .cwd
+                    .map(std::path::PathBuf::from)
+                    .ok_or_else(|| RpcError::Failed("chat has no workspace folder".into()))?;
+                let space_id = chat
+                    .space_id
+                    .ok_or_else(|| RpcError::Failed("chat has no workspace space".into()))?;
+                let space = self
+                    .workspace
+                    .doc()
+                    .space(&space_id)
+                    .map_err(|e| RpcError::Failed(e.to_string()))?
+                    .ok_or_else(|| RpcError::Failed("chat workspace space not found".into()))?;
+                if space.device_id != local_device {
+                    return Err(RpcError::Failed(
+                        "chat space belongs to another device".into(),
+                    ));
+                }
+                if let Some(cwd) = self
+                    .repos
+                    .workspace_checkout(std::path::Path::new(&space.path), &cwd)
+                    .await
+                {
+                    Ok(cwd)
+                } else {
+                    Err(RpcError::Failed(
+                        "chat folder is not a workspace checkout".into(),
+                    ))
+                }
+            }
+            (None, Some(space_id)) => {
+                let space = self
+                    .workspace
+                    .doc()
+                    .space(space_id)
+                    .map_err(|e| RpcError::Failed(e.to_string()))?
+                    .ok_or_else(|| RpcError::Failed("space not found".into()))?;
+                if space.device_id != local_device {
+                    return Err(RpcError::Failed("space belongs to another device".into()));
+                }
+                let space_path = std::path::PathBuf::from(&space.path);
+                let requested = p
+                    .path
+                    .as_deref()
+                    .map_or_else(|| space_path.clone(), std::path::PathBuf::from);
+                if let Some(requested) =
+                    self.repos.workspace_checkout(&space_path, &requested).await
+                {
+                    Ok(requested)
+                } else {
+                    Err(RpcError::BadParams(
+                        "SearchFiles path is not a workspace checkout".into(),
+                    ))
+                }
+            }
+        }
+    }
+
+    /// Most-recent-first paths the current chat actually touched, followed by
+    /// files still changed in its checkout. The search worker validates and
+    /// normalizes them against the resolved root before using them as ranking
+    /// hints, so stale or out-of-workspace tool paths simply disappear.
+    fn featured_file_paths(&self, chat_id: &str) -> Vec<String> {
+        let mut paths = Vec::new();
+        let mut seen = HashSet::new();
+        if let Ok(handle) = self.doc_host.open(chat_id)
+            && let Ok(entries) = handle.doc().read_entries()
+        {
+            for entry in entries.into_iter().rev() {
+                for part in entry.parts.into_iter().rev() {
+                    if let MessagePart::Tool { call, .. } = part
+                        && let Some(path) = tool_file_path(&call)
+                        && !path.trim().is_empty()
+                        && seen.insert(path.to_string())
+                    {
+                        paths.push(path.to_string());
+                        if paths.len() == FILE_SEARCH_FEATURED_PATHS {
+                            break;
+                        }
+                    }
+                }
+                if paths.len() == FILE_SEARCH_FEATURED_PATHS {
+                    break;
+                }
+            }
+        }
+
+        if let Ok(Some(chat)) = self.workspace.doc().chat(chat_id) {
+            let diffs = self.diff_sync.watch_diffs().borrow().clone();
+            let diff = chat
+                .checkout_id
+                .as_deref()
+                .and_then(|id| diffs.iter().find(|diff| diff.checkout_id == id))
+                .or_else(|| {
+                    chat.cwd
+                        .as_deref()
+                        .and_then(|cwd| diffs.iter().find(|diff| diff.cwd == cwd))
+                });
+            if let Some(diff) = diff {
+                for file in &diff.files {
+                    if paths.len() == FILE_SEARCH_FEATURED_PATHS {
+                        break;
+                    }
+                    if seen.insert(file.path.clone()) {
+                        paths.push(file.path.clone());
+                    }
+                }
+            }
+        }
+        paths
     }
 
     /// Forward a device-addressed call over the target device's relay. On transport
@@ -436,6 +702,7 @@ impl EngineRpc {
                 config,
                 branch,
                 cwd,
+                seed_context,
             } => {
                 self.workspace
                     .create_chat(&chat_id, &space_id, config, cwd)
@@ -443,6 +710,17 @@ impl EngineRpc {
                 if let Some(branch) = branch.as_deref().filter(|b| !b.is_empty()) {
                     self.workspace
                         .set_chat_branch(&chat_id, branch)
+                        .map_err(failed)?;
+                }
+                if let Some(seed) = seed_context.filter(|seed| !seed.text.trim().is_empty()) {
+                    self.sessions
+                        .write_seed_context(
+                            &chat_id,
+                            &seed.text,
+                            &seed.role,
+                            &seed.purpose,
+                            seed.created_at,
+                        )
                         .map_err(failed)?;
                 }
                 Ok(())
@@ -536,6 +814,11 @@ impl EngineRpc {
                     .map_err(failed)
                     .map(drop)
             }
+            MutateParams::SetChatSettled { chat_id, settled } => self
+                .workspace
+                .set_chat_settled(&chat_id, settled.then(chrono::Utc::now))
+                .map_err(failed)
+                .map(drop),
         }
     }
 }
@@ -547,8 +830,11 @@ fn forwardable(method: &str) -> bool {
     matches!(
         method,
         methods::LIST_HARNESSES
+            | methods::GET_PROJECT_HARNESS
+            | methods::APPLY_PROJECT_HARNESS
             | methods::LIST_MODELS
             | methods::QUEUE_COMMAND
+            | methods::OFFLOAD_SESSION
             | methods::WATCH_DOC_MESSAGES
             // Repos/worktrees/folders are device-local filesystem state.
             | methods::LIST_REPOS
@@ -559,8 +845,19 @@ fn forwardable(method: &str) -> bool {
             | methods::LIST_REFS
             | methods::SWITCH_REF
             | methods::LIST_FOLDERS
+            | methods::SEARCH_FILES
             | methods::CREATE_WORKTREE
             | methods::DELETE_WORKTREE
+            | methods::GIT_STATUS
+            | methods::GIT_STAGE
+            | methods::GIT_UNSTAGE
+            | methods::GIT_DISCARD
+            | methods::GIT_IGNORE
+            | methods::GIT_REVEAL
+            | methods::GIT_COMMIT
+            | methods::GIT_FETCH
+            | methods::GIT_PUSH
+            | methods::GIT_GENERATE_COMMIT_MESSAGE
             // Checkout diffs are produced on the device holding the checkout.
             | methods::WATCH_CHECKOUT_DIFFS
             // Terminals live on the chat's host device.
@@ -578,6 +875,17 @@ fn forwardable(method: &str) -> bool {
             | methods::COMPLETE_AGENT_LOGIN
             | methods::POLL_AGENT_LOGIN
             | methods::CANCEL_AGENT_LOGIN
+            | methods::LIST_ACP_AGENTS
+            | methods::INSTALL_ACP_AGENT
+            | methods::ACTIVATE_ACP_AGENT
+            | methods::REMOVE_ACP_AGENT
+            | methods::GET_CUSTOM_PROVIDERS
+            | methods::UPSERT_CUSTOM_PROVIDER
+            | methods::DELETE_CUSTOM_PROVIDER
+            | methods::SELECT_CUSTOM_PROVIDER
+            | methods::SET_CODEX_SUBAGENT_MODEL
+            | methods::LIST_CUSTOM_PROVIDER_MODELS
+            | methods::RUN_AI_SHORTCUT
             // Uploads/attachments target the chat's host device (the agent reads
             // the committed file from that device's disk).
             | methods::UPLOAD_CHUNK
@@ -737,6 +1045,21 @@ impl RpcService for EngineRpc {
         }
         match method {
             methods::LIST_HARNESSES => RpcReply::value(&self.registry.descriptors()),
+            methods::GET_PROJECT_HARNESS => {
+                let p: GetProjectHarnessParams = parse_params(params)?;
+                RpcReply::value(&crate::project_harness::get_project_harness(
+                    &p.cwd,
+                    p.project_name.as_deref(),
+                ))
+            }
+            methods::APPLY_PROJECT_HARNESS => {
+                let p: ApplyProjectHarnessParams = parse_params(params)?;
+                RpcReply::value(&crate::project_harness::apply_project_harness(
+                    &p.cwd,
+                    &p.optimization_id,
+                    p.project_name.as_deref(),
+                ))
+            }
             methods::LIST_MODELS => {
                 let p: ListModelsParams = parse_params(params)?;
                 let harness = self
@@ -756,6 +1079,15 @@ impl RpcService for EngineRpc {
                     .queue_command(&p.chat_id, p.command)
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
                 RpcReply::value(&serde_json::json!({ "commandId": command_id }))
+            }
+            methods::OFFLOAD_SESSION => {
+                let p: ChatParams = parse_params(params)?;
+                let killed = self
+                    .sessions
+                    .offload(&p.chat_id)
+                    .await
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                RpcReply::value(&serde_json::json!({ "ok": true, "killed": killed }))
             }
             methods::WATCH_DOC_MESSAGES => {
                 let p: ChatParams = parse_params(params)?;
@@ -877,6 +1209,30 @@ impl RpcService for EngineRpc {
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
                 RpcReply::value(&listing)
             }
+            methods::SEARCH_FILES => {
+                let p: FileSearchParams = parse_params(params)?;
+                if p.query.chars().count() > 256 {
+                    return Err(RpcError::BadParams(
+                        "SearchFiles query must not exceed 256 characters".into(),
+                    ));
+                }
+                let matches = tokio::time::timeout(FILE_SEARCH_RPC_TIMEOUT, async {
+                    let root = self.file_search_root(&p).await?;
+                    let featured_paths = p
+                        .chat_id
+                        .as_deref()
+                        .filter(|_| p.query.is_empty())
+                        .map(|chat_id| self.featured_file_paths(chat_id))
+                        .unwrap_or_default();
+                    self.repos
+                        .search_files(root, p.query, featured_paths)
+                        .await
+                        .map_err(|e| RpcError::Failed(e.to_string()))
+                })
+                .await
+                .map_err(|_| RpcError::Failed("file search timed out".into()))??;
+                RpcReply::value(&matches)
+            }
             methods::CREATE_WORKTREE => {
                 let p: CreateWorktreeParams = parse_params(params)?;
                 let worktree = self
@@ -896,6 +1252,97 @@ impl RpcService for EngineRpc {
                     .await
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
                 RpcReply::value(&serde_json::json!({ "ok": true }))
+            }
+            methods::GIT_STATUS => {
+                #[derive(Deserialize)]
+                struct P {
+                    cwd: String,
+                }
+                let p: P = parse_params(params)?;
+                let status = crate::git::status(std::path::Path::new(&p.cwd))
+                    .await
+                    .map_err(|error| RpcError::Failed(error.to_string()))?;
+                RpcReply::value(&status)
+            }
+            methods::GIT_STAGE | methods::GIT_UNSTAGE => {
+                #[derive(Deserialize)]
+                struct P {
+                    cwd: String,
+                    paths: Vec<String>,
+                }
+                let p: P = parse_params(params)?;
+                let result = if method == methods::GIT_STAGE {
+                    crate::git::stage(std::path::Path::new(&p.cwd), &p.paths).await
+                } else {
+                    crate::git::unstage(std::path::Path::new(&p.cwd), &p.paths).await
+                };
+                result.map_err(|error| RpcError::Failed(error.to_string()))?;
+                RpcReply::value(&serde_json::json!({ "ok": true }))
+            }
+            methods::GIT_DISCARD | methods::GIT_IGNORE | methods::GIT_REVEAL => {
+                #[derive(Deserialize)]
+                struct P {
+                    cwd: String,
+                    path: String,
+                    #[serde(default)]
+                    untracked: bool,
+                }
+                let p: P = parse_params(params)?;
+                let cwd = std::path::Path::new(&p.cwd);
+                let result = match method {
+                    methods::GIT_DISCARD => crate::git::discard(cwd, &p.path, p.untracked).await,
+                    methods::GIT_IGNORE => crate::git::ignore(cwd, &p.path).await,
+                    methods::GIT_REVEAL => crate::git::reveal(cwd, &p.path).await,
+                    _ => unreachable!(),
+                };
+                result.map_err(|error| RpcError::Failed(error.to_string()))?;
+                RpcReply::value(&serde_json::json!({ "ok": true }))
+            }
+            methods::GIT_COMMIT => {
+                #[derive(Deserialize)]
+                struct P {
+                    cwd: String,
+                    subject: String,
+                    body: Option<String>,
+                }
+                let p: P = parse_params(params)?;
+                let hash =
+                    crate::git::commit(std::path::Path::new(&p.cwd), &p.subject, p.body.as_deref())
+                        .await
+                        .map_err(|error| RpcError::Failed(error.to_string()))?;
+                RpcReply::value(&serde_json::json!({ "hash": hash }))
+            }
+            methods::GIT_FETCH | methods::GIT_PUSH => {
+                #[derive(Deserialize)]
+                struct P {
+                    cwd: String,
+                }
+                let p: P = parse_params(params)?;
+                let result = if method == methods::GIT_FETCH {
+                    crate::git::fetch(std::path::Path::new(&p.cwd)).await
+                } else {
+                    crate::git::push(std::path::Path::new(&p.cwd)).await
+                };
+                let summary = result.map_err(|error| RpcError::Failed(error.to_string()))?;
+                RpcReply::value(&serde_json::json!({ "summary": summary }))
+            }
+            methods::GIT_GENERATE_COMMIT_MESSAGE => {
+                #[derive(Deserialize)]
+                struct P {
+                    cwd: String,
+                    harness: HarnessId,
+                    model: Option<String>,
+                }
+                let p: P = parse_params(params)?;
+                let message = crate::git::generate_commit_message(
+                    &self.registry,
+                    std::path::Path::new(&p.cwd),
+                    p.harness,
+                    p.model,
+                )
+                .await
+                .map_err(|error| RpcError::Failed(error.to_string()))?;
+                RpcReply::value(&message)
             }
             methods::OPEN_TERMINAL => {
                 let p: OpenTerminalParams = parse_params(params)?;
@@ -1008,6 +1455,103 @@ impl RpcService for EngineRpc {
                 self.agent_accounts.cancel_login(&p.login_id);
                 RpcReply::value(&serde_json::json!({ "ok": true }))
             }
+            methods::LIST_ACP_AGENTS => {
+                let snapshot = self
+                    .acp_agents
+                    .list()
+                    .await
+                    .map_err(|error| RpcError::Failed(error.to_string()))?;
+                RpcReply::value(&snapshot)
+            }
+            methods::INSTALL_ACP_AGENT => {
+                let p: AcpAgentParams = parse_params(params)?;
+                let snapshot = self
+                    .acp_agents
+                    .install(&p.agent_id)
+                    .await
+                    .map_err(|error| RpcError::Failed(error.to_string()))?;
+                RpcReply::value(&snapshot)
+            }
+            methods::ACTIVATE_ACP_AGENT => {
+                let p: AcpAgentParams = parse_params(params)?;
+                let snapshot = self
+                    .acp_agents
+                    .activate(&p.agent_id)
+                    .await
+                    .map_err(|error| RpcError::Failed(error.to_string()))?;
+                RpcReply::value(&snapshot)
+            }
+            methods::REMOVE_ACP_AGENT => {
+                let p: AcpAgentParams = parse_params(params)?;
+                let snapshot = self
+                    .acp_agents
+                    .remove(&p.agent_id)
+                    .await
+                    .map_err(|error| RpcError::Failed(error.to_string()))?;
+                RpcReply::value(&snapshot)
+            }
+            methods::GET_CUSTOM_PROVIDERS => {
+                let snapshot = self
+                    .custom_providers
+                    .list()
+                    .await
+                    .map_err(|error| RpcError::Failed(error.to_string()))?;
+                RpcReply::value(&snapshot)
+            }
+            methods::LIST_CUSTOM_PROVIDER_MODELS => {
+                let p: CustomProviderIdParams = parse_params(params)?;
+                let models = self
+                    .custom_providers
+                    .list_chat_models(&p.provider_id)
+                    .await
+                    .map_err(|error| RpcError::Failed(error.to_string()))?;
+                RpcReply::value(&models)
+            }
+            methods::RUN_AI_SHORTCUT => {
+                let p: RunAiShortcutParams = parse_params(params)?;
+                let result = self
+                    .custom_providers
+                    .run_chat_completion(&p.provider_id, &p.model, &p.prompt, &p.input)
+                    .await
+                    .map_err(|error| RpcError::Failed(format!("{error:#}")))?;
+                RpcReply::value(&serde_json::json!({ "content": result }))
+            }
+            methods::UPSERT_CUSTOM_PROVIDER => {
+                let p: UpsertCustomProviderParams = parse_params(params)?;
+                let snapshot = self
+                    .custom_providers
+                    .upsert(p.id, p.name, p.base_url, p.api_key, p.formats)
+                    .await
+                    .map_err(|error| RpcError::Failed(error.to_string()))?;
+                RpcReply::value(&snapshot)
+            }
+            methods::DELETE_CUSTOM_PROVIDER => {
+                let p: DeleteCustomProviderParams = parse_params(params)?;
+                let snapshot = self
+                    .custom_providers
+                    .delete(&p.id)
+                    .await
+                    .map_err(|error| RpcError::Failed(error.to_string()))?;
+                RpcReply::value(&snapshot)
+            }
+            methods::SELECT_CUSTOM_PROVIDER => {
+                let p: SelectCustomProviderParams = parse_params(params)?;
+                let snapshot = self
+                    .custom_providers
+                    .select(p.harness, p.provider_id)
+                    .await
+                    .map_err(|error| RpcError::Failed(error.to_string()))?;
+                RpcReply::value(&snapshot)
+            }
+            methods::SET_CODEX_SUBAGENT_MODEL => {
+                let p: SetCodexSubagentModelParams = parse_params(params)?;
+                let snapshot = self
+                    .custom_providers
+                    .set_codex_subagent_model(&p.provider_id, p.model)
+                    .await
+                    .map_err(|error| RpcError::Failed(error.to_string()))?;
+                RpcReply::value(&snapshot)
+            }
             methods::UPLOAD_CHUNK => {
                 let p: UploadChunkParams = parse_params(params)?;
                 self.uploads
@@ -1069,5 +1613,24 @@ mod tests {
     fn local_device_is_not_forwardable() {
         assert!(!forwardable(methods::LOCAL_DEVICE));
         assert!(forwardable(methods::QUEUE_COMMAND));
+        assert!(forwardable(methods::SEARCH_FILES));
+    }
+
+    #[test]
+    fn tool_file_paths_keep_workspace_activity_only() {
+        assert_eq!(
+            tool_file_path(&ToolCall::EditFile {
+                path: "src/main.rs".into(),
+                old_string: None,
+                new_string: None,
+            }),
+            Some("src/main.rs")
+        );
+        assert_eq!(
+            tool_file_path(&ToolCall::Exec {
+                command: "cargo test".into(),
+            }),
+            None
+        );
     }
 }

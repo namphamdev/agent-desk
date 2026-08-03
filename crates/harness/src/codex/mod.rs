@@ -43,8 +43,8 @@ use tokio::process::{Child, Command};
 use tokio::sync::mpsc;
 
 use comet_proto::{
-    AgentEvent, DoneStatus, HarnessId, Model, ReasoningLevel, RunRequest, SteeringMode,
-    UserInputAnswer, UserInputQuestion,
+    AgentEvent, DoneStatus, HarnessId, Model, PermissionMode, ReasoningLevel, RunRequest,
+    SteeringMode, UserInputAnswer, UserInputQuestion,
 };
 
 use crate::{Harness, HarnessError, RunControls};
@@ -53,6 +53,9 @@ use normalize::{
     Phase, delta_text, item_id, item_type, map_item, turn_error_message, turn_id, usage_event,
 };
 use rpc::{Incoming, RpcClient};
+
+const CUSTOM_PROVIDER_ID: &str = "comet_custom";
+const CUSTOM_PROVIDER_API_KEY_ENV: &str = "COMET_CODEX_CUSTOM_PROVIDER_API_KEY";
 
 /// Locate the device's installed Codex CLI: `CODEX_EXECUTABLE`, then our own
 /// PATH, then the login-shell PATH snapshot (the user's shell init shapes
@@ -128,6 +131,8 @@ fn worktree_on_slashed_branch(cwd: &str) -> bool {
 /// fake app server with [`CodexHarness::with_executable`].
 pub struct CodexHarness {
     executable: Option<PathBuf>,
+    mcp_server_url: Option<String>,
+    custom_providers_path: Option<PathBuf>,
     /// Grace between `turn/interrupt` and SIGTERM.
     interrupt_grace: Duration,
     /// Grace between SIGTERM and SIGKILL.
@@ -138,6 +143,8 @@ impl Default for CodexHarness {
     fn default() -> Self {
         Self {
             executable: None,
+            mcp_server_url: None,
+            custom_providers_path: None,
             interrupt_grace: Duration::from_secs(2),
             kill_grace: Duration::from_secs(3),
         }
@@ -152,6 +159,18 @@ impl CodexHarness {
     /// Use a fixed CLI binary instead of PATH/known-location resolution.
     pub fn with_executable(mut self, path: impl Into<PathBuf>) -> Self {
         self.executable = Some(path.into());
+        self
+    }
+
+    /// Add Comet's managed code-context MCP server to this invocation.
+    pub fn with_mcp_server(mut self, url: impl Into<String>) -> Self {
+        self.mcp_server_url = Some(url.into());
+        self
+    }
+
+    /// Set the custom providers settings file path.
+    pub fn with_custom_providers(mut self, path: impl Into<PathBuf>) -> Self {
+        self.custom_providers_path = Some(path.into());
         self
     }
 
@@ -175,6 +194,92 @@ impl CodexHarness {
                     .into(),
             )
         })
+    }
+
+    fn build_command(&self, exe: &PathBuf, cwd: &str) -> Command {
+        let mut cmd = Command::new(exe);
+        crate::compose_child_path(&mut cmd, exe);
+
+        if let Some(path) = &self.custom_providers_path {
+            if let Ok(json) = std::fs::read_to_string(path) {
+                if let Ok(config) = serde_json::from_str::<serde_json::Value>(&json) {
+                    if let Some(id) = config
+                        .get("selection")
+                        .and_then(|s| s.get("codex"))
+                        .and_then(|v| v.as_str())
+                    {
+                        if let Some(providers) = config.get("providers").and_then(|p| p.as_array())
+                        {
+                            if let Some(provider) = providers
+                                .iter()
+                                .find(|p| p.get("id").and_then(|i| i.as_str()) == Some(id))
+                            {
+                                if let (Some(name), Some(base_url), Some(api_key)) = (
+                                    provider.get("name").and_then(|value| value.as_str()),
+                                    provider.get("baseUrl").and_then(|value| value.as_str()),
+                                    provider.get("apiKey").and_then(|value| value.as_str()),
+                                ) {
+                                    let base_url =
+                                        crate::provider_models::normalized_api_base_url(base_url)
+                                            .map(|url| url.to_string())
+                                            .unwrap_or_else(|_| base_url.to_string());
+                                    // Codex does not route the built-in OpenAI
+                                    // provider from OPENAI_BASE_URL alone.
+                                    // Define and select an explicit Responses
+                                    // provider through its documented config.
+                                    cmd.arg("-c").arg(format!(
+                                        "model_provider={}",
+                                        serde_json::to_string(CUSTOM_PROVIDER_ID).unwrap()
+                                    ));
+                                    cmd.arg("-c").arg(format!(
+                                        "model_providers.{CUSTOM_PROVIDER_ID}.name={}",
+                                        serde_json::to_string(name).unwrap()
+                                    ));
+                                    cmd.arg("-c").arg(format!(
+                                        "model_providers.{CUSTOM_PROVIDER_ID}.base_url={}",
+                                        serde_json::to_string(&base_url).unwrap()
+                                    ));
+                                    cmd.arg("-c").arg(format!(
+                                        "model_providers.{CUSTOM_PROVIDER_ID}.env_key={}",
+                                        serde_json::to_string(CUSTOM_PROVIDER_API_KEY_ENV).unwrap()
+                                    ));
+                                    cmd.arg("-c").arg(format!(
+                                        "model_providers.{CUSTOM_PROVIDER_ID}.wire_api=\"responses\""
+                                    ));
+                                    if let Some(model) = provider
+                                        .get("codexSubagentModel")
+                                        .and_then(|value| value.as_str())
+                                        .filter(|model| !model.trim().is_empty())
+                                    {
+                                        cmd.arg("-c").arg(format!(
+                                            "agents.default_subagent_model={}",
+                                            serde_json::to_string(model).unwrap()
+                                        ));
+                                    }
+                                    cmd.env(CUSTOM_PROVIDER_API_KEY_ENV, api_key);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if let Some(url) = &self.mcp_server_url {
+            cmd.args([
+                "-c",
+                &format!(r#"mcp_servers.codebase-retrieval.url="{url}""#),
+            ]);
+        }
+        cmd.arg("app-server");
+        if !cwd.is_empty() {
+            cmd.current_dir(cwd);
+        }
+        cmd.stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        cmd
     }
 }
 
@@ -207,6 +312,15 @@ impl Harness for CodexHarness {
     /// paging `model/list` (experimentalApi) exactly as codex.ts does.
     async fn models(&self) -> Result<Vec<Model>, HarnessError> {
         self.resolve_executable()?;
+        if let Some(models) = crate::provider_models::discover_selected_provider_models(
+            self.custom_providers_path.as_deref(),
+            HarnessId::Codex,
+            self.reasoning_levels(),
+        )
+        .await?
+        {
+            return Ok(models);
+        }
         Ok(static_models())
     }
 
@@ -234,16 +348,7 @@ impl Harness for CodexHarness {
             );
             request.sandbox = comet_proto::SandboxLevel::DangerFullAccess;
         }
-        let mut cmd = Command::new(&exe);
-        cmd.arg("app-server");
-        crate::compose_child_path(&mut cmd, &exe);
-        if !request.cwd.is_empty() {
-            cmd.current_dir(&request.cwd);
-        }
-        cmd.stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
+        let mut cmd = self.build_command(&exe, &request.cwd);
         let mut child = cmd.spawn().map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
                 HarnessError::NotInstalled(exe.display().to_string())
@@ -402,17 +507,17 @@ async fn run_session(session: Session) {
         request_input,
         mut steering,
         interrupt,
+        report_memory: _,
     } = controls;
     let request_input = Arc::new(request_input);
 
     // ---- wire params ------------------------------------------------------
-    // Parity with the Claude adapter, which auto-approves every `can_use_tool`
-    // regardless of `auto_approve` (comet sessions run unattended; the sandbox
-    // is the guardrail): never surface wire approvals. "on-request" turned
-    // every command into a yes/no question (user report: "asking me for
-    // approval at every step"). The approval-as-input plumbing below stays for
-    // stray requests and a future explicit permission-mode setting.
-    let approval_policy = "never";
+    let permission_mode = request.effective_permission_mode();
+    let approval_policy = match permission_mode {
+        PermissionMode::Default | PermissionMode::Plan => "untrusted",
+        PermissionMode::AcceptEdits => "on-request",
+        PermissionMode::FullAccess => "never",
+    };
     let effort = to_effort(request.reasoning);
     // Service tier rides thread-start and every turn (mirrors the Codex IDE
     // client). "default" means Standard — omit it entirely.
@@ -784,7 +889,7 @@ async fn run_session(session: Session) {
                         id,
                         &method,
                         &params,
-                        request.auto_approve,
+                        permission_mode,
                         &request_input,
                     );
                 }
@@ -1004,7 +1109,7 @@ fn handle_server_request(
     id: Value,
     method: &str,
     params: &Value,
-    auto_approve: bool,
+    permission_mode: PermissionMode,
     request_input: &Arc<RequestInputFn>,
 ) {
     let is_approval = matches!(
@@ -1019,7 +1124,10 @@ fn handle_server_request(
         client.respond_error(&id, -32601, &format!("unsupported method: {method}"));
         return;
     }
-    if auto_approve {
+    if permission_mode == PermissionMode::FullAccess
+        || (permission_mode == PermissionMode::AcceptEdits
+            && method == "item/fileChange/requestApproval")
+    {
         client.respond(&id, json!({ "decision": "accept" }));
         return;
     }
@@ -1142,6 +1250,88 @@ fn send_signal(_pid: u32, _signal: Signal) {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn managed_context_engine_is_added_as_http_mcp_server() {
+        let harness = CodexHarness::new().with_mcp_server("http://127.0.0.1:6699/mcp");
+        let command = harness.build_command(&PathBuf::from("codex"), "/tmp");
+        let args = command
+            .as_std()
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            args,
+            vec![
+                "-c",
+                r#"mcp_servers.codebase-retrieval.url="http://127.0.0.1:6699/mcp""#,
+                "app-server",
+            ]
+        );
+        assert_eq!(
+            command.as_std().get_current_dir(),
+            Some(std::path::Path::new("/tmp"))
+        );
+    }
+
+    #[test]
+    fn selected_responses_provider_is_applied_to_new_processes() {
+        let temp = tempfile::tempdir().unwrap();
+        let providers = temp.path().join("custom-providers.json");
+        std::fs::write(
+            &providers,
+            r#"{
+                "providers": [{
+                    "id": "proxy",
+                    "name": "Proxy",
+                    "baseUrl": "https://proxy.example",
+                    "apiKey": "secret",
+                    "formats": ["responses"],
+                    "codexSubagentModel": "worker-model"
+                }],
+                "selection": {"codex": "proxy"}
+            }"#,
+        )
+        .unwrap();
+        let harness = CodexHarness::new().with_custom_providers(providers);
+        let command = harness.build_command(&PathBuf::from("codex"), "/tmp");
+        let args = command
+            .as_std()
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        let config = args
+            .windows(2)
+            .filter(|pair| pair[0] == "-c")
+            .map(|pair| pair[1].as_str())
+            .collect::<Vec<_>>();
+        assert!(config.contains(&r#"model_provider="comet_custom""#));
+        assert!(config.contains(&r#"model_providers.comet_custom.name="Proxy""#));
+        assert!(
+            config.contains(&r#"model_providers.comet_custom.base_url="https://proxy.example/v1""#)
+        );
+        assert!(config.contains(
+            &r#"model_providers.comet_custom.env_key="COMET_CODEX_CUSTOM_PROVIDER_API_KEY""#
+        ));
+        assert!(config.contains(&r#"model_providers.comet_custom.wire_api="responses""#));
+        assert!(config.contains(&r#"agents.default_subagent_model="worker-model""#));
+        assert_eq!(args.last().map(String::as_str), Some("app-server"));
+        let env = command
+            .as_std()
+            .get_envs()
+            .map(|(key, value)| {
+                (
+                    key.to_string_lossy().into_owned(),
+                    value.map(|value| value.to_string_lossy().into_owned()),
+                )
+            })
+            .collect::<std::collections::HashMap<_, _>>();
+        assert_eq!(
+            env.get(CUSTOM_PROVIDER_API_KEY_ENV)
+                .and_then(Option::as_deref),
+            Some("secret")
+        );
+    }
 
     #[test]
     fn slashed_branch_worktrees_are_detected_for_sandbox_escalation() {

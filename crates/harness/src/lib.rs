@@ -46,6 +46,9 @@ pub struct RunControls {
     /// interrupt, then escalates to SIGTERM/SIGKILL on the child after a grace
     /// period. The run's stream ends with `Done { status: Interrupted }`.
     pub interrupt: CancellationToken,
+    /// Report the resident memory used by the harness process tree. Harnesses
+    /// without a child process do not need to call this.
+    pub report_memory: Box<dyn Fn(Option<u64>) + Send + Sync>,
 }
 
 #[async_trait]
@@ -64,9 +67,11 @@ pub trait Harness: Send + Sync {
     ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError>;
 }
 
+pub mod acp;
 pub mod claude;
 pub mod codex;
 pub mod mock;
+mod provider_models;
 pub mod shell_env;
 
 /// Bin directories where npm-installed CLIs land under Node version managers.
@@ -206,5 +211,6 @@ pub(crate) fn crash_message(
     }
 }
 
+pub use acp::AcpHarness;
 pub use claude::ClaudeHarness;
 pub use codex::CodexHarness;

@@ -166,10 +166,13 @@ final class WorkspaceStore {
                   let deviceId = m["deviceId"]?.stringValue else { return nil }
             var chatConfig: ChatConfig?
             if let c = m["config"]?.mapValue {
+                let modeStr = c["permissionMode"]?.stringValue
+                let mode = modeStr.flatMap(PermissionMode.init(rawValue:))
                 chatConfig = ChatConfig(harness: c["harness"]?.stringValue ?? "claude-code",
                                         model: c["model"]?.stringValue,
                                         reasoning: c["reasoning"]?.stringValue,
-                                        sandbox: c["sandbox"]?.stringValue)
+                                        sandbox: c["sandbox"]?.stringValue,
+                                        permissionMode: mode)
             }
             return Chat(id: id, deviceId: deviceId,
                         title: m["title"]?.stringValue,
@@ -182,7 +185,8 @@ final class WorkspaceStore {
                         lastMessageAt: m["lastMessageAt"]?.i64Value,
                         createdAt: m["createdAt"]?.i64Value ?? 0,
                         spaceId: m["spaceId"]?.stringValue,
-                        lastSeenAt: m["lastSeenAt"]?.i64Value)
+                        lastSeenAt: m["lastSeenAt"]?.i64Value,
+                        settledAt: m["settledAt"]?.i64Value)
         }
 
         var rows: [String: SessionRow] = [:]
@@ -282,6 +286,44 @@ final class WorkspaceStore {
                           reasoningLevels: $0.reasoningLevels ?? [])
             }
         }
+    }
+
+    func gitStatus(deviceId: String, cwd: String) async -> GitStatus? {
+        try? await relay(for: deviceId).call(method: "GitStatus", params: ["cwd": cwd])
+    }
+
+    func listAcpAgents(deviceId: String) async -> AcpAgentsSnapshot? {
+        try? await relay(for: deviceId).call(method: "ListAcpAgents", params: [:])
+    }
+
+    func acpAgentAction(deviceId: String, method: String, agentId: String) async -> AcpAgentsSnapshot? {
+        try? await relay(for: deviceId).call(method: method, params: ["agentId": agentId])
+    }
+
+    func customProviders(deviceId: String) async -> CustomProviderSnapshot? {
+        try? await relay(for: deviceId).call(method: "GetCustomProviders", params: [:])
+    }
+
+    func selectCustomProvider(deviceId: String, harness: String, providerId: String?) async -> CustomProviderSnapshot? {
+        try? await relay(for: deviceId).call(method: "SelectCustomProvider",
+                                             params: ["harness": harness, "providerId": providerId as Any])
+    }
+
+    func upsertCustomProvider(deviceId: String, provider: CustomProviderDraft) async -> CustomProviderSnapshot? {
+        var params: [String: Any] = [
+            "id": provider.id,
+            "name": provider.name,
+            "baseUrl": provider.baseUrl,
+            "formats": provider.formats,
+        ]
+        if let apiKey = provider.apiKey, !apiKey.isEmpty {
+            params["apiKey"] = apiKey
+        }
+        return try? await relay(for: deviceId).call(method: "UpsertCustomProvider", params: params)
+    }
+
+    func deleteCustomProvider(deviceId: String, providerId: String) async -> CustomProviderSnapshot? {
+        try? await relay(for: deviceId).call(method: "DeleteCustomProvider", params: ["id": providerId])
     }
 
     /// SwitchRef — `git checkout` in the given folder on the target device.
@@ -393,6 +435,20 @@ final class WorkspaceStore {
         }
     }
 
+    func setSettled(chatId: String, settled: Bool) {
+        let map = doc.getMap(id: "chats")
+        guard let row = map.get(key: chatId)?.asLoroMap() else { return }
+        do {
+            if settled {
+                try row.insert(key: "settledAt", v: nowMs())
+            } else {
+                try row.delete(key: "settledAt")
+            }
+            doc.commit()
+            project()
+        } catch {}
+    }
+
     func rename(chatId: String, title: String) {
         updateChat(chatId) { row in
             try row.insert(key: "title", v: title)
@@ -407,6 +463,8 @@ final class WorkspaceStore {
                 try row.insert(key: "config", v: value)
             }
         }
+        let readback = chats.first { $0.id == chatId }?.config
+        ConfigDebug.trace("WorkspaceStore.setChatConfig chat=\(chatId.prefix(8)) wrote model=\(chatConfig.model ?? "nil") readback model=\(readback?.model ?? "nil")")
     }
 
     private func updateChat(_ chatId: String, _ mutate: (LoroMap) throws -> Void) {

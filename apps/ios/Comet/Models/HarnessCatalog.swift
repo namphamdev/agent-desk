@@ -23,6 +23,7 @@ enum HarnessCatalog {
     static let harnesses: [HarnessInfo] = [
         HarnessInfo(id: "claude-code", label: "Claude Code"),
         HarnessInfo(id: "codex", label: "Codex"),
+        HarnessInfo(id: "acp", label: "ACP"),
     ]
 
     private static let fullLadder = ["low", "medium", "high", "xhigh", "max", "ultracode", "ultrathink"]
@@ -33,6 +34,11 @@ enum HarnessCatalog {
 
     static func models(for harness: String) -> [ModelInfo] {
         switch harness {
+        case "acp":
+            return [
+                ModelInfo(id: "default", label: "Agent default",
+                          description: "Use the active ACP agent's default model", reasoningLevels: [])
+            ]
         case "codex":
             return [
                 ModelInfo(id: "gpt-5.6-sol", label: "GPT-5.6-Sol",

@@ -25,6 +25,17 @@ const TAB_GAP: f32 = 4.0;
 /// (title text fades glyph-by-glyph on glass) stay gentle.
 const FADE_WIDTH: f32 = 36.0;
 
+fn format_rss(bytes: Option<u64>) -> Option<String> {
+    let bytes = bytes?;
+    const MIB: f64 = 1024.0 * 1024.0;
+    const GIB: f64 = 1024.0 * MIB;
+    if bytes as f64 >= GIB {
+        Some(format!("{:.1} GB", bytes as f64 / GIB))
+    } else {
+        Some(format!("{} MB", (bytes as f64 / MIB).round() as u64))
+    }
+}
+
 /// Drag-reorder state; `epoch` keys the 150ms slide animation restarts.
 pub(super) struct TabDragState {
     from: usize,
@@ -108,6 +119,38 @@ pub(super) fn next_after_close(order: &[String], closed: &str) -> Option<String>
 }
 
 impl Shell {
+    fn offload_selected_acp(
+        &mut self,
+        chat_id: String,
+        target_device_id: String,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            self.sidebar_notice = Some("Engine not connected".into());
+            cx.notify();
+            return;
+        };
+        self.mutate_task = Some(cx.spawn(async move |this, cx| {
+            if let Err(err) = engine
+                .client()
+                .call(
+                    methods::OFFLOAD_SESSION,
+                    serde_json::json!({
+                        "chatId": chat_id,
+                        "targetDeviceId": target_device_id,
+                    }),
+                )
+                .await
+            {
+                this.update(cx, |shell, cx| {
+                    shell.sidebar_notice = Some(format!("Offload failed: {err}").into());
+                    cx.notify();
+                })
+                .ok();
+            }
+        }));
+    }
+
     /// The space's tabs in VISUAL order (manual drag order over creation order).
     fn tab_ids(&self, space_id: &str, cx: &App) -> Vec<String> {
         let created: Vec<String> = self
@@ -214,6 +257,28 @@ impl Shell {
                 .collect()
         };
         let selected = self.state.read(cx).selected_chat.clone();
+        let memory_label = {
+            let state = self.state.read(cx);
+            selected
+                .as_deref()
+                .and_then(|chat_id| state.session_for(chat_id))
+                .filter(|session| session.agent_running)
+                .and_then(|session| format_rss(session.memory_rss_bytes))
+        };
+        let offload_target = {
+            let state = self.state.read(cx);
+            selected.as_deref().and_then(|chat_id| {
+                let chat = state.chats.iter().find(|chat| chat.id == chat_id)?;
+                let is_acp = chat
+                    .config
+                    .as_ref()
+                    .is_some_and(|config| config.harness == comet_proto::HarnessId::Acp);
+                let running = state
+                    .session_for(chat_id)
+                    .is_some_and(|session| session.agent_running);
+                (is_acp && running).then(|| (chat.id.clone(), chat.device_id.clone()))
+            })
+        };
         // Keep the selected tab visible: on selection change, scroll it into
         // view (minimal movement — a new session's tab materializes at the far
         // right of an overflowing strip and would otherwise be stranded
@@ -230,6 +295,16 @@ impl Shell {
         }
         let has_space = space_id.is_some();
         let git = self.space_git_detected(cx);
+        let can_review = selected.as_deref().is_some_and(|chat_id| {
+            self.state.read(cx).indicator_for(chat_id, now) == Indicator::None
+                && !self.composer.read(cx).is_sending()
+                && comet_engine::session_summary::summarize_session_changes(
+                    &self.state.read(cx).transcript,
+                    None,
+                    None,
+                )
+                .has_reviewable_content
+        });
         let hovered = self.tab_hover.clone();
         let on_canvas = selected.is_none();
         // No sessions yet → the canvas already shows; a `+` would be redundant.
@@ -252,7 +327,7 @@ impl Shell {
                     let (text_color, bg) = if is_selected {
                         (theme.text, crate::theme::glass_selected_bg())
                     } else if is_hovered {
-                        (theme.text_muted.opacity(0.8), theme.element_hover)
+                        (theme.text_muted.opacity(0.8), theme.glass_hover())
                     } else {
                         (theme.text_muted.opacity(0.6), crate::theme::wash(0.0))
                     };
@@ -432,8 +507,8 @@ impl Shell {
             } else {
                 motion::hover_blend(
                     "session-tab-new",
-                    crate::theme::wash(0.0),
-                    crate::theme::wash(0.12),
+                    theme.glass_hover().opacity(0.0),
+                    theme.glass_hover(),
                 )
             })
             .when(on_canvas && has_space, |el| {
@@ -463,7 +538,7 @@ impl Shell {
         let max_scroll = f32::from(self.tabs_scroll.max_offset().x);
         let fade_left = scrolled > 1.0;
         let fade_right = scrolled < max_scroll - 1.0;
-        let glass = Theme::GLASS_ALPHA < 1.0;
+        let glass = theme.is_glass();
         let bar_bg = theme.surface;
         let drag_move_space = space_id.clone().unwrap_or_default();
         let drop_space = space_id.clone().unwrap_or_default();
@@ -571,6 +646,55 @@ impl Shell {
             .child(tab_region)
             .when(has_space && has_tabs, |el| el.child(new_tab))
             .child(div().flex_1())
+            .when(can_review, |el| {
+                el.child(
+                    div()
+                        .id("review-session")
+                        .h(px(26.0))
+                        .px(px(8.0))
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .gap(px(4.0))
+                        .rounded(px(Theme::CONTROL_RADIUS))
+                        .border_1()
+                        .border_color(theme.border)
+                        .text_size(px(11.0))
+                        .text_color(theme.text_muted)
+                        .cursor_pointer()
+                        .occlude()
+                        .hover(|button| button.bg(crate::theme::wash(0.11)))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.start_review_thread(cx);
+                        }))
+                        .child(
+                            icon(icons::DOCUMENT)
+                                .size(px(13.0))
+                                .text_color(theme.text_muted),
+                        )
+                        .child("Review"),
+                )
+            })
+            .when_some(memory_label, |el, label| {
+                el.child(
+                    div()
+                        .flex_none()
+                        .text_size(px(11.0))
+                        .text_color(theme.text_muted.opacity(0.7))
+                        .child(SharedString::from(label)),
+                )
+            })
+            .when_some(offload_target, |el, (chat_id, target_device_id)| {
+                el.child(header_icon_button(
+                    "offload-acp-agent",
+                    icons::ARCHIVE_UP_MINIMALISTIC,
+                    &theme,
+                    cx.listener(move |this, _, _, cx| {
+                        this.offload_selected_acp(chat_id.clone(), target_device_id.clone(), cx)
+                    }),
+                ))
+            })
             // Stable location: the toggle shows whether the pane is open or
             // not (the pane's own header is gone).
             .when(git, |el| {
@@ -593,7 +717,7 @@ impl Shell {
 
 #[cfg(test)]
 mod tests {
-    use super::{next_after_close, resolve_tab_order};
+    use super::{format_rss, next_after_close, resolve_tab_order};
 
     fn ids(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| s.to_string()).collect()
@@ -627,6 +751,18 @@ mod tests {
         assert_eq!(
             resolve_tab_order(&ids(&["a", "b"]), &ids(&["b", "a"])),
             ids(&["b", "a"])
+        );
+    }
+
+    #[test]
+    fn formats_agent_memory_for_titlebar() {
+        assert_eq!(
+            format_rss(Some(512 * 1024 * 1024)).as_deref(),
+            Some("512 MB")
+        );
+        assert_eq!(
+            format_rss(Some(1536 * 1024 * 1024)).as_deref(),
+            Some("1.5 GB")
         );
     }
 }

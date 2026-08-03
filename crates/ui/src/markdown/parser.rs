@@ -51,6 +51,10 @@ pub enum Block {
         language: Option<String>,
         code: String,
     },
+    /// A fenced `mermaid` diagram, rendered as a diagram rather than source.
+    Mermaid {
+        code: String,
+    },
     BlockQuote {
         children: Vec<Block>,
     },
@@ -225,7 +229,14 @@ fn parse_started_block(cur: &mut Cursor) -> Vec<Block> {
             if code.ends_with('\n') {
                 code.pop();
             }
-            vec![Block::CodeBlock { language, code }]
+            if language
+                .as_deref()
+                .is_some_and(|lang| lang.eq_ignore_ascii_case("mermaid"))
+            {
+                vec![Block::Mermaid { code }]
+            } else {
+                vec![Block::CodeBlock { language, code }]
+            }
         }
         Tag::BlockQuote(_) => vec![Block::BlockQuote {
             children: parse_block_sequence(cur),
@@ -603,7 +614,7 @@ impl IncrementalParser {
         // rules and tables have no inline tail to mend.
         if matches!(
             last.block,
-            Block::CodeBlock { .. } | Block::Rule | Block::Table { .. }
+            Block::CodeBlock { .. } | Block::Mermaid { .. } | Block::Rule | Block::Table { .. }
         ) {
             return;
         }
@@ -776,6 +787,15 @@ mod tests {
             }
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    #[test]
+    fn mermaid_fences_are_diagram_blocks() {
+        let tree = parse_full("```mermaid\nflowchart TD\n  Start --> Done\n```\n");
+        assert!(matches!(
+            &tree.blocks[0].block,
+            Block::Mermaid { code } if code == "flowchart TD\n  Start --> Done"
+        ));
     }
 
     #[test]

@@ -87,6 +87,7 @@ icon_assets![
     (PAPERCLIP, "paperclip"),
     (PEN, "pen"),
     (ARCHIVE_MINIMALISTIC, "archive-minimalistic"),
+    (BELL_MINIMALISTIC, "bell-minimalistic"),
     (TRASH_BIN_MINIMALISTIC, "trash-bin-minimalistic"),
     (SETTINGS_MINIMALISTIC, "settings-minimalistic"),
     (LOGOUT_2, "logout-2"),

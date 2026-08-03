@@ -10,7 +10,7 @@
 //!   gitDetected, gitCheckedAt?, checkoutId?, createdAt}
 //! - `chats`: LoroMap keyed by chatId → row map {id, deviceId, title?, archived, cwd?,
 //!   branch?, checkoutId?, config?(json), lastMessagePreview?, lastMessageAt?, createdAt,
-//!   harnessSessionId?, harnessSessionCwd?, spaceId?, lastSeenAt?}
+//!   harnessSessionId?, harnessSessionCwd?, spaceId?, lastSeenAt?, settledAt?}
 //! - `sessions`: LoroMap keyed by chatId → row map {chatId, deviceId, status, startedAt?,
 //!   updatedAt}
 //! - `meta`: LoroMap {schemaVersion} — in-band detection for future destructive changes
@@ -145,6 +145,40 @@ impl WorkspaceDoc {
         Ok(devices)
     }
 
+    /// Replace an obsolete device registration everywhere it is referenced,
+    /// then remove its registry row. Used when an app upgrade accidentally
+    /// generated a new id for the same physical device.
+    pub fn merge_device_into(&self, obsolete_id: &str, current_id: &str) -> Result<bool, DocError> {
+        if obsolete_id == current_id || self.existing_row("devices", obsolete_id).is_none() {
+            return Ok(false);
+        }
+
+        for container in ["spaces", "chats", "sessions"] {
+            let parent = self.doc.get_map(container);
+            let keys: Vec<String> = parent
+                .get_deep_value()
+                .to_json_value()
+                .as_object()
+                .map(|rows| rows.keys().cloned().collect())
+                .unwrap_or_default();
+            for key in keys {
+                let Some(row) = self.existing_row(container, &key) else {
+                    continue;
+                };
+                if matches!(
+                    row.get("deviceId"),
+                    Some(loro::ValueOrContainer::Value(LoroValue::String(id)))
+                        if id.as_ref() == obsolete_id
+                ) {
+                    row.insert("deviceId", current_id)?;
+                }
+            }
+        }
+        self.doc.get_map("devices").delete(obsolete_id)?;
+        self.doc.commit();
+        Ok(true)
+    }
+
     // ── spaces ──────────────────────────────────────────────────────────────
 
     /// Upsert a full space row (creation from any device; owner-only fields are
@@ -265,6 +299,7 @@ impl WorkspaceDoc {
         )?;
         set_opt_str(&row, "spaceId", chat.space_id.as_deref())?;
         set_opt_ms(&row, "lastSeenAt", chat.last_seen_at)?;
+        set_opt_ms(&row, "settledAt", chat.settled_at)?;
         self.doc.commit();
         Ok(())
     }
@@ -284,6 +319,21 @@ impl WorkspaceDoc {
             return Ok(true);
         }
         row.insert("lastSeenAt", at.timestamp_millis())?;
+        self.doc.commit();
+        Ok(true)
+    }
+
+    /// Mark a chat done without archiving it. This is a synced LWW marker so
+    /// the Activity surface stays consistent across devices.
+    pub fn set_chat_settled(
+        &self,
+        chat_id: &str,
+        settled_at: Option<DateTime<Utc>>,
+    ) -> Result<bool, DocError> {
+        let Some(row) = self.existing_row("chats", chat_id) else {
+            return Ok(false);
+        };
+        set_opt_ms(&row, "settledAt", settled_at)?;
         self.doc.commit();
         Ok(true)
     }
@@ -426,6 +476,9 @@ impl WorkspaceDoc {
         row.insert("status", status_str(session.status))?;
         set_opt_ms(&row, "startedAt", session.started_at)?;
         row.insert("updatedAt", session.updated_at.timestamp_millis())?;
+        row.insert("agentRunning", session.agent_running)?;
+        set_opt_u64(&row, "memoryRssBytes", session.memory_rss_bytes)?;
+        set_opt_ms(&row, "memorySampledAt", session.memory_sampled_at)?;
         self.doc.commit();
         Ok(())
     }
@@ -524,6 +577,14 @@ fn set_opt_str(row: &LoroMap, key: &str, value: Option<&str>) -> Result<(), DocE
 fn set_opt_ms(row: &LoroMap, key: &str, value: Option<DateTime<Utc>>) -> Result<(), DocError> {
     match value {
         Some(at) => row.insert(key, at.timestamp_millis())?,
+        None => row.delete(key)?,
+    }
+    Ok(())
+}
+
+fn set_opt_u64(row: &LoroMap, key: &str, value: Option<u64>) -> Result<(), DocError> {
+    match value {
+        Some(value) => row.insert(key, value.min(i64::MAX as u64) as i64)?,
         None => row.delete(key)?,
     }
     Ok(())
@@ -635,6 +696,8 @@ struct RawChat {
     space_id: Option<String>,
     #[serde(default)]
     last_seen_at: Option<i64>,
+    #[serde(default)]
+    settled_at: Option<i64>,
 }
 
 impl From<RawChat> for Chat {
@@ -655,6 +718,7 @@ impl From<RawChat> for Chat {
             harness_session_cwd: raw.harness_session_cwd,
             space_id: raw.space_id,
             last_seen_at: raw.last_seen_at.map(dt),
+            settled_at: raw.settled_at.map(dt),
         }
     }
 }
@@ -669,6 +733,12 @@ struct RawSession {
     started_at: Option<i64>,
     #[serde(default)]
     updated_at: i64,
+    #[serde(default)]
+    agent_running: bool,
+    #[serde(default)]
+    memory_rss_bytes: Option<u64>,
+    #[serde(default)]
+    memory_sampled_at: Option<i64>,
 }
 
 impl From<RawSession> for Session {
@@ -679,6 +749,9 @@ impl From<RawSession> for Session {
             status: raw.status,
             started_at: raw.started_at.map(dt),
             updated_at: dt(raw.updated_at),
+            agent_running: raw.agent_running,
+            memory_rss_bytes: raw.memory_rss_bytes,
+            memory_sampled_at: raw.memory_sampled_at.map(dt),
         }
     }
 }
@@ -718,6 +791,7 @@ mod tests {
                 reasoning: None,
                 model_options: Default::default(),
                 sandbox: SandboxLevel::WorkspaceWrite,
+                permission_mode: Default::default(),
             }),
             last_message_preview: None,
             last_message_at: None,
@@ -726,6 +800,7 @@ mod tests {
             harness_session_cwd: None,
             space_id: None,
             last_seen_at: None,
+            settled_at: None,
         }
     }
 
@@ -749,6 +824,9 @@ mod tests {
             status,
             started_at: Some(ts(3_000)),
             updated_at: ts(3_500),
+            agent_running: status != SessionStatus::Idle,
+            memory_rss_bytes: None,
+            memory_sampled_at: None,
         }
     }
 
@@ -780,6 +858,7 @@ mod tests {
             reasoning: Some(comet_proto::ReasoningLevel::XHigh),
             model_options: options,
             sandbox: SandboxLevel::WorkspaceWrite,
+            permission_mode: Default::default(),
         };
         assert!(ws.set_chat_config("chat-1", &config).unwrap());
         let row = ws.chat("chat-1").unwrap().expect("row exists");
@@ -815,6 +894,33 @@ mod tests {
         assert_eq!(chats.len(), 1);
         assert_eq!(chats[0].title, None);
         assert_eq!(chats[0].last_message_preview.as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn merging_device_reassigns_all_owned_rows() {
+        let ws = WorkspaceDoc::new();
+        ws.upsert_device(&device("old-id", "workstation")).unwrap();
+        ws.upsert_device(&device("new-id", "workstation")).unwrap();
+        ws.upsert_space(&space("space-1", "old-id", "/work"))
+            .unwrap();
+        ws.upsert_chat(&chat("chat-1", "old-id")).unwrap();
+        ws.upsert_session(&session("chat-1", "old-id", SessionStatus::Working))
+            .unwrap();
+
+        assert!(ws.merge_device_into("old-id", "new-id").unwrap());
+        let state = ws.read_all().unwrap();
+        assert_eq!(
+            state
+                .devices
+                .iter()
+                .map(|device| device.id.as_str())
+                .collect::<Vec<_>>(),
+            ["new-id"]
+        );
+        assert_eq!(state.spaces[0].device_id, "new-id");
+        assert_eq!(state.chats[0].device_id, "new-id");
+        assert_eq!(state.sessions[0].device_id, "new-id");
+        assert!(!ws.merge_device_into("old-id", "new-id").unwrap());
     }
 
     #[test]

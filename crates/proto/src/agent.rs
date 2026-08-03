@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 pub enum HarnessId {
     ClaudeCode,
     Codex,
+    /// Any Agent Client Protocol compatible CLI configured on this device.
+    Acp,
     Cursor,
     /// Test harness; never shown in production pickers.
     Mock,
@@ -34,6 +36,34 @@ pub enum SandboxLevel {
     ReadOnly,
     WorkspaceWrite,
     DangerFullAccess,
+}
+
+/// User-facing permission policy shared by every harness.
+///
+/// Harness adapters translate these portable intents into their native
+/// permission and sandbox settings.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PermissionMode {
+    #[default]
+    Default,
+    Plan,
+    AcceptEdits,
+    FullAccess,
+}
+
+impl PermissionMode {
+    pub fn sandbox(self) -> SandboxLevel {
+        match self {
+            Self::Plan => SandboxLevel::ReadOnly,
+            Self::Default | Self::AcceptEdits => SandboxLevel::WorkspaceWrite,
+            Self::FullAccess => SandboxLevel::DangerFullAccess,
+        }
+    }
+
+    pub fn auto_approve(self) -> bool {
+        matches!(self, Self::AcceptEdits | Self::FullAccess)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -91,6 +121,12 @@ pub struct RunRequest {
     pub auto_approve: bool,
     /// Harness-native session id to resume, if any.
     pub resume: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed_purpose: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed_role: Option<String>,
     /// Absolute paths of image attachments already staged on the run device
     /// (composer uploads: UploadChunk/UploadCommit → durable path). The same
     /// paths also ride the prompt text as `Attached images (local files …)`
@@ -99,6 +135,19 @@ pub struct RunRequest {
     /// content blocks. Additive + serde-defaulted for wire compat.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<String>,
+}
+
+impl RunRequest {
+    /// Preserve behavior for requests created by older peers which only knew
+    /// `sandbox` and `autoApprove`.
+    pub fn effective_permission_mode(&self) -> PermissionMode {
+        match (self.sandbox, self.auto_approve) {
+            (SandboxLevel::ReadOnly, _) => PermissionMode::Plan,
+            (SandboxLevel::DangerFullAccess, true) => PermissionMode::FullAccess,
+            (SandboxLevel::WorkspaceWrite, true) => PermissionMode::AcceptEdits,
+            _ => PermissionMode::Default,
+        }
+    }
 }
 
 /// A decoded tool invocation, reduced to the fields each kind renders.
@@ -299,10 +348,32 @@ mod tests {
     }
 
     #[test]
+    fn permission_modes_map_to_legacy_run_fields() {
+        assert_eq!(
+            PermissionMode::Default.sandbox(),
+            SandboxLevel::WorkspaceWrite
+        );
+        assert!(!PermissionMode::Default.auto_approve());
+        assert_eq!(PermissionMode::Plan.sandbox(), SandboxLevel::ReadOnly);
+        assert!(!PermissionMode::Plan.auto_approve());
+        assert_eq!(
+            PermissionMode::AcceptEdits.sandbox(),
+            SandboxLevel::WorkspaceWrite
+        );
+        assert!(PermissionMode::AcceptEdits.auto_approve());
+        assert_eq!(
+            PermissionMode::FullAccess.sandbox(),
+            SandboxLevel::DangerFullAccess
+        );
+        assert!(PermissionMode::FullAccess.auto_approve());
+    }
+
+    #[test]
     fn harness_id_uses_kebab_case() {
         assert_eq!(
             serde_json::to_string(&HarnessId::ClaudeCode).unwrap(),
             "\"claude-code\""
         );
+        assert_eq!(serde_json::to_string(&HarnessId::Acp).unwrap(), "\"acp\"");
     }
 }

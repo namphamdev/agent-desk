@@ -27,7 +27,7 @@ use gpui::{App, Context, Entity, Task};
 use gpui_tokio::Tokio;
 use serde::de::DeserializeOwned;
 
-use comet_doc::SessionMessageEntry;
+use comet_doc::{MessagePart, MessageRole, MessageStatus, SessionMessageEntry};
 use comet_engine::{Engine, EngineConfig, EngineRuntime, rpc::AuthRpc};
 use comet_proto::{AuthState, Chat, ChatIndicator, Device, HarnessId, Session, Space};
 use comet_rpc::{RpcClient, RpcError, RpcReply, RpcService, connect_ws, memory_client, methods};
@@ -341,6 +341,14 @@ pub fn sort_memberships(mut orgs: Vec<OrgRow>) -> Vec<OrgRow> {
 // AppState entity
 // ---------------------------------------------------------------------------
 
+#[derive(Debug, Clone)]
+pub struct ThreadSeed {
+    pub text: String,
+    pub role: MessageRole,
+    pub purpose: &'static str,
+    pub created_at: i64,
+}
+
 /// Root application state. Reducer methods (`apply_*`, [`Self::session_for`], …)
 /// are plain `&mut self` functions so tests construct the struct directly; gpui
 /// glue ([`Self::bootstrap`], [`Self::select_chat`]) layers subscriptions on top.
@@ -365,6 +373,9 @@ pub struct AppState {
     /// Optimistic user echoes per chat id, shown until the doc frame carrying
     /// the same message id arrives (client-minted ids make dedup exact).
     echoes: HashMap<String, Vec<SessionMessageEntry>>,
+    /// Starting context for a message-forked/review chat. Kept locally until
+    /// its first Run persists the same entry in the session doc.
+    thread_seeds: HashMap<String, ThreadSeed>,
     /// This engine's device id (best-effort `LocalDevice` probe; `None` until
     /// the engine serves it — views degrade gracefully).
     pub local_device_id: Option<String>,
@@ -397,6 +408,7 @@ impl AppState {
             selected_chat: None,
             transcript: Vec::new(),
             echoes: HashMap::new(),
+            thread_seeds: HashMap::new(),
             local_device_id: None,
             update: None,
             data_dir: None,
@@ -488,6 +500,41 @@ impl AppState {
         {
             echoes.retain(|echo| !entries.iter().any(|e| e.id == echo.id));
         }
+        if let Some(chat_id) = self.selected_chat.as_deref() {
+            let prefix = "seed-";
+            let suffix = format!("-{chat_id}");
+            let seed_entry = entries
+                .first()
+                .filter(|entry| entry.id.starts_with(prefix) && entry.id.ends_with(&suffix));
+            if entries.len() == 1 {
+                if let Some(entry) = seed_entry {
+                    let purpose = if entry.id.starts_with("seed-review-") {
+                        "review"
+                    } else {
+                        "continue"
+                    };
+                    let text = entry
+                        .parts
+                        .iter()
+                        .filter_map(|part| match part {
+                            MessagePart::Text { text, .. } => Some(text.as_str()),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n\n");
+                    self.thread_seeds
+                        .entry(chat_id.to_string())
+                        .or_insert(ThreadSeed {
+                            text,
+                            role: entry.role,
+                            purpose,
+                            created_at: entry.created_at,
+                        });
+                }
+            } else if seed_entry.is_some() {
+                self.thread_seeds.remove(chat_id);
+            }
+        }
         self.transcript = entries;
     }
 
@@ -513,6 +560,44 @@ impl AppState {
             .and_then(|id| self.echoes.get(id))
             .map(|v| v.as_slice())
             .unwrap_or(&[])
+    }
+
+    pub fn set_thread_seed(&mut self, chat_id: String, seed: ThreadSeed) {
+        self.thread_seeds.insert(chat_id, seed);
+    }
+
+    pub fn take_thread_seed(&mut self, chat_id: &str) -> Option<ThreadSeed> {
+        self.thread_seeds.remove(chat_id)
+    }
+
+    pub fn thread_seed(&self, chat_id: &str) -> Option<ThreadSeed> {
+        self.thread_seeds.get(chat_id).cloned()
+    }
+
+    pub fn restore_thread_seed(&mut self, chat_id: String, seed: ThreadSeed) {
+        self.thread_seeds.entry(chat_id).or_insert(seed);
+    }
+
+    /// Local seed row shown before the first send. Once the doc carries the
+    /// same deterministic id, the durable row wins without flicker.
+    pub fn thread_seed_entry(&self, chat_id: &str) -> Option<SessionMessageEntry> {
+        let seed = self.thread_seeds.get(chat_id)?;
+        let id = format!("seed-{}-{chat_id}", seed.purpose);
+        if self.transcript.iter().any(|entry| entry.id == id) {
+            return None;
+        }
+        Some(SessionMessageEntry {
+            id,
+            role: seed.role,
+            parts: vec![MessagePart::Text {
+                id: "t0".into(),
+                text: seed.text.clone(),
+            }],
+            created_at: seed.created_at,
+            device_id: "local".into(),
+            status: Some(MessageStatus::Complete),
+            continuation_of: None,
+        })
     }
 
     // ---- queries ----
@@ -592,6 +677,27 @@ impl AppState {
             .map(|c| (display_status(c, self.session_for(&c.id), now), c))
             .collect();
         sort_active(&mut rows);
+        rows
+    }
+
+    /// Flat cross-space feed for the desktop Activity surface. Settled rows
+    /// remain available to the caller for the collapsible Done section.
+    pub fn activity_chats(&self, now: DateTime<Utc>) -> Vec<(ChatIndicator, &Chat)> {
+        let mut rows: Vec<(ChatIndicator, &Chat)> = self
+            .visible_chats()
+            .filter(|c| {
+                c.space_id
+                    .as_deref()
+                    .is_some_and(|id| self.space_row(id).is_some())
+            })
+            .map(|c| (display_status(c, self.session_for(&c.id), now), c))
+            .collect();
+        rows.sort_by(|(_, a), (_, b)| {
+            b.last_message_at
+                .or(Some(b.created_at))
+                .cmp(&a.last_message_at.or(Some(a.created_at)))
+                .then_with(|| a.id.cmp(&b.id))
+        });
         rows
     }
 
@@ -765,6 +871,43 @@ impl AppState {
             }
         })
         .detach();
+    }
+
+    /// Synced Activity completion marker. Unlike archive, this keeps the
+    /// transcript and chat available in the Done section.
+    pub fn set_chat_settled(&mut self, chat_id: &str, settled: bool, cx: &mut Context<Self>) {
+        let Some(chat) = self.chats.iter_mut().find(|c| c.id == chat_id) else {
+            return;
+        };
+        chat.settled_at = settled.then(Utc::now);
+        cx.notify();
+        let Some(handle) = self.engine.clone() else {
+            return;
+        };
+        let chat_id = chat_id.to_string();
+        cx.spawn(async move |_, _| {
+            let params = serde_json::json!({
+                "op": "setChatSettled",
+                "chatId": chat_id,
+                "settled": settled,
+            });
+            if let Err(err) = handle.client().call(methods::MUTATE, params).await {
+                tracing::warn!(chat = %chat_id, error = %err, "setChatSettled failed");
+            }
+        })
+        .detach();
+    }
+
+    pub fn mark_all_activity_read(&mut self, cx: &mut Context<Self>) {
+        let ids: Vec<String> = self
+            .activity_chats(Utc::now())
+            .into_iter()
+            .filter(|(_, chat)| chat.unseen())
+            .map(|(_, chat)| chat.id.clone())
+            .collect();
+        for id in ids {
+            self.mark_chat_seen(&id, cx);
+        }
     }
 }
 
@@ -1139,6 +1282,7 @@ mod tests {
             harness_session_cwd: None,
             space_id: None,
             last_seen_at: None,
+            settled_at: None,
         }
     }
 
@@ -1170,6 +1314,9 @@ mod tests {
             status,
             started_at: None,
             updated_at: now - TimeDelta::seconds(updated_secs_ago),
+            agent_running: status != SessionStatus::Idle,
+            memory_rss_bytes: None,
+            memory_sampled_at: None,
         }
     }
 
@@ -1391,6 +1538,7 @@ mod tests {
             reasoning: Some(comet_proto::ReasoningLevel::XHigh),
             model_options: serde_json::Map::new(),
             sandbox: comet_proto::SandboxLevel::WorkspaceWrite,
+            permission_mode: Default::default(),
         };
         state.apply_chat_config("a", config.clone());
         assert_eq!(
@@ -1415,6 +1563,7 @@ mod tests {
                 reasoning: None,
                 model_options: serde_json::Map::new(),
                 sandbox: comet_proto::SandboxLevel::WorkspaceWrite,
+                permission_mode: Default::default(),
             },
         );
     }

@@ -34,12 +34,17 @@ pub use server::{serve_connection, serve_ws_listener};
 /// Full surface: docs/research/feature-inventory.md §2.
 pub mod methods {
     pub const LIST_HARNESSES: &str = "ListHarnesses";
+    pub const GET_PROJECT_HARNESS: &str = "GetProjectHarness";
+    pub const APPLY_PROJECT_HARNESS: &str = "ApplyProjectHarness";
     pub const LIST_MODELS: &str = "ListModels";
     pub const QUEUE_COMMAND: &str = "QueueCommand";
     pub const WATCH_DOC_MESSAGES: &str = "WatchDocMessages";
     pub const WATCH_CHATS: &str = "WatchChats";
     pub const WATCH_DEVICES: &str = "WatchDevices";
     pub const WATCH_SESSIONS: &str = "WatchSessions";
+    /// Stop a chat's warm harness process while retaining its transcript and
+    /// resumable harness session id.
+    pub const OFFLOAD_SESSION: &str = "OffloadSession";
     /// Spaces registry (device+folder pairs) from the workspace doc.
     pub const WATCH_SPACES: &str = "WatchSpaces";
     /// Entity mutations against the workspace doc (feature-inventory §2 DataRpc).
@@ -67,8 +72,20 @@ pub mod methods {
     pub const LIST_REFS: &str = "ListRefs";
     pub const SWITCH_REF: &str = "SwitchRef";
     pub const LIST_FOLDERS: &str = "ListFolders";
+    /// Fuzzy relative-path search rooted in a known chat or space checkout.
+    pub const SEARCH_FILES: &str = "SearchFiles";
     pub const CREATE_WORKTREE: &str = "CreateWorktree";
     pub const DELETE_WORKTREE: &str = "DeleteWorktree";
+    pub const GIT_STATUS: &str = "GitStatus";
+    pub const GIT_STAGE: &str = "GitStage";
+    pub const GIT_UNSTAGE: &str = "GitUnstage";
+    pub const GIT_DISCARD: &str = "GitDiscard";
+    pub const GIT_IGNORE: &str = "GitIgnore";
+    pub const GIT_REVEAL: &str = "GitReveal";
+    pub const GIT_COMMIT: &str = "GitCommit";
+    pub const GIT_FETCH: &str = "GitFetch";
+    pub const GIT_PUSH: &str = "GitPush";
+    pub const GIT_GENERATE_COMMIT_MESSAGE: &str = "GitGenerateCommitMessage";
     // Terminals (ControlRpc, relay-forwardable; SubscribeTerminal streams).
     pub const OPEN_TERMINAL: &str = "OpenTerminal";
     pub const SUBSCRIBE_TERMINAL: &str = "SubscribeTerminal";
@@ -86,6 +103,22 @@ pub mod methods {
     pub const COMPLETE_AGENT_LOGIN: &str = "CompleteAgentLogin";
     pub const POLL_AGENT_LOGIN: &str = "PollAgentLogin";
     pub const CANCEL_AGENT_LOGIN: &str = "CancelAgentLogin";
+    // ACP agent registry (ControlRpc, relay-forwardable and device-local).
+    pub const LIST_ACP_AGENTS: &str = "ListAcpAgents";
+    pub const INSTALL_ACP_AGENT: &str = "InstallAcpAgent";
+    pub const ACTIVATE_ACP_AGENT: &str = "ActivateAcpAgent";
+    pub const REMOVE_ACP_AGENT: &str = "RemoveAcpAgent";
+    // Custom providers (ControlRpc, relay-forwardable and device-local).
+    pub const GET_CUSTOM_PROVIDERS: &str = "GetCustomProviders";
+    pub const UPSERT_CUSTOM_PROVIDER: &str = "UpsertCustomProvider";
+    pub const DELETE_CUSTOM_PROVIDER: &str = "DeleteCustomProvider";
+    pub const SELECT_CUSTOM_PROVIDER: &str = "SelectCustomProvider";
+    pub const SET_CODEX_SUBAGENT_MODEL: &str = "SetCodexSubagentModel";
+    /// Execute a configured desktop AI shortcut without exposing provider
+    /// credentials to the viewport.
+    pub const RUN_AI_SHORTCUT: &str = "RunAiShortcut";
+    /// Discover the OpenAI-compatible model catalog for one custom provider.
+    pub const LIST_CUSTOM_PROVIDER_MODELS: &str = "ListCustomProviderModels";
     // Uploads / attachments (ControlRpc, relay-forwardable — target the chat's host device).
     pub const UPLOAD_CHUNK: &str = "UploadChunk";
     pub const UPLOAD_COMMIT: &str = "UploadCommit";

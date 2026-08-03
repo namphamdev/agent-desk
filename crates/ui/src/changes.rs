@@ -14,24 +14,30 @@
 //!   time-sliced on the background executor and applied as paint-only run
 //!   colors (layout never changes).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
-    AnyElement, App, Context, Entity, ListAlignment, ListState, SharedString, Subscription, Task,
-    Window, div, font, list, prelude::*, px,
+    AnyElement, App, ClipboardItem, Context, Entity, ListAlignment, ListState, MouseButton,
+    SharedString, Subscription, Task, Window, div, font, prelude::*, px,
 };
+use serde::Deserialize;
 
+use comet_engine::registry::HarnessDescriptor;
 use comet_proto::{Chat, CheckoutDiff};
+use comet_proto::{HarnessId, Model};
 use comet_rpc::methods;
 
+use crate::composer::{ComposerInput, ComposerInputEvent};
 use crate::markdown::highlight::{Lang, LineCarry, Token, lang_for_tag, tokenize_line};
 use crate::markdown::render;
 use crate::motion::{self, AnimationExt as _, CHEVRON, COLLAPSE};
+use crate::popover;
+use crate::settings::composer::ComposerDefaults;
 use crate::state::{AppState, EngineHandle};
-use crate::theme::{Theme, oklch};
+use crate::theme::Theme;
 
 // ---------------------------------------------------------------------------
 // Layout numbers (analytic — they drive the fold tween)
@@ -49,6 +55,44 @@ pub const MARKER_WIDTH: f32 = 28.0;
 /// Width of the coloured accent bar on the left edge of +/− rows.
 pub const ACCENT_BAR_WIDTH: f32 = 3.0;
 const DIFF_TEXT_SIZE: f32 = 12.0;
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GitStatus {
+    branch: Option<String>,
+    ahead: u32,
+    behind: u32,
+    files: Vec<GitFileChange>,
+    is_repo: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GitFileChange {
+    path: String,
+    #[allow(dead_code)]
+    old_path: Option<String>,
+    kind: String,
+    staged: bool,
+    unstaged: bool,
+    #[allow(dead_code)]
+    xy: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GeneratedCommitMessage {
+    subject: String,
+    body: String,
+    #[allow(dead_code)]
+    raw: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GitGenerationPicker {
+    Harness,
+    Model,
+}
 
 // ---------------------------------------------------------------------------
 // Patch model + parser (pure)
@@ -420,10 +464,6 @@ fn hash64(parts: &[&str]) -> u64 {
 struct ParsedDiff {
     /// `checkout_id:checksum` — identity of the parsed content.
     key: String,
-    truncated: bool,
-    additions: u32,
-    deletions: u32,
-    file_count: usize,
     files: Arc<Vec<FileDiff>>,
 }
 
@@ -491,12 +531,50 @@ pub struct Changes {
     folds: HashMap<String, FileFold>,
     highlights: HashMap<String, HighlightSlot>,
     list: ListState,
+    git_status: Option<GitStatus>,
+    git_context_key: Option<String>,
+    git_loading: bool,
+    git_busy: Option<&'static str>,
+    git_info: Option<SharedString>,
+    generation_loading: bool,
+    generation_picker: Option<GitGenerationPicker>,
+    selected_paths: HashSet<String>,
+    selected_detail: Option<String>,
+    file_menu: Option<(GitFileChange, gpui::Point<gpui::Pixels>)>,
+    detail_scroll: gpui::ScrollHandle,
+    generation_defaults: ComposerDefaults,
+    generation_defaults_dir: Option<std::path::PathBuf>,
+    harnesses: Vec<HarnessDescriptor>,
+    models: Vec<Model>,
+    selected_harness: Option<HarnessId>,
+    selected_model: Option<String>,
+    generation_scroll: gpui::ScrollHandle,
+    subject: Entity<ComposerInput>,
+    body: Entity<ComposerInput>,
+    git_task: Option<Task<()>>,
+    generation_task: Option<Task<()>>,
+    _subject_events: Subscription,
+    _body_events: Subscription,
     _observe: Subscription,
 }
 
 impl Changes {
     pub fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
         let observe = cx.observe(&state, |this: &mut Self, _, cx| this.sync(cx));
+        let subject = cx.new(|cx| ComposerInput::new("Commit subject", cx));
+        let body = cx.new(|cx| ComposerInput::new("Description (optional)", cx));
+        let subject_events = cx
+            .subscribe(&subject, |_: &mut Self, _, _: &ComposerInputEvent, cx| {
+                cx.notify()
+            });
+        let body_events = cx.subscribe(&body, |_: &mut Self, _, _: &ComposerInputEvent, cx| {
+            cx.notify()
+        });
+        let generation_defaults_dir = state.read(cx).data_dir.clone();
+        let generation_defaults = generation_defaults_dir
+            .as_deref()
+            .map(ComposerDefaults::load)
+            .unwrap_or_default();
         Self {
             state,
             diffs: Vec::new(),
@@ -509,8 +587,455 @@ impl Changes {
             folds: HashMap::new(),
             highlights: HashMap::new(),
             list: ListState::new(0, ListAlignment::Top, px(320.0)),
+            git_status: None,
+            git_context_key: None,
+            git_loading: false,
+            git_busy: None,
+            git_info: None,
+            generation_loading: false,
+            generation_picker: None,
+            selected_paths: HashSet::new(),
+            selected_detail: None,
+            file_menu: None,
+            detail_scroll: gpui::ScrollHandle::new(),
+            generation_defaults,
+            generation_defaults_dir,
+            harnesses: Vec::new(),
+            models: Vec::new(),
+            selected_harness: None,
+            selected_model: None,
+            generation_scroll: gpui::ScrollHandle::new(),
+            subject,
+            body,
+            git_task: None,
+            generation_task: None,
+            _subject_events: subject_events,
+            _body_events: body_events,
             _observe: observe,
         }
+    }
+
+    fn git_context(&self, cx: &App) -> Option<(String, Option<String>)> {
+        let state = self.state.read(cx);
+        if let Some(chat) = state.selected_chat_row() {
+            let cwd = chat.cwd.clone()?;
+            let target = (state.local_device_id.as_deref() != Some(chat.device_id.as_str()))
+                .then(|| chat.device_id.clone());
+            return Some((cwd, target));
+        }
+
+        // The new-session canvas has no chat yet, but the selected Space still
+        // identifies the repository whose changes should be shown.
+        let space = state.selected_space_row()?;
+        let target = (state.local_device_id.as_deref() != Some(space.device_id.as_str()))
+            .then(|| space.device_id.clone());
+        Some((space.path.clone(), target))
+    }
+
+    fn with_git_target(
+        cwd: &str,
+        target: &Option<String>,
+        extra: serde_json::Value,
+    ) -> serde_json::Value {
+        let mut params = extra.as_object().cloned().unwrap_or_default();
+        params.insert("cwd".into(), serde_json::Value::String(cwd.to_string()));
+        if let Some(target) = target {
+            params.insert(
+                "targetDeviceId".into(),
+                serde_json::Value::String(target.clone()),
+            );
+        }
+        serde_json::Value::Object(params)
+    }
+
+    fn refresh_git(&mut self, cx: &mut Context<Self>) {
+        let Some((cwd, target)) = self.git_context(cx) else {
+            self.git_status = None;
+            self.git_context_key = None;
+            return;
+        };
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            return;
+        };
+        let request_key = format!("{}:{cwd}", target.as_deref().unwrap_or("local"));
+        self.git_context_key = Some(request_key.clone());
+        self.git_loading = true;
+        let params = Self::with_git_target(&cwd, &target, serde_json::json!({}));
+        self.git_task =
+            Some(cx.spawn(async move |this, cx| {
+                let result = engine
+                    .client()
+                    .call_as::<GitStatus>(methods::GIT_STATUS, params)
+                    .await;
+                this.update(cx, |changes, cx| {
+                    if changes.git_context_key.as_deref() != Some(request_key.as_str()) {
+                        return;
+                    }
+                    changes.git_loading = false;
+                    match result {
+                        Ok(status) => {
+                            changes
+                                .selected_paths
+                                .retain(|path| status.files.iter().any(|file| &file.path == path));
+                            if !changes.selected_detail.as_ref().is_some_and(|path| {
+                                status.files.iter().any(|file| &file.path == path)
+                            }) {
+                                changes.selected_detail = status
+                                    .files
+                                    .iter()
+                                    .find(|file| file.unstaged)
+                                    .or_else(|| status.files.first())
+                                    .map(|file| file.path.clone());
+                            }
+                            changes.git_status = Some(status);
+                        }
+                        Err(err) => {
+                            changes.error = Some(format!("Git status unavailable: {err}").into())
+                        }
+                    }
+                    cx.notify();
+                })
+                .ok();
+            }));
+    }
+
+    fn load_generation_options(&mut self, cx: &mut Context<Self>) {
+        if self.generation_loading {
+            return;
+        }
+        let Some((_, target)) = self.git_context(cx) else {
+            return;
+        };
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            return;
+        };
+        let preferred = self
+            .state
+            .read(cx)
+            .selected_chat_row()
+            .and_then(|chat| chat.config.as_ref())
+            .map(|config| config.harness)
+            .or(self.generation_defaults.harness);
+        let preferred_model = self
+            .state
+            .read(cx)
+            .selected_chat_row()
+            .and_then(|chat| chat.config.as_ref())
+            .and_then(|config| config.model.clone())
+            .or_else(|| {
+                preferred.and_then(|harness| {
+                    self.generation_defaults
+                        .model_for(harness)
+                        .map(|model| model.id.clone())
+                })
+            });
+        self.generation_loading = true;
+        let mut params = serde_json::Map::new();
+        if let Some(target) = &target {
+            params.insert(
+                "targetDeviceId".into(),
+                serde_json::Value::String(target.clone()),
+            );
+        }
+        self.generation_task = Some(cx.spawn(async move |this, cx| {
+            let listed = engine
+                .client()
+                .call(methods::LIST_HARNESSES, serde_json::Value::Object(params))
+                .await;
+            let harnesses = listed
+                .and_then(|value| {
+                    serde_json::from_value::<Vec<HarnessDescriptor>>(value)
+                        .map_err(|error| comet_rpc::RpcError::Failed(error.to_string()))
+                })
+                .map(|list| {
+                    list.into_iter()
+                        .filter(|descriptor| descriptor.id != HarnessId::Mock)
+                        .collect::<Vec<_>>()
+                });
+            let selected = harnesses.as_ref().ok().and_then(|list| {
+                preferred
+                    .filter(|id| list.iter().any(|descriptor| descriptor.id == *id))
+                    .or_else(|| list.first().map(|descriptor| descriptor.id))
+            });
+            let models = if let Some(harness) = selected {
+                let mut params = serde_json::json!({ "harness": harness });
+                if let (Some(target), Some(object)) = (&target, params.as_object_mut()) {
+                    object.insert(
+                        "targetDeviceId".into(),
+                        serde_json::Value::String(target.clone()),
+                    );
+                }
+                engine.client().call(methods::LIST_MODELS, params).await
+            } else {
+                Ok(serde_json::json!([]))
+            };
+            this.update(cx, |changes, cx| {
+                changes.generation_loading = false;
+                match harnesses {
+                    Ok(harnesses) => {
+                        changes.harnesses = harnesses;
+                        changes.selected_harness = selected;
+                        match models {
+                            Ok(value) => match serde_json::from_value::<Vec<Model>>(value) {
+                                Ok(models) => {
+                                    changes.selected_model = preferred_model
+                                        .filter(|id| models.iter().any(|model| &model.id == id))
+                                        .or_else(|| models.first().map(|model| model.id.clone()));
+                                    changes.models = models;
+                                }
+                                Err(error) => {
+                                    changes.error =
+                                        Some(format!("Model catalog unavailable: {error}").into())
+                                }
+                            },
+                            Err(error) => {
+                                changes.error =
+                                    Some(format!("Model catalog unavailable: {error}").into())
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        changes.error = Some(format!("Agent clients unavailable: {error}").into())
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
+    fn select_harness(&mut self, harness: HarnessId, cx: &mut Context<Self>) {
+        if self.generation_loading {
+            return;
+        }
+        let Some((_, target)) = self.git_context(cx) else {
+            return;
+        };
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            return;
+        };
+        self.selected_harness = Some(harness);
+        self.generation_defaults.harness = Some(harness);
+        self.save_generation_defaults();
+        self.selected_model = None;
+        self.models.clear();
+        self.generation_picker = None;
+        self.generation_loading = true;
+        let mut params = serde_json::json!({ "harness": harness });
+        if let (Some(target), Some(object)) = (&target, params.as_object_mut()) {
+            object.insert(
+                "targetDeviceId".into(),
+                serde_json::Value::String(target.clone()),
+            );
+        }
+        self.generation_task = Some(cx.spawn(async move |this, cx| {
+            let result = engine.client().call(methods::LIST_MODELS, params).await;
+            this.update(cx, |changes, cx| {
+                changes.generation_loading = false;
+                match result {
+                    Ok(value) => match serde_json::from_value::<Vec<Model>>(value) {
+                        Ok(models) => {
+                            changes.selected_model = models.first().map(|model| model.id.clone());
+                            changes.models = models;
+                        }
+                        Err(error) => {
+                            changes.error =
+                                Some(format!("Model catalog unavailable: {error}").into())
+                        }
+                    },
+                    Err(error) => {
+                        changes.error = Some(format!("Model catalog unavailable: {error}").into())
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+        cx.notify();
+    }
+
+    fn generate_commit_message(&mut self, cx: &mut Context<Self>) {
+        if self.git_busy.is_some() {
+            return;
+        }
+        let Some(harness) = self.selected_harness else {
+            self.error = Some("Select an agent client.".into());
+            cx.notify();
+            return;
+        };
+        let Some((cwd, target)) = self.git_context(cx) else {
+            return;
+        };
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            return;
+        };
+        self.git_busy = Some("generate");
+        self.error = None;
+        self.git_info = None;
+        let params = Self::with_git_target(
+            &cwd,
+            &target,
+            serde_json::json!({
+                "harness": harness,
+                "model": self.selected_model,
+            }),
+        );
+        self.generation_task = Some(cx.spawn(async move |this, cx| {
+            let result = engine
+                .client()
+                .call_as::<GeneratedCommitMessage>(methods::GIT_GENERATE_COMMIT_MESSAGE, params)
+                .await;
+            this.update(cx, |changes, cx| {
+                changes.git_busy = None;
+                match result {
+                    Ok(message) => {
+                        changes
+                            .subject
+                            .update(cx, |input, cx| input.set_text(message.subject, cx));
+                        changes
+                            .body
+                            .update(cx, |input, cx| input.set_text(message.body, cx));
+                        changes.git_info = Some("Commit message generated.".into());
+                    }
+                    Err(error) => {
+                        changes.error =
+                            Some(format!("Commit message generation failed: {error}").into())
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+        cx.notify();
+    }
+
+    fn run_paths(&mut self, paths: Vec<String>, stage: bool, cx: &mut Context<Self>) {
+        if paths.is_empty() || self.git_busy.is_some() {
+            return;
+        }
+        let Some((cwd, target)) = self.git_context(cx) else {
+            return;
+        };
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            return;
+        };
+        self.git_busy = Some(if stage { "stage" } else { "unstage" });
+        self.error = None;
+        self.git_info = None;
+        let params = Self::with_git_target(&cwd, &target, serde_json::json!({ "paths": paths }));
+        let method = if stage {
+            methods::GIT_STAGE
+        } else {
+            methods::GIT_UNSTAGE
+        };
+        self.git_task = Some(cx.spawn(async move |this, cx| {
+            let result = engine.client().call(method, params).await;
+            this.update(cx, |changes, cx| {
+                changes.git_busy = None;
+                if let Err(err) = result {
+                    changes.error = Some(format!("Git operation failed: {err}").into());
+                }
+                changes.refresh_git(cx);
+                cx.notify();
+            })
+            .ok();
+        }));
+        cx.notify();
+    }
+
+    fn run_remote(&mut self, push: bool, cx: &mut Context<Self>) {
+        if self.git_busy.is_some() {
+            return;
+        }
+        let Some((cwd, target)) = self.git_context(cx) else {
+            return;
+        };
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            return;
+        };
+        self.git_busy = Some(if push { "push" } else { "fetch" });
+        self.error = None;
+        self.git_info = None;
+        let params = Self::with_git_target(&cwd, &target, serde_json::json!({}));
+        let method = if push {
+            methods::GIT_PUSH
+        } else {
+            methods::GIT_FETCH
+        };
+        self.git_task = Some(cx.spawn(async move |this, cx| {
+            let result = engine.client().call(method, params).await;
+            this.update(cx, |changes, cx| {
+                changes.git_busy = None;
+                match result {
+                    Ok(value) => {
+                        changes.git_info = value
+                            .get("summary")
+                            .and_then(|v| v.as_str())
+                            .map(|s| SharedString::from(s.to_string()));
+                    }
+                    Err(err) => changes.error = Some(format!("Git operation failed: {err}").into()),
+                }
+                changes.refresh_git(cx);
+                cx.notify();
+            })
+            .ok();
+        }));
+        cx.notify();
+    }
+
+    fn commit(&mut self, cx: &mut Context<Self>) {
+        if self.git_busy.is_some() {
+            return;
+        }
+        let subject = self.subject.read(cx).text().trim().to_string();
+        if subject.is_empty() {
+            self.error = Some("Enter a commit subject.".into());
+            cx.notify();
+            return;
+        }
+        let body = self.body.read(cx).text().trim().to_string();
+        let Some((cwd, target)) = self.git_context(cx) else {
+            return;
+        };
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            return;
+        };
+        self.git_busy = Some("commit");
+        self.error = None;
+        self.git_info = None;
+        let params = Self::with_git_target(
+            &cwd,
+            &target,
+            serde_json::json!({
+                "subject": subject,
+                "body": (!body.is_empty()).then_some(body),
+            }),
+        );
+        self.git_task = Some(cx.spawn(async move |this, cx| {
+            let result = engine.client().call(methods::GIT_COMMIT, params).await;
+            this.update(cx, |changes, cx| {
+                changes.git_busy = None;
+                match result {
+                    Ok(value) => {
+                        let hash = value.get("hash").and_then(|v| v.as_str()).unwrap_or("");
+                        changes.git_info = Some(if hash.is_empty() {
+                            "Committed.".into()
+                        } else {
+                            format!("Committed {hash}").into()
+                        });
+                        changes
+                            .subject
+                            .update(cx, |input, cx| input.set_text("", cx));
+                        changes.body.update(cx, |input, cx| input.set_text("", cx));
+                    }
+                    Err(err) => changes.error = Some(format!("Commit failed: {err}").into()),
+                }
+                changes.refresh_git(cx);
+                cx.notify();
+            })
+            .ok();
+        }));
+        cx.notify();
     }
 
     /// The selected chat's host device when it differs from the connected
@@ -520,7 +1045,14 @@ impl Changes {
     /// and the pane sits on "Preparing diff…" forever (user report).
     fn desired_target(&self, cx: &App) -> Option<String> {
         let state = self.state.read(cx);
-        let device = state.selected_chat_row()?.device_id.clone();
+        let device = state
+            .selected_chat_row()
+            .map(|chat| chat.device_id.clone())
+            .or_else(|| {
+                state
+                    .selected_space_row()
+                    .map(|space| space.device_id.clone())
+            })?;
         (state.local_device_id.as_deref() != Some(device.as_str())).then_some(device)
     }
 
@@ -528,6 +1060,18 @@ impl Changes {
     /// Retries with a flat 2 s delay if the stream fails or ends; the last
     /// content stays visible under an error banner meanwhile.
     pub fn ensure_watch(&mut self, cx: &mut Context<Self>) {
+        let git_key = self
+            .git_context(cx)
+            .map(|(cwd, target)| format!("{}:{cwd}", target.as_deref().unwrap_or("local")));
+        if self.git_context_key != git_key {
+            self.harnesses.clear();
+            self.models.clear();
+            self.selected_harness = None;
+            self.selected_model = None;
+            self.generation_picker = None;
+            self.refresh_git(cx);
+            self.load_generation_options(cx);
+        }
         let target = self.desired_target(cx);
         if self.started && self.watch_target == target {
             return;
@@ -613,8 +1157,14 @@ impl Changes {
 
     fn resolved(&self, cx: &App) -> Option<CheckoutDiff> {
         let state = self.state.read(cx);
-        let chat = state.selected_chat_row()?;
-        resolve_diff(&self.diffs, chat).cloned()
+        if let Some(chat) = state.selected_chat_row() {
+            return resolve_diff(&self.diffs, chat).cloned();
+        }
+        let space = state.selected_space_row()?;
+        self.diffs
+            .iter()
+            .find(|diff| diff.device_id == space.device_id && diff.cwd == space.path)
+            .cloned()
     }
 
     /// Reconcile parsed content with the currently-resolved diff.
@@ -622,6 +1172,14 @@ impl Changes {
         // The watch follows the selected chat's host device (idempotent when
         // the target is unchanged); a boot-deferred attempt retries here too.
         self.ensure_watch(cx);
+        let next_git_key = self
+            .git_context(cx)
+            .map(|(cwd, target)| format!("{}:{cwd}", target.as_deref().unwrap_or("local")));
+        if self.git_context_key != next_git_key {
+            self.git_status = None;
+            self.git_info = None;
+            self.refresh_git(cx);
+        }
         let Some(diff) = self.resolved(cx) else {
             if self.parsed.take().is_some() {
                 self.list.reset(0);
@@ -637,10 +1195,6 @@ impl Changes {
         }
         // Parse off the render path — patches run to megabytes.
         let patch = diff.patch.clone();
-        let truncated = diff.truncated;
-        let additions = diff.additions;
-        let deletions = diff.deletions;
-        let file_count = diff.files.len();
         self.parse_task = Some(cx.spawn(async move |this, cx| {
             let files = cx
                 .background_executor()
@@ -654,22 +1208,36 @@ impl Changes {
                 if current.as_deref() != Some(key.as_str()) {
                     return;
                 }
-                let file_count = if file_count > 0 {
-                    file_count
-                } else {
-                    files.len()
-                };
                 changes.list.reset(files.len());
                 changes.folds.clear();
                 changes.highlights.clear();
                 changes.parsed = Some(ParsedDiff {
                     key,
-                    truncated,
-                    additions,
-                    deletions,
-                    file_count,
                     files: Arc::new(files),
                 });
+                // Keep the detail pane tied to a real current file. The git
+                // list is authoritative for selection, while the checkout
+                // patch supplies the rendered diff.
+                if !changes.selected_detail.as_ref().is_some_and(|path| {
+                    changes
+                        .git_status
+                        .as_ref()
+                        .is_some_and(|status| status.files.iter().any(|file| &file.path == path))
+                }) {
+                    changes.selected_detail = changes
+                        .git_status
+                        .as_ref()
+                        .and_then(|status| status.files.iter().find(|file| file.unstaged))
+                        .map(|file| file.path.clone())
+                        .or_else(|| {
+                            changes
+                                .parsed
+                                .as_ref()?
+                                .files
+                                .first()
+                                .map(|file| file.path.clone())
+                        });
+                }
                 cx.notify();
             })
             .ok();
@@ -692,6 +1260,66 @@ impl Changes {
         fold.collapsed = !currently_collapsed;
         fold.epoch += 1;
         fold.toggled_at = Some(std::time::Instant::now());
+    }
+
+    fn select_detail(&mut self, path: String, cx: &mut Context<Self>) {
+        self.selected_detail = Some(path);
+        self.detail_scroll.set_offset(gpui::Point::default());
+        cx.notify();
+    }
+
+    fn save_generation_defaults(&self) {
+        if let Some(dir) = self.generation_defaults_dir.as_deref()
+            && let Err(error) = self.generation_defaults.save(dir)
+        {
+            tracing::warn!(error = %error, "git generation defaults save failed");
+        }
+    }
+
+    fn toggle_path_selection(&mut self, path: String, cx: &mut Context<Self>) {
+        if !self.selected_paths.insert(path.clone()) {
+            self.selected_paths.remove(&path);
+        }
+        cx.notify();
+    }
+
+    fn run_file_action(
+        &mut self,
+        method: &'static str,
+        path: String,
+        untracked: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if self.git_busy.is_some() {
+            return;
+        }
+        let Some((cwd, target)) = self.git_context(cx) else {
+            return;
+        };
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            return;
+        };
+        self.file_menu = None;
+        self.git_busy = Some("file action");
+        self.error = None;
+        let params = Self::with_git_target(
+            &cwd,
+            &target,
+            serde_json::json!({ "path": path, "untracked": untracked }),
+        );
+        self.git_task = Some(cx.spawn(async move |this, cx| {
+            let result = engine.client().call(method, params).await;
+            this.update(cx, |changes, cx| {
+                changes.git_busy = None;
+                if let Err(error) = result {
+                    changes.error = Some(format!("Git operation failed: {error}").into());
+                }
+                changes.refresh_git(cx);
+                cx.notify();
+            })
+            .ok();
+        }));
+        cx.notify();
     }
 
     /// Tokens for a file's diff lines (paint-only). Kicks a time-sliced
@@ -808,7 +1436,7 @@ impl Changes {
             .flex()
             .flex_col()
             .border_b_1()
-            .border_color(crate::theme::white_alpha(0.04))
+            .border_color(crate::theme::hairline(0.04))
             .child(header)
             .child(body)
             .into_any_element()
@@ -864,9 +1492,9 @@ impl Changes {
             .items_center()
             .gap(px(8.0))
             .px(px(Theme::SPACE_MD))
-            .bg(crate::theme::white_alpha(0.025))
+            .bg(crate::theme::ink(0.025))
             .cursor_pointer()
-            .hover(|s| s.bg(crate::theme::white_alpha(0.05)))
+            .hover(|s| s.bg(crate::theme::ink(0.05)))
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.toggle_fold(&path, expanded_height);
                 cx.notify();
@@ -879,7 +1507,7 @@ impl Changes {
                     .truncate()
                     .font_family(theme.font_mono.clone())
                     .text_size(px(12.0))
-                    .text_color(crate::theme::grey(0x98))
+                    .text_color(theme.text_dim)
                     .child(SharedString::from(file.path.clone())),
             )
             .when(file.binary, |el| {
@@ -897,7 +1525,7 @@ impl Changes {
                         .flex_none()
                         .font_family(theme.font_mono.clone())
                         .text_size(px(11.0))
-                        .text_color(add_color())
+                        .text_color(add_color(theme))
                         .child(SharedString::from(format!("+{adds}"))),
                 )
             })
@@ -907,73 +1535,809 @@ impl Changes {
                         .flex_none()
                         .font_family(theme.font_mono.clone())
                         .text_size(px(11.0))
-                        .text_color(del_color())
+                        .text_color(del_color(theme))
                         .child(SharedString::from(format!("−{dels}"))),
                 )
             })
             .into_any_element()
     }
 
-    fn render_header_strip(&self, theme: &Theme) -> Option<AnyElement> {
-        let parsed = self.parsed.as_ref()?;
-        Some(
+    fn render_git_status(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let status = self.git_status.clone();
+        let busy = self.git_busy.is_some();
+        let generation_controls = self.render_generation_controls(theme, cx);
+        let button = |id: &'static str, label: SharedString| {
             div()
-                .flex_none()
-                .h(px(36.0))
+                .id(id)
+                .h(px(26.0))
+                .px(px(8.0))
                 .flex()
-                .flex_row()
                 .items_center()
-                .gap(px(10.0))
-                .px(px(Theme::SPACE_LG))
-                .border_b_1()
-                .border_color(crate::theme::white_alpha(0.06))
-                .child(
-                    div()
-                        .text_size(px(12.0))
-                        .text_color(theme.text_muted)
-                        .child(SharedString::from(uncommitted_label(parsed.file_count))),
-                )
-                .child(
-                    div()
-                        .font_family(theme.font_mono.clone())
-                        .text_size(px(11.0))
-                        .text_color(add_color())
-                        .child(SharedString::from(format!("+{}", parsed.additions))),
-                )
-                .child(
-                    div()
-                        .font_family(theme.font_mono.clone())
-                        .text_size(px(11.0))
-                        .text_color(del_color())
-                        .child(SharedString::from(format!("−{}", parsed.deletions))),
-                )
-                .child(div().flex_1())
-                .when(parsed.truncated, |el| {
-                    el.child(
-                        div()
-                            .flex_none()
-                            .text_size(px(10.0))
-                            .px(px(6.0))
-                            .py(px(2.0))
-                            .rounded(px(4.0))
-                            .bg(theme.warning.opacity(0.08))
-                            .text_color(theme.warning.opacity(0.75))
-                            .child(SharedString::from("Partial snapshot")),
-                    )
+                .justify_center()
+                .rounded(px(6.0))
+                .border_1()
+                .border_color(theme.border)
+                .text_size(px(11.0))
+                .text_color(if busy {
+                    theme.text_faint
+                } else {
+                    theme.text_muted
                 })
-                .into_any_element(),
-        )
+                .when(!busy, |el| {
+                    el.cursor_pointer()
+                        .hover(|s| s.bg(crate::theme::white_alpha(0.06)))
+                })
+                .child(label)
+        };
+
+        let branch = status
+            .as_ref()
+            .and_then(|s| s.branch.clone())
+            .unwrap_or_else(|| "Git changes".to_string());
+        let ahead = status.as_ref().map_or(0, |s| s.ahead);
+        let behind = status.as_ref().map_or(0, |s| s.behind);
+
+        let mut sections = Vec::new();
+        if let Some(status) = &status {
+            for (title, files, stage) in [
+                (
+                    "Staged",
+                    status
+                        .files
+                        .iter()
+                        .filter(|file| file.staged)
+                        .cloned()
+                        .collect::<Vec<_>>(),
+                    false,
+                ),
+                (
+                    "Changes",
+                    status
+                        .files
+                        .iter()
+                        .filter(|file| file.unstaged)
+                        .cloned()
+                        .collect::<Vec<_>>(),
+                    true,
+                ),
+            ] {
+                if files.is_empty() {
+                    continue;
+                }
+                let all_paths = files
+                    .iter()
+                    .map(|file| file.path.clone())
+                    .collect::<Vec<_>>();
+                let action = if stage { "Stage all" } else { "Unstage all" };
+                let selected_paths = files
+                    .iter()
+                    .filter(|file| self.selected_paths.contains(&file.path))
+                    .map(|file| file.path.clone())
+                    .collect::<Vec<_>>();
+                let mut rows = div().flex().flex_col();
+                let mut section = div()
+                    .flex()
+                    .flex_col()
+                    .border_b_1()
+                    .border_color(crate::theme::white_alpha(0.05))
+                    .child(
+                        div()
+                            .h(px(28.0))
+                            .px(px(Theme::SPACE_MD))
+                            .flex()
+                            .items_center()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .text_size(px(10.0))
+                                    .text_color(theme.text_faint)
+                                    .child(SharedString::from(format!(
+                                        "{title} ({})",
+                                        files.len()
+                                    ))),
+                            )
+                            .child(
+                                div()
+                                    .id(SharedString::from(format!(
+                                        "git-{}-all",
+                                        title.to_lowercase()
+                                    )))
+                                    .text_size(px(10.0))
+                                    .text_color(if stage {
+                                        add_color(theme)
+                                    } else {
+                                        theme.text_muted
+                                    })
+                                    .when(!busy, |el| el.cursor_pointer())
+                                    .when(!busy, |el| {
+                                        let paths = all_paths.clone();
+                                        el.on_click(cx.listener(move |this, _, _, cx| {
+                                            this.run_paths(paths.clone(), stage, cx);
+                                        }))
+                                    })
+                                    .child(SharedString::from(action)),
+                            )
+                            .when(!selected_paths.is_empty() && !busy, |el| {
+                                let paths = selected_paths.clone();
+                                el.child(
+                                    div()
+                                        .id(SharedString::from(format!(
+                                            "git-{}-selected",
+                                            title.to_lowercase()
+                                        )))
+                                        .ml(px(8.0))
+                                        .text_size(px(10.0))
+                                        .text_color(if stage {
+                                            add_color(theme)
+                                        } else {
+                                            theme.text_muted
+                                        })
+                                        .cursor_pointer()
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.run_paths(paths.clone(), stage, cx);
+                                        }))
+                                        .child(SharedString::from(if stage {
+                                            "Stage selected"
+                                        } else {
+                                            "Unstage selected"
+                                        })),
+                                )
+                            }),
+                    );
+                for (ix, file) in files.iter().enumerate() {
+                    let path = file.path.clone();
+                    let detail_path = path.clone();
+                    let menu_file = file.clone();
+                    let checked = self.selected_paths.contains(&path);
+                    let kind = match file.kind.as_str() {
+                        "added" => "A",
+                        "deleted" => "D",
+                        "renamed" => "R",
+                        "copied" => "C",
+                        "untracked" => "U",
+                        "conflict" => "!",
+                        "typechange" => "T",
+                        _ => "M",
+                    };
+                    let kind_color = match file.kind.as_str() {
+                        "added" | "untracked" => add_color(theme),
+                        "deleted" => del_color(theme),
+                        "conflict" => theme.warning,
+                        _ => theme.text_faint,
+                    };
+                    rows = rows.child(
+                        div()
+                            .id(SharedString::from(format!("git-file-{title}-{ix}")))
+                            .h(px(27.0))
+                            .px(px(Theme::SPACE_MD))
+                            .flex()
+                            .items_center()
+                            .gap(px(8.0))
+                            .cursor_pointer()
+                            .hover(|s| s.bg(crate::theme::white_alpha(0.035)))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.select_detail(detail_path.clone(), cx);
+                            }))
+                            .on_mouse_down(
+                                MouseButton::Right,
+                                cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
+                                    this.file_menu = Some((menu_file.clone(), event.position));
+                                    cx.notify();
+                                }),
+                            )
+                            .child(
+                                div()
+                                    .id(SharedString::from(format!("git-check-{title}-{ix}")))
+                                    .size(px(13.0))
+                                    .rounded(px(3.0))
+                                    .border_1()
+                                    .border_color(if checked {
+                                        add_color(theme)
+                                    } else {
+                                        theme.border
+                                    })
+                                    .bg(if checked {
+                                        add_color(theme).opacity(0.25)
+                                    } else {
+                                        gpui::transparent_black()
+                                    })
+                                    .text_size(px(10.0))
+                                    .text_color(add_color(theme))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(SharedString::from(if checked { "✓" } else { "" }))
+                                    .on_click(cx.listener({
+                                        let path = file.path.clone();
+                                        move |this, _, _, cx| {
+                                            this.toggle_path_selection(path.clone(), cx);
+                                        }
+                                    })),
+                            )
+                            .child(
+                                div()
+                                    .w(px(12.0))
+                                    .font_family(theme.font_mono.clone())
+                                    .text_size(px(10.0))
+                                    .text_color(kind_color)
+                                    .child(SharedString::from(kind)),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .font_family(theme.font_mono.clone())
+                                    .text_size(px(11.0))
+                                    .text_color(theme.text_muted)
+                                    .child(SharedString::from(file.path.clone())),
+                            )
+                            .child(
+                                div()
+                                    .id(SharedString::from(format!("git-file-action-{title}-{ix}")))
+                                    .px(px(5.0))
+                                    .py(px(2.0))
+                                    .rounded(px(4.0))
+                                    .text_size(px(10.0))
+                                    .text_color(theme.text_faint)
+                                    .when(!busy, |el| {
+                                        el.cursor_pointer()
+                                            .hover(|s| s.bg(crate::theme::white_alpha(0.07)))
+                                    })
+                                    .when(!busy, |el| {
+                                        el.on_click(cx.listener(move |this, _, _, cx| {
+                                            this.run_paths(vec![path.clone()], stage, cx);
+                                        }))
+                                    })
+                                    .child(SharedString::from(if stage { "Stage" } else { "−" })),
+                            ),
+                    );
+                }
+                // Keep the section title and its bulk actions pinned while
+                // only its file rows scroll.
+                section = section.child(
+                    div()
+                        .id(SharedString::from(format!(
+                            "git-{}-files",
+                            title.to_lowercase()
+                        )))
+                        .max_h(px(180.0))
+                        .overflow_y_scroll()
+                        .child(rows),
+                );
+                sections.push(section.into_any_element());
+            }
+        }
+
+        div()
+            .id("git-status-panel")
+            .flex_none()
+            .flex()
+            .flex_col()
+            .border_b_1()
+            .border_color(theme.border)
+            .child(
+                div()
+                    .h(px(38.0))
+                    .px(px(Theme::SPACE_MD))
+                    .flex()
+                    .items_center()
+                    .gap(px(7.0))
+                    .child(
+                        crate::icons::icon(crate::icons::GIT_BRANCH)
+                            .size(px(14.0))
+                            .text_color(theme.text_muted),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(px(12.0))
+                            .text_color(theme.text)
+                            .child(SharedString::from(branch)),
+                    )
+                    .when(ahead > 0, |el| {
+                        el.child(
+                            div()
+                                .text_size(px(10.0))
+                                .text_color(theme.text_faint)
+                                .child(SharedString::from(format!("↑{ahead}"))),
+                        )
+                    })
+                    .when(behind > 0, |el| {
+                        el.child(
+                            div()
+                                .text_size(px(10.0))
+                                .text_color(theme.text_faint)
+                                .child(SharedString::from(format!("↓{behind}"))),
+                        )
+                    }),
+            )
+            .child(
+                div()
+                    .h(px(38.0))
+                    .px(px(Theme::SPACE_MD))
+                    .flex()
+                    .items_center()
+                    .gap(px(6.0))
+                    .child(
+                        button(
+                            "git-refresh",
+                            SharedString::from(if self.git_loading {
+                                "Refreshing…"
+                            } else {
+                                "Refresh"
+                            }),
+                        )
+                        .when(!busy && !self.git_loading, |el| {
+                            el.on_click(cx.listener(|this, _, _, cx| this.refresh_git(cx)))
+                        }),
+                    )
+                    .child(button("git-fetch", "Fetch".into()).when(!busy, |el| {
+                        el.on_click(cx.listener(|this, _, _, cx| this.run_remote(false, cx)))
+                    }))
+                    .child(button("git-push", "Push".into()).when(!busy, |el| {
+                        el.on_click(cx.listener(|this, _, _, cx| this.run_remote(true, cx)))
+                    })),
+            )
+            .child(generation_controls)
+            .when_some(self.git_info.clone(), |el, info| {
+                el.child(
+                    div()
+                        .px(px(Theme::SPACE_MD))
+                        .py(px(5.0))
+                        .text_size(px(10.0))
+                        .text_color(theme.text_muted)
+                        .child(info),
+                )
+            })
+            // Only the file rows scroll. Branch, network controls, and the
+            // agent/model selector remain pinned above them.
+            .child(
+                div()
+                    .id("git-change-list")
+                    .flex_none()
+                    .flex()
+                    .flex_col()
+                    .children(sections),
+            )
+            .into_any_element()
+    }
+
+    fn render_generation_controls(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let disabled = self.git_busy.is_some() || self.generation_loading;
+        let harness_label = self
+            .selected_harness
+            .and_then(|selected| {
+                self.harnesses
+                    .iter()
+                    .find(|descriptor| descriptor.id == selected)
+            })
+            .map(|descriptor| descriptor.name.clone())
+            .unwrap_or_else(|| {
+                if self.generation_loading {
+                    "Loading clients…".into()
+                } else {
+                    "Select client".into()
+                }
+            });
+        let model_label = self
+            .selected_model
+            .as_deref()
+            .and_then(|selected| self.models.iter().find(|model| model.id == selected))
+            .map(|model| model.label.clone())
+            .unwrap_or_else(|| {
+                if self.generation_loading {
+                    "Loading models…".into()
+                } else {
+                    "Select model".into()
+                }
+            });
+        let selector = |id: &'static str, label: String| {
+            div()
+                .id(id)
+                .h(px(28.0))
+                .min_w_0()
+                .flex_1()
+                .px(px(8.0))
+                .flex()
+                .items_center()
+                .gap(px(5.0))
+                .rounded(px(6.0))
+                .border_1()
+                .border_color(theme.border)
+                .text_size(px(10.0))
+                .text_color(if disabled {
+                    theme.text_faint
+                } else {
+                    theme.text_muted
+                })
+                .when(!disabled, |el| {
+                    el.cursor_pointer()
+                        .hover(|style| style.bg(crate::theme::white_alpha(0.05)))
+                })
+                .child(div().flex_1().min_w_0().truncate().child(label))
+                .child(
+                    crate::icons::icon(crate::icons::ALT_ARROW_DOWN)
+                        .size(px(10.0))
+                        .text_color(theme.text_faint),
+                )
+        };
+
+        let picker = match self.generation_picker {
+            Some(GitGenerationPicker::Harness) => {
+                let rows = self
+                    .harnesses
+                    .iter()
+                    .enumerate()
+                    .map(|(ix, descriptor)| {
+                        let harness = descriptor.id;
+                        let selected = self.selected_harness == Some(harness);
+                        div()
+                            .id(SharedString::from(format!("git-harness-{ix}")))
+                            .h(px(30.0))
+                            .px(px(Theme::SPACE_MD))
+                            .flex()
+                            .items_center()
+                            .text_size(px(11.0))
+                            .text_color(if selected {
+                                theme.text
+                            } else {
+                                theme.text_muted
+                            })
+                            .bg(if selected {
+                                crate::theme::white_alpha(0.05)
+                            } else {
+                                gpui::transparent_black()
+                            })
+                            .cursor_pointer()
+                            .hover(|style| style.bg(crate::theme::white_alpha(0.07)))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.select_harness(harness, cx);
+                            }))
+                            .child(SharedString::from(descriptor.name.clone()))
+                            .into_any_element()
+                    })
+                    .collect::<Vec<_>>();
+                Some(
+                    div()
+                        .id("git-harness-options")
+                        .flex()
+                        .flex_col()
+                        .max_h(px(240.0))
+                        .overflow_y_scroll()
+                        .track_scroll(&self.generation_scroll)
+                        .border_t_1()
+                        .border_color(theme.border)
+                        .children(rows)
+                        .into_any_element(),
+                )
+            }
+            Some(GitGenerationPicker::Model) => {
+                let rows = self
+                    .models
+                    .iter()
+                    .enumerate()
+                    .map(|(ix, model)| {
+                        let model_id = model.id.clone();
+                        let model_label = model.label.clone();
+                        let selected = self.selected_model.as_deref() == Some(model.id.as_str());
+                        div()
+                            .id(SharedString::from(format!("git-model-{ix}")))
+                            .h(px(30.0))
+                            .px(px(Theme::SPACE_MD))
+                            .flex()
+                            .items_center()
+                            .text_size(px(11.0))
+                            .text_color(if selected {
+                                theme.text
+                            } else {
+                                theme.text_muted
+                            })
+                            .bg(if selected {
+                                crate::theme::white_alpha(0.05)
+                            } else {
+                                gpui::transparent_black()
+                            })
+                            .cursor_pointer()
+                            .hover(|style| style.bg(crate::theme::white_alpha(0.07)))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.selected_model = Some(model_id.clone());
+                                if let Some(harness) = this.selected_harness {
+                                    this.generation_defaults.remember_model(
+                                        harness,
+                                        model_id.clone(),
+                                        model_label.clone(),
+                                    );
+                                    this.save_generation_defaults();
+                                }
+                                this.generation_picker = None;
+                                cx.notify();
+                            }))
+                            .child(SharedString::from(model.label.clone()))
+                            .into_any_element()
+                    })
+                    .collect::<Vec<_>>();
+                Some(
+                    div()
+                        .id("git-model-options")
+                        .flex()
+                        .flex_col()
+                        .max_h(px(240.0))
+                        .overflow_y_scroll()
+                        .track_scroll(&self.generation_scroll)
+                        .border_t_1()
+                        .border_color(theme.border)
+                        .children(rows)
+                        .into_any_element(),
+                )
+            }
+            None => None,
+        };
+        let can_generate = !disabled
+            && self.selected_harness.is_some()
+            && self.selected_model.is_some()
+            && self
+                .git_status
+                .as_ref()
+                .is_some_and(|status| !status.files.is_empty());
+
+        div()
+            .flex_none()
+            .flex()
+            .flex_col()
+            .border_b_1()
+            .border_color(crate::theme::white_alpha(0.05))
+            .child(
+                div()
+                    .h(px(40.0))
+                    .px(px(Theme::SPACE_MD))
+                    .flex()
+                    .items_center()
+                    .gap(px(6.0))
+                    .child(
+                        selector("git-harness-select", harness_label).when(!disabled, |el| {
+                            el.on_click(cx.listener(|this, _, _, cx| {
+                                this.generation_picker = if this.generation_picker
+                                    == Some(GitGenerationPicker::Harness)
+                                {
+                                    None
+                                } else {
+                                    Some(GitGenerationPicker::Harness)
+                                };
+                                if this.harnesses.is_empty() {
+                                    this.load_generation_options(cx);
+                                }
+                                cx.notify();
+                            }))
+                        }),
+                    )
+                    .child(
+                        selector("git-model-select", model_label).when(!disabled, |el| {
+                            el.on_click(cx.listener(|this, _, _, cx| {
+                                this.generation_picker =
+                                    if this.generation_picker == Some(GitGenerationPicker::Model) {
+                                        None
+                                    } else {
+                                        Some(GitGenerationPicker::Model)
+                                    };
+                                cx.notify();
+                            }))
+                        }),
+                    )
+                    .child(
+                        div()
+                            .id("git-generate-message")
+                            .h(px(28.0))
+                            .px(px(9.0))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(px(6.0))
+                            .border_1()
+                            .border_color(theme.border)
+                            .text_size(px(10.0))
+                            .text_color(if can_generate {
+                                theme.text
+                            } else {
+                                theme.text_faint
+                            })
+                            .when(can_generate, |el| {
+                                el.cursor_pointer()
+                                    .hover(|style| style.bg(crate::theme::white_alpha(0.07)))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.generate_commit_message(cx);
+                                    }))
+                            })
+                            .child(SharedString::from(if self.git_busy == Some("generate") {
+                                "Generating…"
+                            } else {
+                                "AI message"
+                            })),
+                    ),
+            )
+            .children(picker)
+            .into_any_element()
+    }
+
+    fn render_commit(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let can_commit = self.git_busy.is_none()
+            && !self.subject.read(cx).text().trim().is_empty()
+            && self.git_status.as_ref().is_some_and(|status| {
+                status.is_repo && status.files.iter().any(|file| file.staged)
+            });
+        div()
+            .flex_none()
+            .p(px(Theme::SPACE_MD))
+            .flex()
+            .flex_col()
+            .gap(px(7.0))
+            .border_t_1()
+            .border_color(theme.border)
+            .child(
+                div()
+                    .min_h(px(30.0))
+                    .px(px(8.0))
+                    .py(px(4.0))
+                    .rounded(px(6.0))
+                    .border_1()
+                    .border_color(theme.border)
+                    .bg(crate::theme::white_alpha(0.025))
+                    .text_size(px(12.0))
+                    .child(self.subject.clone()),
+            )
+            .child(
+                div()
+                    .min_h(px(48.0))
+                    .max_h(px(82.0))
+                    .px(px(8.0))
+                    .py(px(4.0))
+                    .rounded(px(6.0))
+                    .border_1()
+                    .border_color(theme.border)
+                    .bg(crate::theme::white_alpha(0.025))
+                    .text_size(px(12.0))
+                    .child(self.body.clone()),
+            )
+            .child(
+                div()
+                    .id("git-commit")
+                    .h(px(30.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(7.0))
+                    .bg(if can_commit {
+                        theme.text
+                    } else {
+                        theme.surface_raised
+                    })
+                    .text_size(px(12.0))
+                    .text_color(if can_commit {
+                        theme.bg
+                    } else {
+                        theme.text_faint
+                    })
+                    .when(can_commit, |el| {
+                        el.cursor_pointer()
+                            .on_click(cx.listener(|this, _, _, cx| this.commit(cx)))
+                    })
+                    .child(SharedString::from(if self.git_busy == Some("commit") {
+                        "Committing…"
+                    } else {
+                        "Commit staged changes"
+                    })),
+            )
+            .into_any_element()
+    }
+
+    fn render_file_menu(&self, theme: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let (file, position) = self.file_menu.clone()?;
+        let discard = file.clone();
+        let ignore = file.clone();
+        let reveal = file.clone();
+        let copy_absolute = file.clone();
+        let copy_relative = file.clone();
+        let cwd = self.git_context(cx).map(|(cwd, _)| cwd)?;
+        let untracked = file.kind == "untracked";
+        let row = |id: String, label: &'static str| {
+            popover::menu_row(theme, false, id).child(SharedString::from(label))
+        };
+        let menu = popover::popover_card(theme)
+            .w(px(210.0))
+            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                this.file_menu = None;
+                cx.notify();
+            }))
+            .flex()
+            .flex_col()
+            .child(
+                row(
+                    format!("git-menu-discard-{}", discard.path),
+                    "Discard changes",
+                )
+                .id(SharedString::from(format!(
+                    "git-menu-discard-{}",
+                    discard.path
+                )))
+                .text_color(theme.danger)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.run_file_action(methods::GIT_DISCARD, discard.path.clone(), untracked, cx);
+                })),
+            )
+            .child(
+                row(format!("git-menu-ignore-{}", ignore.path), "Ignore file")
+                    .id(SharedString::from(format!(
+                        "git-menu-ignore-{}",
+                        ignore.path
+                    )))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.run_file_action(methods::GIT_IGNORE, ignore.path.clone(), false, cx);
+                    })),
+            )
+            .child(popover::menu_separator())
+            .child(
+                row(
+                    format!("git-menu-copy-path-{}", copy_absolute.path),
+                    "Copy file path",
+                )
+                .id(SharedString::from(format!(
+                    "git-menu-copy-path-{}",
+                    copy_absolute.path
+                )))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    cx.write_to_clipboard(ClipboardItem::new_string(
+                        std::path::Path::new(&cwd)
+                            .join(&copy_absolute.path)
+                            .to_string_lossy()
+                            .into_owned(),
+                    ));
+                    this.file_menu = None;
+                    cx.notify();
+                })),
+            )
+            .child(
+                row(
+                    format!("git-menu-copy-relative-{}", copy_relative.path),
+                    "Copy relative file path",
+                )
+                .id(SharedString::from(format!(
+                    "git-menu-copy-relative-{}",
+                    copy_relative.path
+                )))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    cx.write_to_clipboard(ClipboardItem::new_string(copy_relative.path.clone()));
+                    this.file_menu = None;
+                    cx.notify();
+                })),
+            )
+            .child(
+                row(
+                    format!("git-menu-reveal-{}", reveal.path),
+                    "Reveal in Finder",
+                )
+                .id(SharedString::from(format!(
+                    "git-menu-reveal-{}",
+                    reveal.path
+                )))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.run_file_action(methods::GIT_REVEAL, reveal.path.clone(), false, cx);
+                })),
+            )
+            .into_any_element();
+        Some(popover::menu_at("git-file-context-menu", position, menu))
     }
 }
 
 /// Green for additions — sampled from the reference diff (soft emerald).
-fn add_color() -> gpui::Hsla {
-    oklch(0.765, 0.177, 163.223) // emerald-400
+fn add_color(theme: &Theme) -> gpui::Hsla {
+    theme.diff_add // emerald-400
 }
 
 /// Red for deletions — softer than the theme danger, per the reference diff.
-fn del_color() -> gpui::Hsla {
-    oklch(0.704, 0.191, 22.216) // red-400
+fn del_color(theme: &Theme) -> gpui::Hsla {
+    theme.diff_del // red-400
 }
 
 /// Diff syntax palette — since round 9 the transcript's code blocks share the
@@ -1010,12 +2374,12 @@ fn render_file_body(
     }
 
     // Row tints sampled from the reference: ~5–6% washes over the pane tone.
-    let mut add_bg = add_color();
+    let mut add_bg = add_color(theme);
     add_bg.a = 0.055;
-    let mut del_bg = del_color();
+    let mut del_bg = del_color(theme);
     del_bg.a = 0.055;
     // Bluish-grey hunk-header wash.
-    let hunk_bg = gpui::hsla(0.6, 0.35, 0.6, 0.05);
+    let hunk_bg = theme.diff_hunk_bg;
 
     for hunk in &file.hunks {
         children.push(
@@ -1063,17 +2427,17 @@ fn render_file_body(
             let (marker, marker_color, row_bg, accent, number_color) = match line.kind {
                 LineKind::Add => (
                     "+",
-                    add_color(),
+                    add_color(theme),
                     Some(add_bg),
-                    Some(add_color().opacity(0.55)),
-                    add_color().opacity(0.9),
+                    Some(add_color(theme).opacity(0.55)),
+                    add_color(theme).opacity(0.9),
                 ),
                 LineKind::Del => (
                     "−",
-                    del_color(),
+                    del_color(theme),
                     Some(del_bg),
-                    Some(del_color().opacity(0.55)),
-                    del_color().opacity(0.9),
+                    Some(del_color(theme).opacity(0.55)),
+                    del_color(theme).opacity(0.9),
                 ),
                 _ => (
                     "·",
@@ -1173,16 +2537,10 @@ fn render_file_body(
 }
 
 impl Render for Changes {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::of(cx).clone();
         let resolved = self.resolved(cx);
-        // With no session selected (new-chat canvas) there is nothing to
-        // prepare — show the quiet empty state, not an endless spinner.
-        let phase = if self.state.read(cx).selected_chat_row().is_none() {
-            DiffPhase::Clean
-        } else {
-            diff_phase(resolved.as_ref())
-        };
+        let phase = diff_phase(resolved.as_ref());
         let error = self.error.clone();
 
         let content: AnyElement = match phase {
@@ -1215,19 +2573,33 @@ impl Render for Changes {
                 .child(SharedString::from("No uncommitted changes"))
                 .into_any_element(),
             DiffPhase::List => {
-                if self.parsed.is_some() {
-                    div()
-                        .flex_1()
-                        .min_h_0()
-                        .flex()
-                        .flex_col()
-                        .children(self.render_header_strip(&theme))
-                        .child(
-                            list(self.list.clone(), cx.processor(Self::render_row))
-                                .flex_1()
-                                .with_sizing_behavior(gpui::ListSizingBehavior::Auto),
-                        )
-                        .into_any_element()
+                if let Some(parsed) = &self.parsed {
+                    let selected = self
+                        .selected_detail
+                        .as_deref()
+                        .and_then(|path| parsed.files.iter().position(|file| file.path == path));
+                    if let Some(ix) = selected {
+                        div()
+                            .id("git-selected-file-diff")
+                            .flex_1()
+                            .min_h_0()
+                            .flex()
+                            .flex_col()
+                            .overflow_y_scroll()
+                            .track_scroll(&self.detail_scroll)
+                            .child(self.render_row(ix, window, cx))
+                            .into_any_element()
+                    } else {
+                        div()
+                            .flex_1()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .text_size(px(12.0))
+                            .text_color(theme.text_faint)
+                            .child(SharedString::from("Select a changed file to view its diff"))
+                            .into_any_element()
+                    }
                 } else {
                     // Diff known, parse still running.
                     div()
@@ -1245,10 +2617,12 @@ impl Render for Changes {
             }
         };
 
-        div()
+        let root = div()
             .size_full()
+            .min_h_0()
             .flex()
             .flex_col()
+            .child(self.render_git_status(&theme, cx))
             .when_some(error, |el, message| {
                 el.child(
                     div()
@@ -1263,6 +2637,12 @@ impl Render for Changes {
                 )
             })
             .child(content)
+            .child(self.render_commit(&theme, cx));
+        if let Some(menu) = self.render_file_menu(&theme, cx) {
+            root.child(menu)
+        } else {
+            root
+        }
     }
 }
 
@@ -1451,6 +2831,7 @@ rename to new_name.rs
             harness_session_cwd: None,
             space_id: None,
             last_seen_at: None,
+            settled_at: None,
         }
     }
 

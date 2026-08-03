@@ -13,13 +13,14 @@ DAEMON_DIR=/tmp/comet-demo-daemon
 UI_DIR=/tmp/comet-demo-ui
 IPC=27921
 DELAY=""
+DEMO_TOKEN="demo@demo-org"
 [[ "${1:-}" == "--slow" ]] && DELAY=350
 
 echo "▸ building (first run takes a few minutes)…"
 cargo build -p comet -q
 
 echo "▸ starting engine daemon on :$IPC"
-env COMET_DATA_DIR="$DAEMON_DIR" COMET_IPC_PORT=$IPC COMET_HARNESS=mock \
+env COMET_DATA_DIR="$DAEMON_DIR" COMET_IPC_PORT=$IPC COMET_HARNESS=mock COMET_EDGE_TOKEN="$DEMO_TOKEN" \
   ${DELAY:+COMET_MOCK_DELAY_MS=$DELAY} RUST_LOG=warn \
   ./target/debug/comet headless &
 DAEMON_PID=$!
@@ -62,4 +63,4 @@ if [[ ! -f "$DAEMON_DIR/.demo-seeded" ]]; then
 fi
 
 echo "▸ opening comet (composer is live — type into it; --slow shows streaming)"
-COMET_DATA_DIR="$UI_DIR" COMET_IPC_PORT=$IPC RUST_LOG=warn ./target/debug/comet
+COMET_DATA_DIR="$UI_DIR" COMET_IPC_PORT=$IPC COMET_EDGE_TOKEN="$DEMO_TOKEN" RUST_LOG=warn ./target/debug/comet

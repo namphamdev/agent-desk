@@ -8,6 +8,7 @@ import SwiftUI
 enum Route: Hashable {
     case space(String)
     case chat(String)
+    case activity
     case newSession(spaceId: String)
 }
 
@@ -15,6 +16,8 @@ struct HomeView: View {
     @Environment(AppModel.self) private var model
     @State private var path: [Route] = []
     @State private var showNewSpace = false
+    @State private var showDeviceSettings = false
+    @State private var showNotificationSettings = false
 
     var body: some View {
         NavigationStack(path: $path) {
@@ -26,15 +29,14 @@ struct HomeView: View {
             .environment(\.defaultMinListRowHeight, 10)
             .contentMargins(.top, 2, for: .scrollContent)
             .scrollContentBackground(.hidden)
-            .scrollEdgeEffectStyle(.soft, for: .top)
             .background(Theme.surface.ignoresSafeArea())
             .navigationTitle("Comet")  // feeds the back menu; not displayed
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar(removing: .title)
             .navigationDestination(for: Route.self) { route in
                 switch route {
                 case .space(let id): SpaceView(spaceId: id, path: $path)
                 case .chat(let id): SessionView(chatId: id)
+                case .activity: ActivityView(path: $path)
                 case .newSession(let spaceId): NewSessionView(spaceId: spaceId, path: $path)
                 }
             }
@@ -49,8 +51,22 @@ struct HomeView: View {
                             .accessibilityLabel("Connecting")
                     }
                 }
-                // Bare spinner — no glass capsule behind it.
-                .sharedBackgroundVisibility(.hidden)
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        path.append(.activity)
+                    } label: {
+                        Image(systemName: "bell")
+                            .overlay(alignment: .topTrailing) {
+                                if model.activityChats.contains(where: { $0.unseen && model.indicator(for: $0) == .completed }) {
+                                    Circle()
+                                        .fill(Theme.accent)
+                                        .frame(width: 6, height: 6)
+                                        .offset(x: 3, y: -2)
+                                }
+                            }
+                    }
+                    .accessibilityLabel("Activity")
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
                         showNewSpace = true
@@ -64,6 +80,18 @@ struct HomeView: View {
                         if model.demo != nil {
                             Text("Demo mode")
                         }
+                            Button("ACP and providers") {
+                                showDeviceSettings = true
+                            }
+                        Button {
+                            showNotificationSettings = true
+                        } label: {
+                            if model.notifications.canSendNotifications {
+                                Label("Notifications", systemImage: "bell.fill")
+                            } else {
+                                Label("Notifications", systemImage: "bell.slash")
+                            }
+                        }
                         Button("Sign out", role: .destructive) { model.signOut() }
                     } label: {
                         Image(systemName: "person.circle")
@@ -75,8 +103,18 @@ struct HomeView: View {
                     path.append(.space(spaceId))
                 }
             }
+            .sheet(isPresented: $showDeviceSettings) {
+                DeviceSettingsView()
+            }
+            .sheet(isPresented: $showNotificationSettings) {
+                NotificationSettingsView()
+            }
             .task(id: model.overviewChats.map(\.id).joined()) {
                 model.preloadSessions()
+                model.scanSessionStatuses()
+            }
+            .task(id: model.sessionStatusFingerprint) {
+                model.scanSessionStatuses()
             }
             .onAppear {
                 if let route = model.launchRoute {
@@ -168,6 +206,162 @@ struct HomeView: View {
             .foregroundStyle(Theme.textMuted.opacity(0.6))
             .textCase(nil)
             .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 3, trailing: 16))
+    }
+}
+
+// MARK: - Activity
+
+struct ActivityView: View {
+    @Environment(AppModel.self) private var model
+    @Binding var path: [Route]
+    @State private var showDone = false
+
+    private var active: [Chat] {
+        model.activityChats.filter { $0.settledAt == nil }
+    }
+
+    private var done: [Chat] {
+        model.activityChats.filter { $0.settledAt != nil }
+    }
+
+    var body: some View {
+        List {
+            activitySection("Needs attention", chats: active.filter {
+                let indicator = model.indicator(for: $0)
+                return indicator == .awaitingInput || indicator == .errored
+            })
+            activitySection("Completed", chats: active.filter {
+                model.indicator(for: $0) == .completed
+            })
+            activitySection("Running", chats: active.filter {
+                model.indicator(for: $0) == .working
+            })
+            activitySection("Seen", chats: active.filter {
+                model.indicator(for: $0) == .idle
+            })
+
+            if !done.isEmpty {
+                Section {
+                    if showDone {
+                        ForEach(done) { chat in
+                            activityRow(chat, dimmed: true)
+                        }
+                    }
+                } header: {
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            showDone.toggle()
+                        }
+                    } label: {
+                        HStack {
+                            Text("Done")
+                            Spacer()
+                            Text("\(done.count)")
+                                .foregroundStyle(Theme.textFaint)
+                            Image(systemName: showDone ? "chevron.down" : "chevron.right")
+                        }
+                    }
+                    .font(Theme.sans(11, weight: .medium))
+                    .foregroundStyle(Theme.textMuted.opacity(0.7))
+                    .textCase(nil)
+                }
+            }
+        }
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+        .background(Theme.surface.ignoresSafeArea())
+        .navigationTitle("Activity")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Menu {
+                    Button("Mark all as read") {
+                        model.markAllActivityRead()
+                    }
+                } label: {
+                    Image(systemName: "line.3.horizontal.decrease.circle")
+                }
+                .accessibilityLabel("Activity filters")
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func activitySection(_ title: String, chats: [Chat]) -> some View {
+        if !chats.isEmpty {
+            Section {
+                ForEach(chats) { chat in
+                    activityRow(chat)
+                }
+            } header: {
+                Text(title)
+                    .font(Theme.sans(11, weight: .medium))
+                    .foregroundStyle(Theme.textMuted.opacity(0.6))
+                    .textCase(nil)
+            }
+        }
+    }
+
+    private func activityRow(_ chat: Chat, dimmed: Bool = false) -> some View {
+        Button {
+            model.markSeen(chatId: chat.id)
+            path.append(.chat(chat.id))
+        } label: {
+            ActivityRow(chat: chat, dimmed: dimmed)
+        }
+        .buttonStyle(PressWashButtonStyle())
+        .listRowBackground(Color.clear)
+        .listRowSeparator(.hidden)
+        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+            Button {
+                model.setSettled(chatId: chat.id, settled: chat.settledAt == nil)
+            } label: {
+                Label(chat.settledAt == nil ? "Done" : "Undo", systemImage: chat.settledAt == nil ? "checkmark" : "arrow.uturn.backward")
+            }
+            .tint(Theme.surfaceRaised)
+        }
+    }
+}
+
+private struct ActivityRow: View {
+    @Environment(AppModel.self) private var model
+    let chat: Chat
+    var dimmed: Bool
+
+    var body: some View {
+        let indicator = model.indicator(for: chat)
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 7) {
+                StatusRail(indicator: indicator)
+                if let harness = chat.config?.harness {
+                    HarnessBadge(harness: harness, size: 12, dimmed: dimmed, neutral: Theme.textMuted)
+                }
+                Text(chat.displayTitle)
+                    .font(Theme.sans(13, weight: .medium))
+                    .foregroundStyle(dimmed ? Theme.textMuted : Theme.text)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+                if chat.unseen {
+                    Circle().fill(Theme.accent).frame(width: 5, height: 5)
+                }
+            }
+            HStack(spacing: 5) {
+                Text(model.space(for: chat)?.displayName ?? "Unknown project")
+                if let branch = chat.branch, !branch.isEmpty {
+                    Text("·")
+                    Text(branch)
+                }
+                Spacer(minLength: 0)
+                Text(indicator.activityLabel)
+            }
+            .font(Theme.sans(11))
+            .foregroundStyle(dimmed ? Theme.textFaint : Theme.textMuted.opacity(0.65))
+            .lineLimit(1)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 7)
+        .opacity(dimmed ? 0.65 : 1)
+        .contentShape(RoundedRectangle(cornerRadius: 8))
     }
 }
 

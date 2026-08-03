@@ -64,7 +64,7 @@ struct ComposerShell<Chips: View>: View {
             }
         }
         .background(whiteAlpha(0.04), in: RoundedRectangle(cornerRadius: 28))
-        .glassEffect(.regular.interactive(), in: RoundedRectangle(cornerRadius: 28))
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 28))
         .overlay(RoundedRectangle(cornerRadius: 28).strokeBorder(whiteAlpha(0.05), lineWidth: 1))
         // Focus-widen: margins pull in slightly while typing (chat-session.tsx).
         .padding(.horizontal, focused ? 10 : 16)
@@ -254,7 +254,7 @@ struct QuestionPanel: View {
             }
         }
         .padding(16)
-        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 26))
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 26))
         .overlay(RoundedRectangle(cornerRadius: 26).strokeBorder(whiteAlpha(0.05), lineWidth: 1))
         .padding(.horizontal, 12)
         .transition(.opacity)

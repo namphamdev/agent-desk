@@ -49,6 +49,7 @@ fn chat(id: &str, title: &str) -> Chat {
         harness_session_cwd: None,
         space_id: Some("s1".into()),
         last_seen_at: Some(Utc::now()),
+        settled_at: None,
     }
 }
 
@@ -490,6 +491,9 @@ fn a_working_session_animates_and_an_idle_one_does_not() {
         status: SessionStatus::Working,
         started_at: None,
         updated_at: Utc::now(),
+        agent_running: true,
+        memory_rss_bytes: None,
+        memory_sampled_at: None,
     }]));
     assert!(app.animating());
     // The loaders read a clock, so two draws a beat apart must differ —
@@ -672,6 +676,9 @@ fn the_working_strip_reports_elapsed_time() {
         status: SessionStatus::Working,
         started_at: Some(Utc::now() - chrono::Duration::seconds(11)),
         updated_at: Utc::now(),
+        agent_running: true,
+        memory_rss_bytes: None,
+        memory_sampled_at: None,
     }]));
     let screen = joined(&snapshot(&mut app, 100, 24));
     assert!(screen.contains("Working"), "{screen}");
@@ -779,6 +786,9 @@ fn a_selected_row_keeps_its_status_colour() {
         status: SessionStatus::AwaitingInput,
         started_at: None,
         updated_at: Utc::now(),
+        agent_running: true,
+        memory_rss_bytes: None,
+        memory_sampled_at: None,
     }]));
     // Park the cursor on that session.
     app.cursor = app
@@ -1503,6 +1513,9 @@ fn every_loader_on_screen_is_the_same_one() {
         status: SessionStatus::Working,
         started_at: Some(Utc::now()),
         updated_at: Utc::now(),
+        agent_running: true,
+        memory_rss_bytes: None,
+        memory_sampled_at: None,
     }]));
     let (expected, _) = comet_tui::loaders::mini_spinner(app.elapsed());
     let screen = joined(&snapshot(&mut app, 100, 28));

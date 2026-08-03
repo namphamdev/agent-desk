@@ -5,6 +5,7 @@
 //! sessions + docs + commands + minimal IPC. Terminals, repos/diffs, uploads, auth,
 //! agent accounts, and the device-room host land in later milestones.
 
+use std::ffi::c_char;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -12,15 +13,21 @@ pub use comet_proto::HarnessId;
 
 use comet_sync::DocsStore;
 
+pub mod acp_agents;
 pub mod agent_accounts;
 pub mod auth;
+pub mod context_engine;
+pub mod custom_providers;
 pub mod diff_sync;
 pub mod doc_host;
+pub mod git;
 pub mod instance_lock;
+pub mod project_harness;
 pub mod registry;
 pub mod repos;
 pub mod rpc;
 pub mod run_journal;
+pub mod session_summary;
 pub mod sessions;
 pub mod spaces;
 pub mod terminals;
@@ -28,12 +35,17 @@ pub mod titles;
 pub mod uploads;
 pub mod workspace_host;
 
+pub use acp_agents::{ACP_CONFIG_FILE, AcpAgents};
 pub use agent_accounts::{AgentAccounts, AgentAccountsConfig};
 pub use auth::{Auth, AuthConfig, AuthState, AuthUser, OrgMembership};
+pub use custom_providers::{CUSTOM_PROVIDERS_FILE, CustomProviders};
 pub use diff_sync::{CheckoutDiffSync, DiffSidecar, DiffSnapshot, capture_diff};
 pub use doc_host::{ChatDocHandle, DocHost, DocHostConfig, EdgeConfig};
 pub use instance_lock::InstanceLock;
-pub use registry::{HarnessDescriptor, HarnessRegistry, default_registry};
+pub use registry::{
+    HarnessDescriptor, HarnessRegistry, default_registry, default_registry_with_config,
+    default_registry_with_mcp,
+};
 pub use repos::{CheckoutIdentity, Repos, worktree_branch_from_title};
 pub use rpc::EngineRpc;
 pub use run_journal::{JournalError, RunJournal};
@@ -103,6 +115,8 @@ pub struct EngineCore {
     pub spaces_sync: SpacesSync,
     pub uploads: Uploads,
     pub agent_accounts: AgentAccounts,
+    pub acp_agents: AcpAgents,
+    pub custom_providers: CustomProviders,
     pub device_id: String,
     /// Auth service (attached by [`Engine::run`]; a lazy dev-mode instance otherwise).
     auth: std::sync::Mutex<Option<Auth>>,
@@ -186,6 +200,8 @@ impl EngineCore {
         let terminals = Terminals::new();
         let uploads = Uploads::new(data_dir, edge.clone());
         let agent_accounts = AgentAccounts::new(AgentAccountsConfig::detect(data_dir));
+        let acp_agents = AcpAgents::new(data_dir);
+        let custom_providers = CustomProviders::new(data_dir);
         sessions.set_titles(TitleGenerator::new(
             workspace.clone(),
             registry.clone(),
@@ -204,6 +220,8 @@ impl EngineCore {
             spaces_sync,
             uploads,
             agent_accounts,
+            acp_agents,
+            custom_providers,
             device_id,
             auth: std::sync::Mutex::new(None),
             links: std::sync::Mutex::new(None),
@@ -316,6 +334,8 @@ impl EngineCore {
             self.diff_sync.clone(),
             self.uploads.clone(),
             self.agent_accounts.clone(),
+            self.acp_agents.clone(),
+            self.custom_providers.clone(),
         )
         .with_auth(self.auth());
         if let Some(links) = self.links() {
@@ -349,6 +369,7 @@ pub struct Engine {
 pub struct EngineRuntime {
     core: EngineCore,
     _host_relay: Option<comet_rpc::HostRelay>,
+    context_engine: tokio::sync::Mutex<Option<context_engine::ManagedContextEngine>>,
 }
 
 impl EngineRuntime {
@@ -358,6 +379,9 @@ impl EngineRuntime {
 
     pub async fn shutdown(&self) {
         self.core.shutdown().await;
+        if let Some(context_engine) = self.context_engine.lock().await.as_mut() {
+            context_engine.shutdown().await;
+        }
     }
 }
 
@@ -396,6 +420,21 @@ impl Engine {
         config: &EngineConfig,
         auth: Auth,
     ) -> anyhow::Result<EngineRuntime> {
+        let context_engine = if !context_engine::enabled(&config.data_dir) {
+            tracing::info!("managed context engine disabled");
+            None
+        } else {
+            match context_engine::ManagedContextEngine::start(&config.data_dir).await {
+                Ok(engine) => Some(engine),
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        "context engine unavailable; continuing without code-context MCP"
+                    );
+                    None
+                }
+            }
+        };
         let online = (auth.workos_enabled() || config.edge_token.is_some())
             && auth.access_token().await.is_some();
         let edge = online.then(|| EdgeConfig::new(config.edge_url.clone(), Arc::new(auth.clone())));
@@ -418,7 +457,15 @@ impl Engine {
             .unwrap_or_else(|| env_or("COMET_USER_ID", DEFAULT_USER_ID));
         let core = EngineCore::assemble_with_identity(
             &config.data_dir,
-            Arc::new(default_registry()),
+            Arc::new(default_registry_with_config(
+                context_engine.as_ref().map(|_| context_engine::MCP_URL),
+                Some(config.data_dir.join(ACP_CONFIG_FILE)),
+                Some(
+                    config
+                        .data_dir
+                        .join(custom_providers::CUSTOM_PROVIDERS_FILE),
+                ),
+            )),
             config.default_harness,
             edge.clone(),
             &org_id,
@@ -456,6 +503,7 @@ impl Engine {
         Ok(EngineRuntime {
             core,
             _host_relay: host_relay,
+            context_engine: tokio::sync::Mutex::new(context_engine),
         })
     }
 
@@ -692,9 +740,27 @@ async fn run_org_onboarding(auth: Auth) {
 }
 
 /// Best-effort human name for this device's registry row (hostname).
+///
+/// `COMET_DEVICE_NAME` wins, then the real OS hostname (getaddrinfo-backed
+/// `gethostname`, which also works on macOS), then `HOSTNAME`, then
+/// `/etc/hostname` — the last two cover stripped-down containers that lack
+/// `gethostname`. The final fallback (docker-in-docker with no hostname) keeps
+/// the registry row non-empty.
 fn local_device_name() -> String {
     std::env::var("COMET_DEVICE_NAME")
         .ok()
+        .or_else(|| {
+            let mut buf = [0 as c_char; 256];
+            // SAFETY: `buf` is a writable, properly-aligned 256-byte buffer;
+            // libc guarantees `gethostname` writes at most `buf.len() - 1` bytes
+            // plus a NUL terminator. An error (e.g. a weirdly short hostname
+            // buffer in some containers) just falls through to the next source.
+            if unsafe { libc::gethostname(buf.as_mut_ptr(), buf.len()) } == 0 {
+                let bytes = unsafe { std::ffi::CStr::from_ptr(buf.as_ptr()) }.to_bytes();
+                return Some(unsafe { std::str::from_utf8_unchecked(bytes) }.to_string());
+            }
+            None
+        })
         .or_else(|| std::env::var("HOSTNAME").ok())
         .or_else(|| std::fs::read_to_string("/etc/hostname").ok())
         .map(|s| s.trim().to_string())

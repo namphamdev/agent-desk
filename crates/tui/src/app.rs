@@ -1100,6 +1100,9 @@ impl App {
                     // `harnessSessionId` on the chat row); a client that guessed
                     // here would fight it.
                     resume: None,
+                    seed: None,
+                    seed_purpose: None,
+                    seed_role: None,
                     attachments: Vec::new(),
                 },
                 message_id: message_id.clone(),
@@ -1186,6 +1189,9 @@ impl App {
                 sandbox: SandboxLevel::WorkspaceWrite,
                 auto_approve: false,
                 resume: None,
+                seed: None,
+                seed_purpose: None,
+                seed_role: None,
                 attachments: Vec::new(),
             },
             message_id: message_id.clone(),
@@ -1227,6 +1233,7 @@ impl App {
             reasoning: draft.reasoning,
             model_options: Default::default(),
             sandbox: SandboxLevel::WorkspaceWrite,
+            permission_mode: Default::default(),
         });
         effects.push(Command::StartSession(Box::new(crate::link::StartSession {
             chat_id,
@@ -2134,6 +2141,7 @@ impl App {
             reasoning: None,
             model_options: Default::default(),
             sandbox: SandboxLevel::WorkspaceWrite,
+            permission_mode: Default::default(),
         });
         config.reasoning = Some(level);
         let Ok(value) = serde_json::to_value(&config) else {
@@ -2164,6 +2172,7 @@ impl App {
             reasoning: None,
             model_options: Default::default(),
             sandbox: SandboxLevel::WorkspaceWrite,
+            permission_mode: Default::default(),
         });
         config.model = Some(model.id.clone());
         // Keep the reasoning level only if the new model offers it.
@@ -2353,6 +2362,7 @@ mod tests {
             harness_session_cwd: None,
             space_id: Some(space_id.into()),
             last_seen_at: None,
+            settled_at: None,
         }
     }
 
@@ -2363,6 +2373,9 @@ mod tests {
             status,
             started_at: None,
             updated_at: Utc::now() - chrono::Duration::seconds(age_secs),
+            agent_running: status != SessionStatus::Idle,
+            memory_rss_bytes: None,
+            memory_sampled_at: None,
         }
     }
 

@@ -12,12 +12,13 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ops::Range;
 use std::rc::Rc;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
 use gpui::{
-    AnyElement, BorderStyle, Bounds, FontStyle, FontWeight, Hsla, InteractiveText, SharedString,
-    StyledText, TextRun, UnderlineStyle, Window, canvas, div, font, point, prelude::*, px, quad,
-    size,
+    AnyElement, BorderStyle, Bounds, FontStyle, FontWeight, Hsla, Image, ImageFormat,
+    InteractiveText, MouseButton, ScrollHandle, SharedString, StyledText, TextRun, UnderlineStyle,
+    Window, canvas, div, font, img, point, prelude::*, px, quad, relative, size,
 };
 
 use crate::theme::Theme;
@@ -58,7 +59,7 @@ pub const TABLE_MIN_COLUMN_CONTENT: f32 = 48.0;
 pub const TABLE_MIN_COLUMN_WIDTH: f32 = 96.0;
 /// Hairline tone (comet md theme `table.borderColor`: rgba(255,255,255,0.1)).
 pub fn table_hairline() -> Hsla {
-    crate::theme::white_alpha(0.10)
+    crate::theme::hairline(0.10)
 }
 
 /// Options for one rendered tree (a transcript row or a whole live message).
@@ -114,10 +115,16 @@ impl RenderOptions {
 /// below that boundary is byte-identical and its flatten result (and, via
 /// gpui's line-layout cache keyed on identical text+runs, its shaping) can be
 /// reused as-is. `SharedString`/`Rc` make the reuse O(1) per block.
+/// Cached runs carry a resolved [`gpui::Hsla`] per span, so an entry is only
+/// valid for the palette that produced it — content-only keys silently serve
+/// dark-mode text onto a light background after an appearance switch.
+/// [`RenderCache::sync_palette`] drops everything when the palette moves.
 #[derive(Default)]
 pub struct RenderCache {
     flats: HashMap<(SharedString, usize, usize), Rc<FlatText>>,
     code: HashMap<(SharedString, usize, usize), Rc<CachedCode>>,
+    /// The [`crate::theme::theme_generation`] these entries were shaped under.
+    generation: u32,
 }
 
 /// Cached per-line code runs (validity: code length + highlight identity).
@@ -138,6 +145,16 @@ impl RenderCache {
     pub fn clear(&mut self) {
         self.flats.clear();
         self.code.clear();
+    }
+
+    /// Drop every entry if the palette changed since they were shaped. Cheap
+    /// enough (one relaxed atomic load) to call on every cache access.
+    fn sync_palette(&mut self) {
+        let generation = crate::theme::theme_generation();
+        if self.generation != generation {
+            self.clear();
+            self.generation = generation;
+        }
     }
 }
 
@@ -208,6 +225,7 @@ pub fn render_block(
             theme,
             highlight,
         ),
+        Block::Mermaid { code } => render_mermaid(code, top_ix, ix, opts, theme),
         Block::BlockQuote { children } => div()
             // Accent-tinted quote: indigo rail + a whisper of the same hue
             // behind it (the inline-code treatment, dialed down).
@@ -307,6 +325,405 @@ fn heading_metrics(level: u8) -> (f32, f32) {
         3 => (15.0, 22.0),
         _ => (14.0, 22.0),
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MermaidDirection {
+    TopDown,
+    LeftRight,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct MermaidEdge {
+    from: String,
+    to: String,
+    label: Option<String>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct MermaidFlowchart {
+    direction: MermaidDirection,
+    nodes: Vec<(String, String)>,
+    edges: Vec<MermaidEdge>,
+}
+
+/// Parse the useful, portable subset of Mermaid flowcharts. Mermaid's browser
+/// runtime is not available in the native client, so diagrams are deliberately
+/// parsed locally and rendered with GPUI elements. Unsupported diagram kinds
+/// retain their source in the diagram card rather than being silently dropped.
+fn parse_mermaid_flowchart(source: &str) -> Option<MermaidFlowchart> {
+    let mut statements = source
+        .lines()
+        .flat_map(|line| line.split(';'))
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with("%%"));
+    let header = statements.next()?;
+    let mut header_parts = header.split_whitespace();
+    if !matches!(header_parts.next()?, "flowchart" | "graph") {
+        return None;
+    }
+    let direction = match header_parts
+        .next()
+        .unwrap_or("TD")
+        .to_ascii_uppercase()
+        .as_str()
+    {
+        "LR" | "RL" => MermaidDirection::LeftRight,
+        _ => MermaidDirection::TopDown,
+    };
+    let mut chart = MermaidFlowchart {
+        direction,
+        nodes: Vec::new(),
+        edges: Vec::new(),
+    };
+    for statement in statements {
+        let Some((left, rest)) = split_mermaid_edge(statement) else {
+            continue;
+        };
+        let (edge_label, right) = if let Some(rest) = rest.strip_prefix('|') {
+            let Some((label, right)) = rest.split_once('|') else {
+                continue;
+            };
+            (
+                Some(label.trim().to_string()).filter(|s| !s.is_empty()),
+                right,
+            )
+        } else {
+            (None, rest)
+        };
+        let (from_id, from_label) = mermaid_node(left);
+        let (to_id, to_label) = mermaid_node(right);
+        if from_id.is_empty() || to_id.is_empty() {
+            continue;
+        }
+        add_mermaid_node(&mut chart.nodes, from_id.clone(), from_label);
+        add_mermaid_node(&mut chart.nodes, to_id.clone(), to_label);
+        chart.edges.push(MermaidEdge {
+            from: from_id,
+            to: to_id,
+            label: edge_label,
+        });
+    }
+    (!chart.nodes.is_empty()).then_some(chart)
+}
+
+fn split_mermaid_edge(statement: &str) -> Option<(&str, &str)> {
+    // Check longer arrows first, so `-.->` does not get mistaken for `->`.
+    ["-->", "==>", "-.->", "---"]
+        .iter()
+        .filter_map(|arrow| statement.find(arrow).map(|at| (at, arrow.len())))
+        .min_by_key(|(at, _)| *at)
+        .map(|(at, len)| (statement[..at].trim(), statement[at + len..].trim()))
+}
+
+fn mermaid_node(raw: &str) -> (String, String) {
+    let raw = raw.trim();
+    let id_end = raw
+        .find(|c: char| matches!(c, '[' | '(' | '{' | '"' | ' '))
+        .unwrap_or(raw.len());
+    let id = raw[..id_end].trim().to_string();
+    let label = raw[id_end..]
+        .trim()
+        .trim_matches(|c| matches!(c, '[' | ']' | '(' | ')' | '{' | '}' | '"'))
+        .trim();
+    (
+        id.clone(),
+        (!label.is_empty()).then(|| label.to_string()).unwrap_or(id),
+    )
+}
+
+fn add_mermaid_node(nodes: &mut Vec<(String, String)>, id: String, label: String) {
+    if let Some((_, existing_label)) = nodes.iter_mut().find(|(existing, _)| *existing == id) {
+        if existing_label == &id && label != id {
+            *existing_label = label;
+        }
+    } else {
+        nodes.push((id, label));
+    }
+}
+
+fn mermaid_images() -> &'static Mutex<HashMap<String, Arc<Image>>> {
+    static IMAGES: OnceLock<Mutex<HashMap<String, Arc<Image>>>> = OnceLock::new();
+    IMAGES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[derive(Default)]
+struct MermaidViewer {
+    zoom: f32,
+    drag_anchor: Option<gpui::Point<gpui::Pixels>>,
+    scroll: ScrollHandle,
+}
+
+thread_local! {
+    static MERMAID_VIEWERS: RefCell<HashMap<String, MermaidViewer>> = RefCell::new(HashMap::new());
+}
+
+fn mermaid_viewer(key: &str) -> (f32, ScrollHandle) {
+    MERMAID_VIEWERS.with(|viewers| {
+        let mut viewers = viewers.borrow_mut();
+        let viewer = viewers
+            .entry(key.to_string())
+            .or_insert_with(|| MermaidViewer {
+                zoom: 1.0,
+                ..Default::default()
+            });
+        (viewer.zoom, viewer.scroll.clone())
+    })
+}
+
+fn set_mermaid_zoom(key: &str, change: f32) {
+    MERMAID_VIEWERS.with(|viewers| {
+        let mut viewers = viewers.borrow_mut();
+        let viewer = viewers
+            .entry(key.to_string())
+            .or_insert_with(|| MermaidViewer {
+                zoom: 1.0,
+                ..Default::default()
+            });
+        viewer.zoom = (viewer.zoom + change).clamp(0.5, 3.0);
+    });
+}
+
+/// Wheel and two-finger scroll deltas are inverted so scrolling up zooms in.
+/// Pixel deltas come from touchpads; line deltas come from discrete wheels.
+fn mermaid_wheel_zoom(delta: gpui::ScrollDelta) -> f32 {
+    let y = match delta {
+        gpui::ScrollDelta::Pixels(delta) => f32::from(delta.y) / 240.0,
+        gpui::ScrollDelta::Lines(delta) => delta.y / 12.0,
+    };
+    (-y).clamp(-0.25, 0.25)
+}
+
+/// Render Mermaid source with `mermaid-rs-renderer` to a native SVG image.
+/// The cache keeps streaming transcript frames from recomputing layout.
+fn render_mermaid(
+    source: &str,
+    top_ix: usize,
+    ix: usize,
+    opts: &RenderOptions,
+    theme: &Theme,
+) -> AnyElement {
+    let viewer_key = format!("{}-mermaid-{top_ix}-{ix}", opts.row_key);
+    if let Some(image) = mermaid_images()
+        .lock()
+        .expect("Mermaid cache poisoned")
+        .get(source)
+        .cloned()
+    {
+        return mermaid_image_card(image, viewer_key);
+    }
+    let mut render_options = mermaid_rs_renderer::RenderOptions::default();
+    // The renderer's outer Y padding becomes a conspicuous empty band in a
+    // transcript. The card has no vertical inset either, so a diagram starts
+    // and ends at its actual SVG bounds.
+    render_options.layout.requirement.render_padding_y = 0.0;
+    let Ok(svg) = mermaid_rs_renderer::render_with_options(source, render_options) else {
+        return render_mermaid_fallback(source, theme);
+    };
+    let image = Arc::new(Image::from_bytes(ImageFormat::Svg, svg.into_bytes()));
+    mermaid_images()
+        .lock()
+        .expect("Mermaid cache poisoned")
+        .insert(source.to_string(), image.clone());
+    mermaid_image_card(image, viewer_key)
+}
+
+fn mermaid_image_card(image: Arc<Image>, viewer_key: String) -> AnyElement {
+    let (zoom, scroll) = mermaid_viewer(&viewer_key);
+    let zoom_button = |label: &'static str, change: f32| {
+        let key = viewer_key.clone();
+        div()
+            .id(SharedString::from(format!("{key}-zoom-{label}")))
+            .h(px(22.0))
+            .w(px(22.0))
+            .rounded(px(4.0))
+            .bg(crate::theme::white_alpha(0.10))
+            .hover(|el| el.bg(crate::theme::white_alpha(0.18)))
+            .flex()
+            .items_center()
+            .justify_center()
+            .cursor_pointer()
+            .text_size(px(15.0))
+            .text_color(gpui::white())
+            .on_click(move |_, window, _| {
+                set_mermaid_zoom(&key, change);
+                window.refresh();
+            })
+            .child(label)
+    };
+    let pan_key = viewer_key.clone();
+    let drag_key = viewer_key.clone();
+    let release_key = viewer_key.clone();
+    let wheel_key = viewer_key.clone();
+    let pinch_key = viewer_key.clone();
+    div()
+        .relative()
+        .rounded(px(10.0))
+        .border_1()
+        .border_color(crate::theme::white_alpha(0.14))
+        .bg(crate::theme::white_alpha(0.035))
+        .overflow_hidden()
+        .child(
+            div()
+                .id(SharedString::from(format!("{viewer_key}-viewport")))
+                .w_full()
+                .max_h(px(560.0))
+                .overflow_scroll()
+                .track_scroll(&scroll)
+                .on_scroll_wheel(move |event, window, _| {
+                    let change = mermaid_wheel_zoom(event.delta);
+                    if change != 0.0 {
+                        set_mermaid_zoom(&wheel_key, change);
+                        window.prevent_default();
+                        window.refresh();
+                    }
+                })
+                .on_pinch(move |event, window, _| {
+                    if event.delta != 0.0 {
+                        set_mermaid_zoom(&pinch_key, event.delta);
+                        window.prevent_default();
+                        window.refresh();
+                    }
+                })
+                .on_mouse_down(MouseButton::Left, move |event, window, _| {
+                    MERMAID_VIEWERS.with(|viewers| {
+                        viewers
+                            .borrow_mut()
+                            .entry(drag_key.clone())
+                            .or_default()
+                            .drag_anchor = Some(event.position);
+                    });
+                    window.prevent_default();
+                })
+                .on_mouse_move(move |event, window, _| {
+                    if event.pressed_button != Some(MouseButton::Left) {
+                        return;
+                    }
+                    MERMAID_VIEWERS.with(|viewers| {
+                        let mut viewers = viewers.borrow_mut();
+                        let Some(viewer) = viewers.get_mut(&pan_key) else {
+                            return;
+                        };
+                        let Some(anchor) = viewer.drag_anchor.replace(event.position) else {
+                            return;
+                        };
+                        let offset = viewer.scroll.offset();
+                        let max = viewer.scroll.max_offset();
+                        viewer.scroll.set_offset(point(
+                            (offset.x + event.position.x - anchor.x).clamp(-max.x, px(0.0)),
+                            (offset.y + event.position.y - anchor.y).clamp(-max.y, px(0.0)),
+                        ));
+                    });
+                    window.refresh();
+                })
+                .on_mouse_up(MouseButton::Left, move |_, _, _| {
+                    MERMAID_VIEWERS.with(|viewers| {
+                        if let Some(viewer) = viewers.borrow_mut().get_mut(&release_key) {
+                            viewer.drag_anchor = None;
+                        }
+                    });
+                })
+                .child(
+                    div()
+                        .w(relative(zoom))
+                        .flex_none()
+                        .child(img(image).w_full()),
+                ),
+        )
+        .child(
+            div()
+                .absolute()
+                .top(px(6.0))
+                .right(px(6.0))
+                .flex()
+                .gap(px(4.0))
+                .child(zoom_button("out", -0.25))
+                .child(zoom_button("in", 0.25)),
+        )
+        .into_any_element()
+}
+
+#[allow(dead_code)]
+fn render_mermaid_fallback(source: &str, theme: &Theme) -> AnyElement {
+    let chart = parse_mermaid_flowchart(source);
+    let title = chart
+        .as_ref()
+        .map(|_| "Flowchart")
+        .unwrap_or("Mermaid diagram");
+    let mut body = div().flex().flex_col().gap(px(8.0)).p(px(12.0));
+    if let Some(chart) = chart {
+        let horizontal = chart.direction == MermaidDirection::LeftRight;
+        let mut nodes = div().flex().gap(px(8.0));
+        if horizontal {
+            nodes = nodes.flex_row();
+        } else {
+            nodes = nodes.flex_col();
+        }
+        for (index, (_, label)) in chart.nodes.iter().enumerate() {
+            if index > 0 {
+                let arrow = if horizontal { "→" } else { "↓" };
+                nodes = nodes.child(
+                    div()
+                        .flex_none()
+                        .text_size(px(15.0))
+                        .text_color(theme.accent.opacity(0.8))
+                        .child(arrow),
+                );
+            }
+            nodes = nodes.child(
+                div()
+                    .flex_none()
+                    .rounded(px(6.0))
+                    .border_1()
+                    .border_color(theme.accent.opacity(0.5))
+                    .bg(theme.accent.opacity(0.10))
+                    .px(px(10.0))
+                    .py(px(6.0))
+                    .text_size(px(12.0))
+                    .text_color(theme.text)
+                    .child(SharedString::from(label.clone())),
+            );
+        }
+        body = body.child(nodes);
+        if chart.edges.len() > chart.nodes.len().saturating_sub(1) {
+            body = body.child(
+                div()
+                    .text_size(px(11.0))
+                    .text_color(theme.text_muted)
+                    .child(SharedString::from(format!(
+                        "{} connections",
+                        chart.edges.len()
+                    ))),
+            );
+        }
+    } else {
+        body = body.child(
+            div()
+                .font_family(theme.font_mono.clone())
+                .text_size(px(CODE_TEXT_SIZE))
+                .line_height(px(CODE_LINE_HEIGHT))
+                .text_color(theme.text_muted)
+                .child(SharedString::from(source.to_string())),
+        );
+    }
+    div()
+        .rounded(px(10.0))
+        .border_1()
+        .border_color(theme.border)
+        .bg(crate::theme::white_alpha(0.035))
+        .overflow_hidden()
+        .child(
+            div()
+                .px(px(12.0))
+                .py(px(5.0))
+                .border_b_1()
+                .border_color(theme.border)
+                .text_size(px(11.0))
+                .text_color(theme.text_muted)
+                .child(title),
+        )
+        .child(body)
+        .into_any_element()
 }
 
 /// Shared per-column table geometry (port of mugen `tableColumns`).
@@ -447,7 +864,12 @@ fn render_table(
                 TableAlign::Right => cell.text_right(),
             };
             if let Some(flat) = cell_flat {
-                cell = cell.child(flat_text_element(flat, table_cell_ix(ix, r, c), opts));
+                cell = cell.child(flat_text_element(
+                    flat,
+                    table_cell_ix(ix, r, c),
+                    opts,
+                    theme,
+                ));
             }
             row_el = row_el.child(cell);
         }
@@ -479,11 +901,11 @@ pub struct FlatText {
 /// Inline-code tint (round 9): the original is neutral (chat-view.tsx mdTheme
 /// `inlineCode: #f0f0f0 on white/8%`), but the user asked for "a nice purple"
 /// — violet-300 text over a violet-400 wash, readable on the #060606 panel.
-pub fn inline_code_text() -> Hsla {
-    crate::theme::oklch(0.811, 0.111, 293.571) // violet-300
+pub fn inline_code_text(theme: &Theme) -> Hsla {
+    theme.code_text // violet-300
 }
-pub fn inline_code_wash() -> Hsla {
-    crate::theme::oklch(0.702, 0.183, 293.541).opacity(0.12) // violet-400/12
+pub fn inline_code_wash(theme: &Theme) -> Hsla {
+    theme.code_wash // violet-400/12
 }
 /// Rounded-wash geometry: small radius on a slightly inset box (paint-only —
 /// x extends 2px past the glyphs, y insets 2px from the 22px line box).
@@ -539,7 +961,7 @@ fn flatten_runs_weighted(runs: &[InlineRun], theme: &Theme, base_weight: FontWei
         // Inline code reads violet (see `inline_code_text`); everything else
         // stays the monochrome foreground.
         let color = if run.style.code {
-            inline_code_text()
+            inline_code_text(theme)
         } else {
             theme.text
         };
@@ -603,18 +1025,26 @@ fn flatten_cached(
     theme: &Theme,
 ) -> Rc<FlatText> {
     match &opts.cache {
-        Some(cache) => cache
-            .borrow_mut()
-            .flats
-            .entry((opts.row_key.clone(), top_ix, ix))
-            .or_insert_with(|| Rc::new(flatten_runs_weighted(runs, theme, base_weight)))
-            .clone(),
+        Some(cache) => {
+            let mut cache = cache.borrow_mut();
+            cache.sync_palette();
+            cache
+                .flats
+                .entry((opts.row_key.clone(), top_ix, ix))
+                .or_insert_with(|| Rc::new(flatten_runs_weighted(runs, theme, base_weight)))
+                .clone()
+        }
         None => Rc::new(flatten_runs_weighted(runs, theme, base_weight)),
     }
 }
 
 /// Veiled, clickable text for a flattened block (no sizing wrapper).
-fn flat_text_element(flat: &FlatText, ix: usize, opts: &RenderOptions) -> AnyElement {
+fn flat_text_element(
+    flat: &FlatText,
+    ix: usize,
+    opts: &RenderOptions,
+    theme: &Theme,
+) -> AnyElement {
     // Streaming veil: opacity-only recolor of the runs covering newly appended
     // chunks. Same text, same fonts, same lengths — layout is untouched.
     // Settled elements return no spans and reuse the cached runs unsplit.
@@ -648,10 +1078,11 @@ fn flat_text_element(flat: &FlatText, ix: usize, opts: &RenderOptions) -> AnyEle
     let sel_key: std::sync::Arc<str> = format!("{}:{ix}", opts.row_key).into();
     let code_ranges = flat.code_ranges.clone();
     let flat_text = flat.text.clone();
+    let wash = inline_code_wash(theme);
+    let sel_wash = selection_wash(theme);
     let underlay = canvas(
         |_, _, _| (),
         move |_, _, window, _| {
-            let wash = inline_code_wash();
             for range in &code_ranges {
                 for rect in range_rects(&layout, range, INLINE_CODE_PAD_X, INLINE_CODE_INSET_Y) {
                     window.paint_quad(quad(
@@ -669,7 +1100,7 @@ fn flat_text_element(flat: &FlatText, ix: usize, opts: &RenderOptions) -> AnyEle
                     window.paint_quad(quad(
                         rect,
                         px(0.0),
-                        selection_wash(),
+                        sel_wash,
                         px(0.0),
                         gpui::transparent_black(),
                         BorderStyle::default(),
@@ -699,8 +1130,8 @@ fn flat_text_element(flat: &FlatText, ix: usize, opts: &RenderOptions) -> AnyEle
 }
 
 /// Selection tint: the accent hue under the glyphs, dark-panel strength.
-fn selection_wash() -> Hsla {
-    crate::theme::oklch(0.673, 0.182, 276.935).opacity(0.35) // indigo-400
+fn selection_wash(theme: &Theme) -> Hsla {
+    theme.accent.opacity(0.35) // indigo-400
 }
 
 /// One painted text element, registered per frame in document order — the
@@ -851,7 +1282,7 @@ fn register_selection_listeners(
 /// text's own geometry. `pad_x` overhangs the box horizontally (inline code);
 /// `inset_y` shrinks it vertically — both 0 for a selection wash, which wants
 /// full-line-height boxes that tile seamlessly across wrapped rows.
-fn range_rects(
+pub(crate) fn range_rects(
     layout: &gpui::TextLayout,
     range: &Range<usize>,
     pad_x: f32,
@@ -923,7 +1354,7 @@ fn text_element(
         FontWeight::NORMAL
     };
     let flat = flatten_cached(runs, weight, top_ix, ix, opts, theme);
-    let inner = flat_text_element(&flat, ix, opts);
+    let inner = flat_text_element(&flat, ix, opts, theme);
     div()
         .text_size(px(size))
         .line_height(px(line_height))
@@ -969,6 +1400,7 @@ fn render_code_block(
     let cached: Rc<CachedCode> = match &opts.cache {
         Some(cache) => {
             let mut cache = cache.borrow_mut();
+            cache.sync_palette();
             let entry = cache
                 .code
                 .entry((opts.row_key.clone(), top_ix, ix))
@@ -1015,7 +1447,7 @@ fn render_code_block(
             .bg(crate::motion::hover_blend(
                 &fade_key,
                 gpui::transparent_black(),
-                crate::theme::white_alpha(0.08),
+                crate::theme::ink(0.08),
             ))
             .on_hover(crate::motion::hover_listener(fade_key))
             .text_size(px(10.5))
@@ -1036,7 +1468,7 @@ fn render_code_block(
         .rounded(px(10.0))
         // Faint white wash over the near-black panel ≈ #101010 (comet's code
         // surface), with the hairline border.
-        .bg(crate::theme::white_alpha(0.035))
+        .bg(crate::theme::ink(0.035))
         .border_1()
         .border_color(theme.border)
         .overflow_hidden()
@@ -1049,7 +1481,7 @@ fn render_code_block(
                     .border_b_1()
                     .border_color(theme.border)
                     // A whisper of tone separation between header and body.
-                    .bg(crate::theme::white_alpha(0.02))
+                    .bg(crate::theme::ink(0.02))
                     .text_size(px(11.0))
                     .text_color(theme.text_muted)
                     .child(SharedString::from(lang.to_string())),
@@ -1091,9 +1523,9 @@ fn render_code_block(
 /// asked for color; these are the diff pane's hues, now shared by both).
 pub fn token_color(class: TokenClass, theme: &Theme) -> Hsla {
     match class {
-        TokenClass::Keyword => crate::theme::oklch(0.709, 0.129, 20.0), // soft rose
-        TokenClass::StringLit => crate::theme::oklch(0.77, 0.11, 168.0), // soft green
-        TokenClass::Number => crate::theme::oklch(0.78, 0.12, 80.0),    // soft amber
+        TokenClass::Keyword => theme.syntax_keyword, // soft rose
+        TokenClass::StringLit => theme.syntax_string, // soft green
+        TokenClass::Number => theme.syntax_number,   // soft amber
         TokenClass::Comment => theme.text_faint,
     }
 }
@@ -1170,6 +1602,66 @@ mod tests {
     }
 
     #[test]
+    fn parses_flowchart_nodes_edges_labels_and_direction() {
+        let chart = parse_mermaid_flowchart(
+            "flowchart LR\nstart[Start] -->|continues| review{Review}\nreview --> done[Done]",
+        )
+        .expect("flowchart");
+        assert_eq!(chart.direction, MermaidDirection::LeftRight);
+        assert_eq!(
+            chart.nodes,
+            vec![
+                ("start".into(), "Start".into()),
+                ("review".into(), "Review".into()),
+                ("done".into(), "Done".into()),
+            ]
+        );
+        assert_eq!(chart.edges[0].label.as_deref(), Some("continues"));
+        assert_eq!(chart.edges[1].from, "review");
+        assert_eq!(chart.edges[1].to, "done");
+    }
+
+    #[test]
+    fn non_flowchart_mermaid_uses_source_fallback() {
+        assert!(parse_mermaid_flowchart("sequenceDiagram\nAlice->>Bob: Hi").is_none());
+    }
+
+    #[test]
+    fn mermaid_renderer_emits_svg_for_sequence_diagrams() {
+        let svg = mermaid_rs_renderer::render("sequenceDiagram\nAlice->>Bob: Hi")
+            .expect("sequence diagram SVG");
+        assert!(svg.contains("<svg"));
+    }
+
+    #[test]
+    fn mermaid_zoom_is_persistent_and_clamped() {
+        let key = "mermaid-zoom-test";
+        assert_eq!(mermaid_viewer(key).0, 1.0);
+        set_mermaid_zoom(key, 0.25);
+        assert_eq!(mermaid_viewer(key).0, 1.25);
+        set_mermaid_zoom(key, -10.0);
+        assert_eq!(mermaid_viewer(key).0, 0.5);
+        set_mermaid_zoom(key, 10.0);
+        assert_eq!(mermaid_viewer(key).0, 3.0);
+    }
+
+    #[test]
+    fn mermaid_wheel_direction_and_speed_are_bounded() {
+        assert_eq!(
+            mermaid_wheel_zoom(gpui::ScrollDelta::Lines(point(0.0, -3.0))),
+            0.25
+        );
+        assert_eq!(
+            mermaid_wheel_zoom(gpui::ScrollDelta::Pixels(point(px(0.0), px(24.0)))),
+            -0.1
+        );
+        assert_eq!(
+            mermaid_wheel_zoom(gpui::ScrollDelta::Pixels(point(px(0.0), px(-9_999.0)))),
+            0.25
+        );
+    }
+
+    #[test]
     fn code_line_runs_with_no_tokens_are_one_plain_run() {
         let theme = Theme::dark();
         let mono = font(theme.font_mono.clone());
@@ -1207,7 +1699,7 @@ mod tests {
         assert_eq!(flat.code_ranges, vec![4..9, 14..17]);
         // Code text is the violet tint; the square run background is gone
         // (the rounded wash is painted by the canvas underlay instead).
-        assert_eq!(flat.runs[1].color, inline_code_text());
+        assert_eq!(flat.runs[1].color, inline_code_text(&theme));
         assert_eq!(flat.runs[1].background_color, None);
         assert_eq!(flat.runs[0].color, theme.text);
     }

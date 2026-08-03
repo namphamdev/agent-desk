@@ -262,15 +262,20 @@ final class SessionStore {
 
     func sendRun(prompt: String, chat: Chat) {
         if offline {
+            ConfigDebug.trace("sendRun (demo/offline) chat=\(chat.id.prefix(8)) config model=\(chat.config?.model ?? "nil") reason=\(chat.config?.reasoning ?? "nil")")
             demoResponder?(prompt)
             return
         }
         let messageId = UUID().uuidString.lowercased()
+        let mode = chat.config?.effectivePermissionMode ?? .default
+        ConfigDebug.trace("sendRun chat=\(chat.id.prefix(8)) config model=\(chat.config?.model ?? "nil") reason=\(chat.config?.reasoning ?? "nil")")
         let request = RunRequest(prompt: prompt,
                                  model: chat.config?.model,
                                  reasoning: chat.config?.reasoning,
                                  cwd: chat.cwd ?? "",
-                                 sandbox: chat.config?.sandbox ?? "workspace-write")
+                                 sandbox: mode.sandbox,
+                                 autoApprove: mode.autoApprove,
+                                 permissionMode: mode)
         queueCommand(kind: "run", payload: [
             "kind": "run",
             "request": encodableJSON(request),
