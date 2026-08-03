@@ -113,13 +113,15 @@ impl AcpAgentsPage {
                         ],
                     )),
             )
-            .when(active, |row| row.child(widgets::badge_active("Active")))
+            .when(active, |row| {
+                row.child(widgets::badge_active(&theme, "Active"))
+            })
             .when(!active, |row| {
                 row.child(
                     widgets::ghost_action(theme)
                         .id(SharedString::from(format!("activate-acp-{id}")))
                         .when(busy, |button| button.opacity(0.5))
-                        .hover(widgets::ghost_hover)
+                        .hover(|s| widgets::ghost_hover(&theme, s))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             if this.busy_agent.is_none() {
                                 this.action(methods::ACTIVATE_ACP_AGENT, activate_id.clone(), cx);
@@ -132,7 +134,7 @@ impl AcpAgentsPage {
                 widgets::ghost_action(theme)
                     .id(SharedString::from(format!("remove-acp-{id}")))
                     .when(busy, |button| button.opacity(0.5))
-                    .hover(widgets::ghost_hover)
+                    .hover(|s| widgets::ghost_hover(&theme, s))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         if this.busy_agent.is_none() {
                             this.action(methods::REMOVE_ACP_AGENT, remove_id.clone(), cx);
@@ -192,7 +194,7 @@ impl AcpAgentsPage {
                     widgets::ghost_action(theme)
                         .id(SharedString::from(format!("install-acp-{id}")))
                         .when(!supported || busy, |button| button.opacity(0.45))
-                        .hover(widgets::ghost_hover)
+                        .hover(|s| widgets::ghost_hover(&theme, s))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             if supported && this.busy_agent.is_none() {
                                 this.action(methods::INSTALL_ACP_AGENT, id.clone(), cx);
@@ -283,9 +285,10 @@ impl gpui::Render for AcpAgentsPage {
                         .mt(px(24.0))
                         .child(widgets::row_title(&theme, "Official ACP registry"))
                         .when_some(snapshot.registry_error, |section, error| {
-                            section.child(widgets::warning_strip(format!(
-                                "Could not refresh the registry: {error}"
-                            )))
+                            section.child(widgets::warning_strip(
+                                &theme,
+                                format!("Could not refresh the registry: {error}"),
+                            ))
                         })
                         .child(
                             widgets::section_card(&theme)
@@ -326,7 +329,7 @@ impl gpui::Render for AcpAgentsPage {
                                 widgets::ghost_action(&theme)
                                     .id("refresh-acp-registry")
                                     .when(refreshing, |button| button.opacity(0.5))
-                                    .hover(widgets::ghost_hover)
+                                    .hover(|s| widgets::ghost_hover(&theme, s))
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         if !this.snapshot.is_loading() {
                                             this.load(cx);
@@ -342,7 +345,7 @@ impl gpui::Render for AcpAgentsPage {
                     ))
                     .when_some(self.snapshot.error().map(str::to_string), |page, error| {
                         page.child(
-                            widgets::error_strip(error)
+                            widgets::error_strip(&theme, error)
                                 .id("acp-load-error")
                                 .cursor_pointer()
                                 .on_click(cx.listener(|this, _, _, cx| this.load(cx))),
@@ -350,7 +353,7 @@ impl gpui::Render for AcpAgentsPage {
                     })
                     .when_some(self.error.clone(), |page, error| {
                         page.child(
-                            widgets::error_strip(error)
+                            widgets::error_strip(&theme, error)
                                 .id("acp-action-error")
                                 .cursor_pointer()
                                 .on_click(cx.listener(|this, _, _, cx| {

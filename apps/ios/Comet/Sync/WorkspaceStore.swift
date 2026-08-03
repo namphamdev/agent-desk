@@ -448,6 +448,8 @@ final class WorkspaceStore {
                 try row.insert(key: "config", v: value)
             }
         }
+        let readback = chats.first { $0.id == chatId }?.config
+        ConfigDebug.trace("WorkspaceStore.setChatConfig chat=\(chatId.prefix(8)) wrote model=\(chatConfig.model ?? "nil") readback model=\(readback?.model ?? "nil")")
     }
 
     private func updateChat(_ chatId: String, _ mutate: (LoroMap) throws -> Void) {

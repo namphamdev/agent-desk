@@ -6,6 +6,33 @@
 // run, and swaps straight into the live session.
 
 import SwiftUI
+import os
+
+/// Debug trace for the "Select model" sheet: logs every hop of a model
+/// selection (sheet → AppStorage/workspace row → read-back → run request) to
+/// unified logging (Console.app / `log stream --predicate 'subsystem ==
+/// "dev.cometnative.Comet"'`) and a `model-picks.log` file in Documents.
+/// Remove when model changes are confirmed working end-to-end.
+enum ConfigDebug {
+    static let log = Logger(subsystem: "dev.cometnative.Comet", category: "config")
+
+    static var logURL: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("model-picks.log")
+    }
+
+    static func trace(_ line: String) {
+        let stamped = "[\(Int(Date().timeIntervalSince1970))] \(line)"
+        log.info("\(stamped, privacy: .public)")
+        if let handle = try? FileHandle(forWritingTo: logURL) {
+            handle.seekToEndOfFile()
+            handle.write(Data((stamped + "\n").utf8))
+            try? handle.close()
+        } else {
+            try? Data((stamped + "\n").utf8).write(to: logURL)
+        }
+    }
+}
 
 struct NewSessionView: View {
     @Environment(AppModel.self) private var model
@@ -134,7 +161,10 @@ struct NewSessionView: View {
         .sheet(isPresented: $showPicker) {
             ModelPickerSheet(harness: $harness, modelId: Binding(
                 get: { selectedModel.id },
-                set: { storedModel = $0 }
+                set: { newModel in
+                    ConfigDebug.trace("new-session binding set model \(storedModel) -> \(newModel) (harness \(harness))")
+                    storedModel = newModel
+                }
             ), reasoning: Binding(
                 get: { reasoning },
                 set: { storedReasoning = $0 ?? "" }
@@ -343,6 +373,7 @@ struct NewSessionView: View {
         let config = ChatConfig(harness: harness, model: selectedModel.id,
                                 reasoning: reasoning, sandbox: permissionMode.sandbox,
                                 permissionMode: permissionMode)
+        ConfigDebug.trace("new-session send config harness=\(config.harness) model=\(config.model ?? "nil") reason=\(config.reasoning ?? "nil") mode=\(config.permissionMode?.rawValue ?? "nil")")
         Task { @MainActor in
             var cwd: String?
             var branch = selectedRef
@@ -490,6 +521,24 @@ struct ModelPickerSheet: View {
                         }
                     }
 
+                    // DEBUG: live config readout — what the sheet believes it
+                    // just wrote. Remove with the ConfigDebug instrumentation.
+                    VStack(alignment: .leading, spacing: 8) {
+                        SheetLabel("Debug: effective config")
+                        SheetCard {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("model: \(modelId)")
+                                Text("reasoning: \(reasoning ?? "nil")")
+                                Text("mode: \(permissionMode.rawValue)")
+                            }
+                            .font(Theme.mono(12))
+                            .foregroundStyle(Theme.textMuted)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 11)
+                        }
+                    }
+
                     if let checkout {
                         checkoutSection(checkout)
                     }
@@ -531,6 +580,7 @@ struct ModelPickerSheet: View {
             let fallback = HarnessCatalog.defaultModel(for: h.id)
             modelId = fallback.id
             reasoning = HarnessCatalog.defaultReasoning(for: fallback)
+            ConfigDebug.trace("picker harness switch -> \(h.id) model=\(fallback.id) reason=\(reasoning ?? "nil")")
         } label: {
             HStack(spacing: 7) {
                 HarnessBadge(harness: h.id, size: 15, dimmed: !selected)
@@ -548,9 +598,11 @@ struct ModelPickerSheet: View {
     private func select(model m: ModelInfo) {
         modelId = m.id
         if let current = reasoning, m.reasoningLevels.contains(current) {
+            ConfigDebug.trace("picker select model=\(m.id) harness=\(harness) reason kept=\(current)")
             return
         }
         reasoning = HarnessCatalog.defaultReasoning(for: m)
+        ConfigDebug.trace("picker select model=\(m.id) harness=\(harness) reason=\(reasoning ?? "nil")")
     }
 
     /// Checkout: read-only kind (fixed at creation — resume is cwd-scoped)

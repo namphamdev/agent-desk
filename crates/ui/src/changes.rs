@@ -37,7 +37,7 @@ use crate::motion::{self, AnimationExt as _, CHEVRON, COLLAPSE};
 use crate::popover;
 use crate::settings::composer::ComposerDefaults;
 use crate::state::{AppState, EngineHandle};
-use crate::theme::{Theme, oklch};
+use crate::theme::Theme;
 
 // ---------------------------------------------------------------------------
 // Layout numbers (analytic — they drive the fold tween)
@@ -1436,7 +1436,7 @@ impl Changes {
             .flex()
             .flex_col()
             .border_b_1()
-            .border_color(crate::theme::white_alpha(0.04))
+            .border_color(crate::theme::hairline(0.04))
             .child(header)
             .child(body)
             .into_any_element()
@@ -1492,9 +1492,9 @@ impl Changes {
             .items_center()
             .gap(px(8.0))
             .px(px(Theme::SPACE_MD))
-            .bg(crate::theme::white_alpha(0.025))
+            .bg(crate::theme::ink(0.025))
             .cursor_pointer()
-            .hover(|s| s.bg(crate::theme::white_alpha(0.05)))
+            .hover(|s| s.bg(crate::theme::ink(0.05)))
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.toggle_fold(&path, expanded_height);
                 cx.notify();
@@ -1507,7 +1507,7 @@ impl Changes {
                     .truncate()
                     .font_family(theme.font_mono.clone())
                     .text_size(px(12.0))
-                    .text_color(crate::theme::grey(0x98))
+                    .text_color(theme.text_dim)
                     .child(SharedString::from(file.path.clone())),
             )
             .when(file.binary, |el| {
@@ -1525,7 +1525,7 @@ impl Changes {
                         .flex_none()
                         .font_family(theme.font_mono.clone())
                         .text_size(px(11.0))
-                        .text_color(add_color())
+                        .text_color(add_color(theme))
                         .child(SharedString::from(format!("+{adds}"))),
                 )
             })
@@ -1535,7 +1535,7 @@ impl Changes {
                         .flex_none()
                         .font_family(theme.font_mono.clone())
                         .text_size(px(11.0))
-                        .text_color(del_color())
+                        .text_color(del_color(theme))
                         .child(SharedString::from(format!("−{dels}"))),
                 )
             })
@@ -1643,7 +1643,11 @@ impl Changes {
                                         title.to_lowercase()
                                     )))
                                     .text_size(px(10.0))
-                                    .text_color(if stage { add_color() } else { theme.text_muted })
+                                    .text_color(if stage {
+                                        add_color(theme)
+                                    } else {
+                                        theme.text_muted
+                                    })
                                     .when(!busy, |el| el.cursor_pointer())
                                     .when(!busy, |el| {
                                         let paths = all_paths.clone();
@@ -1664,7 +1668,7 @@ impl Changes {
                                         .ml(px(8.0))
                                         .text_size(px(10.0))
                                         .text_color(if stage {
-                                            add_color()
+                                            add_color(theme)
                                         } else {
                                             theme.text_muted
                                         })
@@ -1696,8 +1700,8 @@ impl Changes {
                         _ => "M",
                     };
                     let kind_color = match file.kind.as_str() {
-                        "added" | "untracked" => add_color(),
-                        "deleted" => del_color(),
+                        "added" | "untracked" => add_color(theme),
+                        "deleted" => del_color(theme),
                         "conflict" => theme.warning,
                         _ => theme.text_faint,
                     };
@@ -1727,14 +1731,18 @@ impl Changes {
                                     .size(px(13.0))
                                     .rounded(px(3.0))
                                     .border_1()
-                                    .border_color(if checked { add_color() } else { theme.border })
+                                    .border_color(if checked {
+                                        add_color(theme)
+                                    } else {
+                                        theme.border
+                                    })
                                     .bg(if checked {
-                                        add_color().opacity(0.25)
+                                        add_color(theme).opacity(0.25)
                                     } else {
                                         gpui::transparent_black()
                                     })
                                     .text_size(px(10.0))
-                                    .text_color(add_color())
+                                    .text_color(add_color(theme))
                                     .flex()
                                     .items_center()
                                     .justify_center()
@@ -2323,13 +2331,13 @@ impl Changes {
 }
 
 /// Green for additions — sampled from the reference diff (soft emerald).
-fn add_color() -> gpui::Hsla {
-    oklch(0.765, 0.177, 163.223) // emerald-400
+fn add_color(theme: &Theme) -> gpui::Hsla {
+    theme.diff_add // emerald-400
 }
 
 /// Red for deletions — softer than the theme danger, per the reference diff.
-fn del_color() -> gpui::Hsla {
-    oklch(0.704, 0.191, 22.216) // red-400
+fn del_color(theme: &Theme) -> gpui::Hsla {
+    theme.diff_del // red-400
 }
 
 /// Diff syntax palette — since round 9 the transcript's code blocks share the
@@ -2366,12 +2374,12 @@ fn render_file_body(
     }
 
     // Row tints sampled from the reference: ~5–6% washes over the pane tone.
-    let mut add_bg = add_color();
+    let mut add_bg = add_color(theme);
     add_bg.a = 0.055;
-    let mut del_bg = del_color();
+    let mut del_bg = del_color(theme);
     del_bg.a = 0.055;
     // Bluish-grey hunk-header wash.
-    let hunk_bg = gpui::hsla(0.6, 0.35, 0.6, 0.05);
+    let hunk_bg = theme.diff_hunk_bg;
 
     for hunk in &file.hunks {
         children.push(
@@ -2419,17 +2427,17 @@ fn render_file_body(
             let (marker, marker_color, row_bg, accent, number_color) = match line.kind {
                 LineKind::Add => (
                     "+",
-                    add_color(),
+                    add_color(theme),
                     Some(add_bg),
-                    Some(add_color().opacity(0.55)),
-                    add_color().opacity(0.9),
+                    Some(add_color(theme).opacity(0.55)),
+                    add_color(theme).opacity(0.9),
                 ),
                 LineKind::Del => (
                     "−",
-                    del_color(),
+                    del_color(theme),
                     Some(del_bg),
-                    Some(del_color().opacity(0.55)),
-                    del_color().opacity(0.9),
+                    Some(del_color(theme).opacity(0.55)),
+                    del_color(theme).opacity(0.9),
                 ),
                 _ => (
                     "·",

@@ -30,9 +30,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    AnyElement, ClipboardItem, Context, Entity, EventEmitter, ListAlignment, ListScrollEvent,
-    ListState, ObjectFit, SharedString, StyledImage as _, Subscription, Task, Window, div, img,
-    list, prelude::*, px,
+    AnyElement, BorderStyle, Bounds, ClipboardItem, Context, Entity, EventEmitter, ListAlignment,
+    ListScrollEvent, ListState, ObjectFit, SharedString, StyledImage as _, StyledText,
+    Subscription, Task, TextRun, Window, canvas, div, img, list, point, prelude::*, px, quad, size,
 };
 
 use comet_doc::{MessagePart, MessageRole, MessageStatus, SessionMessageEntry};
@@ -198,8 +198,14 @@ pub struct ToolItem {
 #[derive(Clone)]
 pub enum RowKind {
     User {
-        /// Visible prompt (attachment-ref trailer already stripped).
+        /// Visible prompt (attachment-ref trailer already stripped). When the
+        /// prompt carries file mentions this is the *projected* display text —
+        /// chip labels in place of the raw Markdown links.
         text: SharedString,
+        /// File-mention chips over `text`, in display-byte terms. Computed
+        /// once per entry change in [`rows_for_entry`] (rows are cached by
+        /// fingerprint), never per frame. Empty for ordinary prompts.
+        mentions: Arc<Vec<crate::composer::SentMentionSpan>>,
         /// Image refs parsed out of the message text (message-attachments.ts):
         /// thumbnails load from the owning device via ReadAttachmentChunk.
         attachments: Arc<Vec<crate::attachments::UserImageAttachment>>,
@@ -321,12 +327,20 @@ pub fn rows_for_entry(
         // transport); split them back out for the thumbnail strip.
         let parsed = crate::attachments::parse_user_message_images(&raw);
         let actions = (!pending && !raw.trim().is_empty()).then(|| raw.clone().into());
+        // File mentions render as chips here too, not just in the composer.
+        // The projection is pure over the text, so the raw-length row version
+        // below stays a valid cache/diff key.
+        let (text, mentions) = match crate::composer::sent_mention_display(&parsed.text) {
+            Some((display, spans)) => (display, spans),
+            None => (parsed.text, Vec::new()),
+        };
         return vec![Row {
             id: entry.id.clone().into(),
             version: (raw.len() as u64) << 1 | pending as u64,
             turn_start: true,
             kind: RowKind::User {
-                text: parsed.text.into(),
+                text: text.into(),
+                mentions: Arc::new(mentions),
                 attachments: Arc::new(parsed.attachments),
                 pending,
             },
@@ -1544,8 +1558,8 @@ impl Transcript {
                     frame
                         .id(SharedString::from(format!("{row_id}#att{aix}")))
                         .border_1()
-                        .border_color(crate::theme::white_alpha(0.11))
-                        .bg(crate::theme::white_alpha(0.035))
+                        .border_color(crate::theme::hairline(0.11))
+                        .bg(crate::theme::ink(0.035))
                         .cursor_pointer()
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.attachment_preview = Some(preview.clone());
@@ -1562,14 +1576,14 @@ impl Transcript {
                 AttachmentSnapshot::Error { .. } => frame
                     .border_1()
                     .border_dashed()
-                    .border_color(crate::theme::white_alpha(0.14))
-                    .bg(crate::theme::white_alpha(0.025))
+                    .border_color(crate::theme::hairline(0.14))
+                    .bg(crate::theme::ink(0.025))
                     .into_any_element(),
                 // Loading: the pulsing skeleton (same wash as popover skeletons).
                 AttachmentSnapshot::Loading => frame
                     .border_1()
-                    .border_color(crate::theme::white_alpha(0.08))
-                    .bg(crate::theme::white_alpha(0.055))
+                    .border_color(crate::theme::hairline(0.08))
+                    .bg(crate::theme::ink(0.055))
                     .with_animation(
                         SharedString::from(format!("{row_id}#att-pulse{aix}")),
                         motion::COMET_PULSE.repeating(),
@@ -1599,11 +1613,13 @@ impl Transcript {
         let inner: AnyElement = match &row.kind {
             RowKind::User {
                 text,
+                mentions,
                 attachments,
                 pending,
             } => {
                 let attachments = attachments.clone();
                 let text = text.clone();
+                let mentions = mentions.clone();
                 let pending = *pending;
                 // Attachment thumbnails ride ABOVE the bubble, right-aligned
                 // (chat-view.tsx RowView: UserAttachmentStrip then the text
@@ -1632,7 +1648,11 @@ impl Transcript {
                                 .line_height(px(22.0))
                                 .text_color(theme.text)
                                 .when(pending, |el| el.opacity(0.65))
-                                .child(text),
+                                .child(if mentions.is_empty() {
+                                    text.into_any_element()
+                                } else {
+                                    user_mention_text(text, mentions, &theme)
+                                }),
                         ),
                     );
                 }
@@ -2007,7 +2027,7 @@ impl Transcript {
             // chips (destructive tint, comet tool-chip.tsx) and in the
             // summary's "· N failed" count.
             .text_color(theme.text_muted)
-            .hover(|s| s.text_color(Theme::dark().text))
+            .hover(|s| s.text_color(theme.text))
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.toggle_fold(toggle_id.clone(), tool_count, auto_open);
                 cx.notify();
@@ -2017,7 +2037,7 @@ impl Transcript {
                     .size(px(18.0))
                     .flex_none()
                     .rounded(px(5.0))
-                    .bg(crate::theme::white_alpha(0.06))
+                    .bg(crate::theme::ink(0.06))
                     .flex()
                     .items_center()
                     .justify_center()
@@ -2183,6 +2203,148 @@ impl Transcript {
 
 impl EventEmitter<TranscriptEvent> for Transcript {}
 
+/// A sent message's text with its file-mention chips. The same underlay recipe
+/// as the markdown renderer's inline-code wash (`flat_text_element`):
+/// [`StyledText`] supplies wrapped glyph geometry through its layout handle, a
+/// canvas paints the rounded washes *beneath* the glyphs and the file/folder
+/// icons into their reserved em-space slots — so chips wrap, clip, and scroll
+/// exactly like the text they decorate.
+///
+/// Per-frame cost while an assistant message streams below: shaping hits
+/// gpui's line-layout cache (identical text + runs ⇒ reuse) and the underlay
+/// repaints O(chips) quads — no layout work, no re-projection (spans were
+/// computed once in [`rows_for_entry`]).
+fn user_mention_text(
+    text: SharedString,
+    mentions: Arc<Vec<crate::composer::SentMentionSpan>>,
+    theme: &Theme,
+) -> AnyElement {
+    // One run: chips keep the body color; the wash and icon do the signaling.
+    // Font/size/line-height flow from the bubble's div like every text child.
+    let styled = StyledText::new(text.clone()).with_runs(vec![TextRun {
+        len: text.len(),
+        font: gpui::font(theme.font_sans.clone()),
+        color: theme.text,
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    }]);
+    let layout = styled.layout().clone();
+    // The composer's chip wash, quoted from its prepaint (accent at 0.22).
+    let wash = theme.accent.opacity(0.22);
+    let icon_color = theme.text_muted;
+    let underlay = canvas(
+        |_, _, _| (),
+        move |_, _, window, cx| {
+            for span in mentions.iter() {
+                for rect in render::range_rects(&layout, &span.range, 0.0, 2.0) {
+                    window.paint_quad(quad(
+                        rect,
+                        px(5.0),
+                        wash,
+                        px(0.0),
+                        gpui::transparent_black(),
+                        BorderStyle::default(),
+                    ));
+                }
+                let Some(slot) = render::range_rects(&layout, &span.icon_slot, 0.0, 0.0)
+                    .into_iter()
+                    .next()
+                else {
+                    continue;
+                };
+                let icon_size = slot.size.width.min(px(12.0));
+                let icon_bounds = Bounds::new(
+                    point(
+                        slot.origin.x + (slot.size.width - icon_size) / 2.0,
+                        slot.origin.y + (slot.size.height - icon_size) / 2.0,
+                    ),
+                    size(icon_size, icon_size),
+                );
+                let _ = window.paint_svg(
+                    icon_bounds,
+                    SharedString::from(if span.is_dir {
+                        crate::icons::FOLDER
+                    } else {
+                        crate::icons::DOCUMENT
+                    }),
+                    None,
+                    gpui::TransformationMatrix::default(),
+                    icon_color,
+                    cx,
+                );
+            }
+        },
+    )
+    .absolute()
+    .size_full();
+    div()
+        .relative()
+        .child(underlay)
+        .child(styled)
+        .into_any_element()
+}
+
+/// The transcript ErrorChip — an exact port of comet chat-view.tsx
+/// `ErrorChip`: a 34px row (`rounded-[10px] border border-red-400/[0.16]
+/// bg-red-400/[0.05] px-2 text-[12px]`) with a 20px red-washed tile holding a
+/// 12px DangerTriangle (`bg-red-400/[0.12] text-red-300/80`), a medium
+/// "Error" label, then the human message truncating at `text-foreground/80` —
+/// a subtle red-tinted wash, never a bare red-stroke box.
+fn error_chip(message: SharedString, theme: &Theme) -> AnyElement {
+    let red_300 = theme.danger_muted; // tailwind red-300
+    let danger = theme.danger; // red-400
+    div()
+        .py(px(4.0))
+        .w_full()
+        .child(
+            div()
+                .h(px(34.0))
+                .w_full()
+                .flex()
+                .items_center()
+                .gap(px(8.0))
+                .overflow_hidden()
+                .rounded(px(10.0))
+                .border_1()
+                .border_color(danger.opacity(0.16))
+                .bg(danger.opacity(0.05))
+                .px(px(8.0))
+                .text_size(px(12.0))
+                .child(
+                    div()
+                        .flex_none()
+                        .size(px(20.0))
+                        .rounded(px(6.0))
+                        .bg(danger.opacity(0.12))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            crate::icons::icon(crate::icons::DANGER_TRIANGLE)
+                                .size(px(12.0))
+                                .text_color(red_300.opacity(0.8)),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex_none()
+                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .text_color(red_300.opacity(0.8))
+                        .child(SharedString::from("Error")),
+                )
+                .child(
+                    div()
+                        .min_w_0()
+                        .flex_1()
+                        .truncate()
+                        .text_color(theme.text.opacity(0.8))
+                        .child(message),
+                ),
+        )
+        .into_any_element()
+}
+
 /// A passive one-line chip marking a question the agent asked — the
 /// interactive controls live in the composer (chat-view.tsx `InputChip`):
 /// 34px row, `rounded-[10px] border-white/[0.08] bg-white/[0.045] px-2
@@ -2209,8 +2371,8 @@ fn input_chip(header: SharedString, resolved: bool, theme: &Theme) -> AnyElement
                 .overflow_hidden()
                 .rounded(px(10.0))
                 .border_1()
-                .border_color(crate::theme::white_alpha(0.08))
-                .bg(crate::theme::white_alpha(0.045))
+                .border_color(crate::theme::hairline(0.08))
+                .bg(crate::theme::ink(0.045))
                 .px(px(8.0))
                 .text_size(px(12.0))
                 .child(
@@ -2218,7 +2380,7 @@ fn input_chip(header: SharedString, resolved: bool, theme: &Theme) -> AnyElement
                         .flex_none()
                         .size(px(20.0))
                         .rounded(px(6.0))
-                        .bg(crate::theme::white_alpha(0.09))
+                        .bg(crate::theme::ink(0.09))
                         .flex()
                         .items_center()
                         .justify_center()
@@ -2288,7 +2450,7 @@ fn tool_chip(tool: &ToolItem, theme: &Theme) -> AnyElement {
                 .h_full()
                 .w(px(1.0))
                 .flex_none()
-                .bg(crate::theme::white_alpha(0.08)),
+                .bg(crate::theme::ink(0.08)),
         )
         .child(
             div()
@@ -2303,8 +2465,8 @@ fn tool_chip(tool: &ToolItem, theme: &Theme) -> AnyElement {
                 .overflow_hidden()
                 .rounded(px(9.0))
                 .border_1()
-                .border_color(crate::theme::white_alpha(0.07))
-                .bg(crate::theme::white_alpha(0.03))
+                .border_color(crate::theme::hairline(0.07))
+                .bg(crate::theme::ink(0.03))
                 .px(px(8.0))
                 .text_size(px(12.0))
                 .child(
@@ -2314,7 +2476,7 @@ fn tool_chip(tool: &ToolItem, theme: &Theme) -> AnyElement {
                         .size(px(18.0))
                         .flex_none()
                         .rounded(px(5.0))
-                        .bg(crate::theme::white_alpha(0.08))
+                        .bg(crate::theme::ink(0.08))
                         .flex()
                         .items_center()
                         .justify_center()
@@ -2843,6 +3005,44 @@ mod tests {
         };
         assert_eq!(text.as_ref(), "");
         assert_eq!(attachments.len(), 1);
+    }
+
+    /// A sent prompt's file mentions render as chips in the transcript: the
+    /// row carries the projected display text plus spans, while ordinary
+    /// prompts keep the empty-spans fast path. The row version derives from
+    /// the RAW text either way, so projection never perturbs the diff key.
+    #[test]
+    fn user_rows_project_file_mentions_into_chips() {
+        let raw = "look at [composer.rs](comet-file:crates/ui/src/composer.rs) please";
+        let mut entry = assistant("u3", MessageStatus::Complete, vec![]);
+        entry.role = MessageRole::User;
+        entry.status = None;
+        entry.parts = vec![text_part("t0", raw)];
+        let rows = rows_for_entry(&entry, false, &mut parse);
+        let RowKind::User { text, mentions, .. } = &rows[0].kind else {
+            panic!("expected a user row");
+        };
+        assert!(
+            !text.contains("comet-file:"),
+            "raw link left visible: {text}"
+        );
+        assert!(text.contains("composer.rs"));
+        assert_eq!(mentions.len(), 1);
+        assert!(!mentions[0].is_dir);
+        assert_eq!(mentions[0].path.as_ref(), "crates/ui/src/composer.rs");
+        assert_eq!(&text[mentions[0].range.clone()], {
+            let projected: &str = "\u{00A0}\u{00A0}\u{00A0}\u{00A0}\u{00A0}composer.rs\u{00A0}";
+            projected
+        });
+        assert_eq!(rows[0].version, (raw.len() as u64) << 1);
+
+        entry.parts = vec![text_part("t0", "no mentions here")];
+        let rows = rows_for_entry(&entry, false, &mut parse);
+        let RowKind::User { text, mentions, .. } = &rows[0].kind else {
+            panic!("expected a user row");
+        };
+        assert_eq!(text.as_ref(), "no mentions here");
+        assert!(mentions.is_empty());
     }
 
     #[test]

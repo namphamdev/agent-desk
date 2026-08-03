@@ -31,5 +31,8 @@ tracing.workspace = true
 global-hotkey.workspace = true
 arboard.workspace = true
 
+[target.'cfg(target_os = "macos")'.dependencies]
+objc = "0.2"
+
 [dev-dependencies]
 tempfile.workspace = true

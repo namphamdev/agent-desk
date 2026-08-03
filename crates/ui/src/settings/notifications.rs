@@ -7,8 +7,8 @@ use std::path::PathBuf;
 
 use gpui::{AnyElement, Context, EventEmitter, SharedString, Window, div, prelude::*, px};
 
-use crate::settings::widgets;
 use crate::settings::UiSettings;
+use crate::settings::widgets;
 use crate::theme::{Theme, white_alpha};
 
 #[derive(Debug, Clone)]
@@ -130,7 +130,7 @@ impl gpui::Render for NotificationsPage {
                         "Choose how Comet alerts you when an agent completes work or waits for input.",
                     ))
                     .when_some(self.error.clone(), |page, error| {
-                        page.child(widgets::error_strip(error))
+                        page.child(widgets::error_strip(&theme, error))
                     })
                     .child(
                         widgets::section_card(&theme)
@@ -159,7 +159,10 @@ fn toggle_row(
             div()
                 .min_w_0()
                 .flex_1()
-                .child(widgets::row_title(theme, SharedString::from(title.to_string())))
+                .child(widgets::row_title(
+                    theme,
+                    SharedString::from(title.to_string()),
+                ))
                 .child(
                     div()
                         .mt(px(4.0))

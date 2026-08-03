@@ -72,6 +72,8 @@ pub mod methods {
     pub const LIST_REFS: &str = "ListRefs";
     pub const SWITCH_REF: &str = "SwitchRef";
     pub const LIST_FOLDERS: &str = "ListFolders";
+    /// Fuzzy relative-path search rooted in a known chat or space checkout.
+    pub const SEARCH_FILES: &str = "SearchFiles";
     pub const CREATE_WORKTREE: &str = "CreateWorktree";
     pub const DELETE_WORKTREE: &str = "DeleteWorktree";
     pub const GIT_STATUS: &str = "GitStatus";

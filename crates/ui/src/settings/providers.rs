@@ -389,7 +389,7 @@ impl ProvidersPage {
             .child(
                 widgets::ghost_action(theme)
                     .id(SharedString::from(format!("edit-provider-{}", provider.id)))
-                    .hover(widgets::ghost_hover)
+                    .hover(|s| widgets::ghost_hover(&theme, s))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         if !this.busy {
                             this.open_editor(Some(edit.clone()), cx);
@@ -404,7 +404,7 @@ impl ProvidersPage {
                         provider.id
                     )))
                     .when(self.busy, |button| button.opacity(0.45))
-                    .hover(widgets::ghost_hover)
+                    .hover(|s| widgets::ghost_hover(&theme, s))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         if !this.busy {
                             this.delete(delete_id.clone(), cx);
@@ -752,7 +752,7 @@ impl ProvidersPage {
                         .child(
                             widgets::ghost_action(theme)
                                 .id("cancel-custom-provider")
-                                .hover(widgets::ghost_hover)
+                                .hover(|s| widgets::ghost_hover(&theme, s))
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     if !this.busy {
                                         this.editor = None;
@@ -933,7 +933,7 @@ impl gpui::Render for ProvidersPage {
                                     .when(self.editor.is_some() || self.busy, |button| {
                                         button.opacity(0.45)
                                     })
-                                    .hover(widgets::ghost_hover)
+                                    .hover(|s| widgets::ghost_hover(&theme, s))
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         if this.editor.is_none() && !this.busy {
                                             this.open_editor(None, cx);
@@ -953,14 +953,14 @@ impl gpui::Render for ProvidersPage {
                     ))
                     .when_some(self.snapshot.error().map(str::to_string), |page, error| {
                         page.child(
-                            widgets::error_strip(error)
+                            widgets::error_strip(&theme, error)
                                 .id("providers-load-error")
                                 .cursor_pointer()
                                 .on_click(cx.listener(|this, _, _, cx| this.load(cx))),
                         )
                     })
                     .when_some(self.error.clone(), |page, error| {
-                        page.child(widgets::error_strip(error))
+                        page.child(widgets::error_strip(&theme, error))
                     })
                     .children(editor)
                     .when_some(snapshot, |page, snapshot| {

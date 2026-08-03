@@ -673,7 +673,7 @@ impl ShortcutsPage {
                         .child(
                             widgets::ghost_action(theme)
                                 .id("cancel-ai-shortcut")
-                                .hover(widgets::ghost_hover)
+                                .hover(|s| widgets::ghost_hover(&theme, s))
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.ai_editor = None;
                                     this.recording_ai = false;
@@ -838,7 +838,7 @@ impl Render for ShortcutsPage {
                             .text_size(px(11.0))
                             .text_color(theme.text_muted.opacity(0.7))
                             .cursor_pointer()
-                            .hover(|s| s.text_color(Theme::dark().text))
+                            .hover(|s| s.text_color(theme.text))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.keymap.reset(id);
                                 this.recording = None;
@@ -864,7 +864,7 @@ impl Render for ShortcutsPage {
                             if is_recording {
                                 el.border_color(theme.text.opacity(0.3))
                                     .bg(theme.text)
-                                    .text_color(crate::theme::grey(0x0e))
+                                    .text_color(theme.on_solid)
                             } else {
                                 el.border_color(theme.border)
                                     .bg(theme.bg)
@@ -873,7 +873,7 @@ impl Render for ShortcutsPage {
                                         // `hover:border-foreground/20` — the
                                         // neutral foreground, not pure white.
                                         s.border_color(theme.text.opacity(0.2))
-                                            .bg(crate::theme::white_alpha(0.03))
+                                            .bg(crate::theme::ink(0.03))
                                     })
                             }
                         })
@@ -941,8 +941,7 @@ impl Render for ShortcutsPage {
                                     .when(disabled, |el| el.opacity(0.35))
                                     .when(!disabled, |el| {
                                         el.hover(|s| {
-                                            s.bg(crate::theme::white_alpha(0.04))
-                                                .text_color(Theme::dark().text)
+                                            s.bg(crate::theme::ink(0.04)).text_color(theme.text)
                                         })
                                         .on_click(
                                             cx.listener(|this, _, _, cx| {
@@ -982,7 +981,7 @@ impl Render for ShortcutsPage {
                                 widgets::ghost_action(&theme)
                                     .id("add-ai-shortcut")
                                     .when(self.ai_editor.is_some(), |button| button.opacity(0.4))
-                                    .hover(widgets::ghost_hover)
+                                    .hover(|s| widgets::ghost_hover(&theme, s))
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         if this.ai_editor.is_none() {
                                             this.open_ai_editor(None, cx);
@@ -1010,7 +1009,7 @@ impl Render for ShortcutsPage {
                     )
                     .when_some(self.providers.error().map(str::to_string), |page, error| {
                         page.child(
-                            widgets::error_strip(error)
+                            widgets::error_strip(&theme, error)
                                 .id("shortcut-provider-error")
                                 .cursor_pointer()
                                 .on_click(cx.listener(|this, _, _, cx| this.load_providers(cx))),
@@ -1067,7 +1066,7 @@ impl Render for ShortcutsPage {
                                                     "edit-ai-shortcut-{}",
                                                     shortcut.id
                                                 )))
-                                                .hover(widgets::ghost_hover)
+                                                .hover(|s| widgets::ghost_hover(&theme, s))
                                                 .on_click(cx.listener(move |this, _, _, cx| {
                                                     this.open_ai_editor(Some(edit.clone()), cx)
                                                 }))
@@ -1079,7 +1078,7 @@ impl Render for ShortcutsPage {
                                                     "delete-ai-shortcut-{}",
                                                     shortcut.id
                                                 )))
-                                                .hover(widgets::ghost_hover)
+                                                .hover(|s| widgets::ghost_hover(&theme, s))
                                                 .on_click(cx.listener(move |this, _, _, cx| {
                                                     this.delete_ai_shortcut(delete_id.clone(), cx)
                                                 }))

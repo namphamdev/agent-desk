@@ -431,6 +431,7 @@ final class AppModel {
         if let demo {
             if let ix = demo.chats.firstIndex(where: { $0.id == chatId }) {
                 demo.chats[ix].config = config
+                ConfigDebug.trace("AppModel.setChatConfig (demo) chat=\(chatId.prefix(8)) model=\(config.model ?? "nil") reason=\(config.reasoning ?? "nil")")
             }
             return
         }

@@ -3,6 +3,7 @@
 // marks the chat seen (the synced LWW marker behind the green dot everywhere).
 
 import SwiftUI
+import os
 
 struct SessionView: View {
     @Environment(AppModel.self) private var model
@@ -117,6 +118,7 @@ struct SessionView: View {
                                 ?? HarnessCatalog.defaultModel(for: harness).id
                         },
                         set: { newModel in
+                            ConfigDebug.trace("session \(chat.id.prefix(8)) pick model \(chat.config?.model ?? "nil") -> \(newModel)")
                             writeConfig(model: newModel, reasoning: chat.config?.reasoning, permissionMode: chat.config?.effectivePermissionMode)
                         }
                     ),
@@ -196,6 +198,7 @@ struct SessionView: View {
         config.permissionMode = currentMode
         config.sandbox = currentMode.sandbox
         model.setChatConfig(chatId: chat.id, config: config)
+        ConfigDebug.trace("writeConfig chat=\(chat.id.prefix(8)) model=\(config.model ?? "nil") reason=\(config.reasoning ?? "nil") mode=\(config.permissionMode?.rawValue ?? "nil")")
     }
 
     private var subtitle: String? {
@@ -204,6 +207,11 @@ struct SessionView: View {
         if let cwd = chat.cwd { parts.append((cwd as NSString).lastPathComponent) }
         if let branch = chat.branch, !branch.isEmpty { parts.append(branch) }
         parts.append(model.deviceName(chat.deviceId))
+        // DEBUG: model the session believes it's running with. Remove with
+        // the ConfigDebug instrumentation.
+        if let model = chat.config?.model {
+            parts.append("model:\(model)")
+        }
         return parts.joined(separator: " · ")
     }
 

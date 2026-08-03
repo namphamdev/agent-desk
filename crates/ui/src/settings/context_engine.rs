@@ -128,7 +128,7 @@ impl gpui::Render for ContextEnginePage {
             .child(
                 widgets::ghost_action(&theme)
                     .id("context-engine-open-dashboard")
-                    .hover(widgets::ghost_hover)
+                    .hover(|s| widgets::ghost_hover(&theme, s))
                     .on_click(cx.listener(|_, _, _, cx| cx.open_url(DASHBOARD_URL)))
                     .child(crate::icons::icon(crate::icons::GLOBAL).size(px(14.0)))
                     .child("Open dashboard"),
@@ -146,10 +146,11 @@ impl gpui::Render for ContextEnginePage {
                         "Local semantic indexing for coding-agent sessions.",
                     ))
                     .when_some(self.error.clone(), |page, error| {
-                        page.child(widgets::error_strip(error))
+                        page.child(widgets::error_strip(&theme, error))
                     })
                     .when(changed && !locked, |page| {
                         page.child(widgets::warning_strip(
+                            &theme,
                             "Restart the Comet engine to apply this change.",
                         ))
                     })

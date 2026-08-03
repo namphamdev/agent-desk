@@ -132,10 +132,20 @@ pub(crate) async fn discover_selected_provider_models(
         .into_rows()
         .into_iter()
         .filter_map(|row| {
-            let id = row.id.trim().to_string();
-            if id.is_empty() || !seen.insert(id.clone()) {
+            let raw = row.id.trim().to_string();
+            if raw.is_empty() || !seen.insert(raw.clone()) {
                 return None;
             }
+            // Some providers namespace their /models ids with the provider
+            // name (`antigravity:gemini-2.5-flash`). Codex routes the model to
+            // the engine-configured `comet_custom` provider, which knows the
+            // BARE model name — a namespaced id would make codex look up a
+            // nonexistent model and the run would fail or fall back. Strip a
+            // single `provider:` prefix so the picker id == the run id.
+            let id = raw
+                .split_once(':')
+                .map_or(raw.as_str(), |(_, rest)| rest)
+                .to_string();
             let label = row
                 .display_name
                 .or(row.name)
@@ -319,5 +329,77 @@ mod tests {
         assert!(request.starts_with("get /v1/models "));
         assert!(request.contains("authorization: bearer test-secret"));
         assert!(request.contains("x-api-key: test-secret"));
+    }
+
+    #[tokio::test]
+    async fn provider_namespaced_model_ids_are_stripped() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        // A provider whose /models returns `antigravity:gemini-2.5-flash` must
+        // surface as the BARE `gemini-2.5-flash` — codex resolves the model
+        // against the engine-configured `comet_custom` provider, which knows
+        // the bare name only.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut chunk = [0_u8; 1024];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let read = socket.read(&mut chunk).await.unwrap();
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&chunk[..read]);
+            }
+            let body = r#"{"data":[
+                {"id":"antigravity:gemini-2.5-flash","display_name":"Gemini 2.5 Flash"},
+                {"id":"plain-model"}
+            ]}"#;
+            socket
+                .write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .unwrap();
+        });
+
+        let dir = tempfile::tempdir().unwrap();
+        let settings = dir.path().join("custom-providers.json");
+        std::fs::write(
+            &settings,
+            serde_json::json!({
+                "providers": [{
+                    "id": "proxy",
+                    "name": "Antigravity",
+                    "baseUrl": format!("http://{address}"),
+                    "apiKey": "test-secret",
+                    "formats": ["responses"]
+                }],
+                "selection": {"codex": "proxy"}
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let models = discover_selected_provider_models(
+            Some(&settings),
+            HarnessId::Codex,
+            &[ReasoningLevel::High],
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            models
+                .iter()
+                .map(|model| model.id.as_str())
+                .collect::<Vec<_>>(),
+            ["gemini-2.5-flash", "plain-model"]
+        );
+        server.await.unwrap();
     }
 }

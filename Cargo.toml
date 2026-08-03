@@ -15,7 +15,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.9"
+version = "0.1.11"
 edition = "2024"
 license = "MIT"
 publish = false
@@ -100,6 +100,7 @@ mermaid-rs-renderer = { version = "0.3.1", default-features = false }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
 global-hotkey = "0.7"
 arboard = "3.6"
+ignore = "0.4"
 
 [profile.release]
 # Distribution profile (scripts/package-linux.sh): thin LTO buys most of fat

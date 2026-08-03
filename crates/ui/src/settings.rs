@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod accounts;
 pub mod acp_agents;
+pub mod appearance;
 pub mod archived;
 pub mod composer;
 pub mod context_engine;
@@ -86,6 +87,9 @@ pub struct UiSettings {
     /// Global workflow overrides. Empty implies built-ins.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub workflows: Vec<crate::workflows::WorkflowDefinition>,
+    /// Light/dark preference. Defaults to following the OS.
+    #[serde(default)]
+    pub appearance: crate::appearance::AppearanceMode,
 }
 
 impl Default for UiSettings {
@@ -106,6 +110,7 @@ impl Default for UiSettings {
             keymap: KeymapConfig::default(),
             ai_shortcuts: Vec::new(),
             workflows: Vec::new(),
+            appearance: crate::appearance::AppearanceMode::default(),
         }
     }
 }
@@ -414,9 +419,27 @@ mod tests {
                 ..AiShortcut::default()
             }],
             workflows: crate::workflows::builtin_workflows(),
+            appearance: crate::appearance::AppearanceMode::Light,
         };
         settings.save(dir.path()).unwrap();
         assert_eq!(UiSettings::load(dir.path()), settings);
+    }
+
+    /// A settings file written before light mode existed has no `appearance`
+    /// key; it must load as "follow the OS" rather than failing the whole parse
+    /// and resetting every other preference to defaults.
+    #[test]
+    fn settings_without_appearance_default_to_system() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            UiSettings::path(dir.path()),
+            r#"{"sidebarWidth": 300, "soundEnabled": false}"#,
+        )
+        .unwrap();
+        let loaded = UiSettings::load(dir.path());
+        assert_eq!(loaded.appearance, crate::appearance::AppearanceMode::System);
+        assert_eq!(loaded.sidebar_width, 300.0);
+        assert!(!loaded.sound_enabled, "other keys still parse");
     }
 
     #[test]

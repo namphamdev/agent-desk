@@ -577,6 +577,14 @@ impl DocHost {
                     ws.claim_chat(chat_id, Some(&request.cwd))?;
                 }
                 let harness = self.harness_for(chat_id);
+                let row_config = self.workspace().and_then(|ws| ws.chat_config(chat_id));
+                tracing::info!(
+                    chat = %chat_id,
+                    harness = ?harness,
+                    request_model = %request.model.clone().unwrap_or_else(|| "<none>".into()),
+                    row_model = %row_config.as_ref().and_then(|c| c.model.clone()).unwrap_or_else(|| "<none>".into()),
+                    "debug: dispatch run (model change trace)"
+                );
                 sessions
                     .dispatch(chat_id, harness, request.clone(), Some(message_id.clone()))
                     .await?;
