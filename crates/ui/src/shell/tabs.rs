@@ -338,42 +338,62 @@ impl Shell {
                     let middle_id = id.clone();
                     let hover_id = id.clone();
                     let drag_space = space_id.clone().unwrap_or_default();
-                    // NB: no `.occlude()` on the close button — the TAB already
-                    // occludes (for the titlebar drag region), and an occluding
-                    // child would block the tab's own hover hit-test: a flicker
-                    // loop (user-reported). `stop_propagation` on click is enough.
-                    let trailing: AnyElement = if is_hovered {
-                        div()
-                            .id(SharedString::from(format!("session-tab-close-{id}")))
-                            .size(px(20.0))
-                            .flex_none()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .rounded(px(6.0))
-                            .hover(|s| s.bg(crate::theme::wash(0.14)))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                cx.stop_propagation();
-                                this.close_session_tab(close_id.clone(), cx);
-                            }))
-                            .child(
-                                icon(icons::CLOSE)
-                                    .size(px(12.0))
-                                    .text_color(theme.text_muted),
-                            )
-                            .into_any_element()
-                    } else {
-                        // Working animates (the sidebar's miniaturized gradient
-                        // spinner) instead of a static pink dot; every other
-                        // non-idle status stays a dot.
-                        let dot = spaces::status_dot_color(status, &theme);
-                        div()
-                            .size(px(20.0))
-                            .flex_none()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .when(status == ChatIndicator::Working, |el| {
+                    // The trailing slot is ALWAYS in the tree (stable hit-test
+                    // position): the status dot at rest, the close button on
+                    // hover.
+                    //
+                    // CRITICAL: the close button uses `on_mouse_down` with
+                    // `stop_propagation` to prevent the pointer-down event
+                    // from bubbling to the parent tab's `on_drag` gesture.
+                    // Without this, a click with even 1px of pointer movement
+                    // crosses on_drag's threshold and starts a reorder instead
+                    // of closing the tab. `on_click` alone is too late — on_drag
+                    // has already latched.
+                    //
+                    // The trailing slot also updates tab_hover so moving the
+                    // pointer from the tab body onto the button keeps the hover
+                    // state (no flicker).
+                    let dot = spaces::status_dot_color(status, &theme);
+                    let trailing_hover_id = id.clone();
+                    let trailing: AnyElement = div()
+                        .id(SharedString::from(format!("session-tab-close-{id}")))
+                        .size(px(20.0))
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(6.0))
+                        .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                            if *hovered {
+                                this.tab_hover = Some(trailing_hover_id.clone());
+                            } else if this.tab_hover.as_deref() == Some(trailing_hover_id.as_str()) {
+                                this.tab_hover = None;
+                            }
+                            cx.notify();
+                        }))
+                        .when(is_hovered, |el| {
+                            el.cursor_pointer()
+                                .hover(|s| s.bg(crate::theme::wash(0.14)))
+                                .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                                    // Stop the down event here so the parent
+                                    // tab's on_drag never sees it.
+                                    cx.stop_propagation();
+                                })
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    cx.stop_propagation();
+                                    this.close_session_tab(close_id.clone(), cx);
+                                }))
+                                .child(
+                                    icon(icons::CLOSE)
+                                        .size(px(12.0))
+                                        .text_color(theme.text_muted),
+                                )
+                        })
+                        .when(!is_hovered, |el| {
+                            // Working animates (the sidebar's miniaturized gradient
+                            // spinner) instead of a static pink dot; every other
+                            // non-idle status stays a dot.
+                            el.when(status == ChatIndicator::Working, |el| {
                                 el.child(loaders::mini_gradient_spinner(
                                     format!("tab-working-{id}"),
                                     2.0,
@@ -383,8 +403,8 @@ impl Shell {
                                 !matches!(status, ChatIndicator::Idle | ChatIndicator::Working),
                                 |el| el.child(div().size(px(6.0)).rounded_full().bg(dot)),
                             )
-                            .into_any_element()
-                    };
+                        })
+                        .into_any_element();
                     let tab_el = div()
                         .id(SharedString::from(format!("session-tab-{id}")))
                         .w(px(SESSION_TAB_WIDTH))
@@ -404,14 +424,18 @@ impl Shell {
                             el.shadow(crate::theme::glass_selected_shadows())
                         })
                         .cursor_pointer()
-                        // Tabs sit inside the titlebar drag strip — carve them out.
-                        // NOT `.occlude()`: a BlockMouse hitbox ends the hit test,
-                        // so the scroll container behind the tabs never saw wheel
-                        // events and an overflowing strip could not be scrolled
-                        // (tabs tile the whole region). ExceptScroll keeps the
-                        // drag-region carve-out and lets the strip scroll.
-                        .block_mouse_except_scroll()
-                        .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
+                        // Tabs sit inside the titlebar drag strip — carve them
+                        // out with `.occlude()`. We previously used
+                        // `block_mouse_except_scroll` to also let wheel events
+                        // pass through to the scroll container, BUT BlockMouse
+                        // eats drop events: on_drop on the tab and on the scroll
+                        // container never fired, so drag-reorder was broken.
+                        // `.occlude()` carves the tab out of the titlebar drag
+                        // region AND lets drop events reach the tab's own
+                        // on_drop handler. The trailing slot's on_hover (set up
+                        // above) keeps hover alive when the pointer crosses onto
+                        // the close button — no flicker.
+                        .occlude()
                         // Track hover in Shell state: the trailing slot flips
                         // between dot and close button (hover_blend only fades
                         // colors; child swaps need real state).
@@ -425,6 +449,11 @@ impl Shell {
                         }))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             cx.stop_propagation();
+                            // Clear any stranded drag state so a click always
+                            // returns to normal mode (Bug 2: stuck reorder).
+                            if this.tab_drag.is_some() {
+                                this.tab_drag = None;
+                            }
                             this.state
                                 .update(cx, |s, cx| s.select_chat(Some(select_id.clone()), cx));
                         }))
@@ -438,7 +467,7 @@ impl Shell {
                         )
                         .on_drag(
                             TabDragPayload {
-                                space: drag_space,
+                                space: drag_space.clone(),
                                 from: ix,
                                 title: title.clone(),
                                 brand,
@@ -449,6 +478,28 @@ impl Shell {
                                 cx.stop_propagation();
                                 cx.new(|_| TabGhost { title, brand })
                             },
+                        )
+                        // Each tab also handles on_drop: `block_mouse_except_scroll`
+                        // on the tab eats the drop event before it can reach the
+                        // scroll container's on_drop, so the scroll container's
+                        // handler alone never fires. The tab relays the drop using
+                        // the current `tab_drag.over` position tracked by
+                        // on_drag_move.
+                        .on_drop::<TabDragPayload>(cx.listener(
+                            move |this, payload: &TabDragPayload, _, cx| {
+                                if payload.space != drag_space {
+                                    this.tab_drag = None;
+                                    cx.notify();
+                                    return;
+                                }
+                                let to = this
+                                    .tab_drag
+                                    .as_ref()
+                                    .map(|d| d.over)
+                                    .unwrap_or(payload.from);
+                                let space = drag_space.clone();
+                                this.commit_tab_reorder(&space, payload.from, to, cx);
+                            }),
                         )
                         .when_some(brand, |el, (path, tint)| {
                             el.child(

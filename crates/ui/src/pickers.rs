@@ -555,17 +555,6 @@ impl Pickers {
         match self.effective_model_id(cx) {
             Some(id) => {
                 let found = models.iter().find(|m| m.id == id);
-                if found.is_none() {
-                    // Only log when the exact match fails — this is the bug
-                    // condition we're debugging (gpt-5.6-luna:compress not
-                    // found, falls back to default_model).
-                    eprintln!(
-                        "[pickers:DEBUG] selected_model: id {:?} NOT in catalog {:?}, falling back to default {:?}",
-                        id,
-                        models.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
-                        default_model(models).map(|m| m.id.as_str()),
-                    );
-                }
                 found.or_else(|| default_model(models))
             }
             None => default_model(models),
