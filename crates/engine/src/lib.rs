@@ -5,6 +5,7 @@
 //! sessions + docs + commands + minimal IPC. Terminals, repos/diffs, uploads, auth,
 //! agent accounts, and the device-room host land in later milestones.
 
+#[cfg(unix)]
 use std::ffi::c_char;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -741,31 +742,46 @@ async fn run_org_onboarding(auth: Auth) {
 
 /// Best-effort human name for this device's registry row (hostname).
 ///
-/// `COMET_DEVICE_NAME` wins, then the real OS hostname (getaddrinfo-backed
-/// `gethostname`, which also works on macOS), then `HOSTNAME`, then
-/// `/etc/hostname` — the last two cover stripped-down containers that lack
-/// `gethostname`. The final fallback (docker-in-docker with no hostname) keeps
-/// the registry row non-empty.
+/// `COMET_DEVICE_NAME` wins, then the platform hostname, then environment and
+/// file-based fallbacks. The final fallback keeps the registry row non-empty.
 fn local_device_name() -> String {
     std::env::var("COMET_DEVICE_NAME")
         .ok()
+        .or_else(platform_hostname)
         .or_else(|| {
-            let mut buf = [0 as c_char; 256];
-            // SAFETY: `buf` is a writable, properly-aligned 256-byte buffer;
-            // libc guarantees `gethostname` writes at most `buf.len() - 1` bytes
-            // plus a NUL terminator. An error (e.g. a weirdly short hostname
-            // buffer in some containers) just falls through to the next source.
-            if unsafe { libc::gethostname(buf.as_mut_ptr(), buf.len()) } == 0 {
-                let bytes = unsafe { std::ffi::CStr::from_ptr(buf.as_ptr()) }.to_bytes();
-                return Some(unsafe { std::str::from_utf8_unchecked(bytes) }.to_string());
+            #[cfg(windows)]
+            {
+                std::env::var("COMPUTERNAME").ok()
             }
-            None
+            #[cfg(not(windows))]
+            {
+                None
+            }
         })
         .or_else(|| std::env::var("HOSTNAME").ok())
         .or_else(|| std::fs::read_to_string("/etc/hostname").ok())
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "unknown-device".to_string())
+}
+
+#[cfg(unix)]
+fn platform_hostname() -> Option<String> {
+    let mut buf = [0 as c_char; 256];
+    // SAFETY: `buf` is a writable, properly-aligned 256-byte buffer;
+    // libc guarantees `gethostname` writes at most `buf.len() - 1` bytes
+    // plus a NUL terminator. An error (e.g. a weirdly short hostname
+    // buffer in some containers) just falls through to the next source.
+    if unsafe { libc::gethostname(buf.as_mut_ptr(), buf.len()) } == 0 {
+        let bytes = unsafe { std::ffi::CStr::from_ptr(buf.as_ptr()) }.to_bytes();
+        return Some(unsafe { std::str::from_utf8_unchecked(bytes) }.to_string());
+    }
+    None
+}
+
+#[cfg(windows)]
+fn platform_hostname() -> Option<String> {
+    None
 }
 
 /// Trimmed env var or the given default.
