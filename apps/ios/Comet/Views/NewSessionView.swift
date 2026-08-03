@@ -160,7 +160,11 @@ struct NewSessionView: View {
         }
         .sheet(isPresented: $showPicker) {
             ModelPickerSheet(harness: $harness, modelId: Binding(
-                get: { selectedModel.id },
+                // Bind the picker to the persisted value itself. Reading
+                // `selectedModel.id` here can fall back to the catalog's first
+                // item while AppStorage is updating, which loses the tick
+                // after a later selection.
+                get: { storedModel },
                 set: { newModel in
                     ConfigDebug.trace("new-session binding set model \(storedModel) -> \(newModel) (harness \(harness))")
                     storedModel = newModel
@@ -174,6 +178,18 @@ struct NewSessionView: View {
             ), catalogs: catalogs)
         }
         .onAppear {
+            // Seed the sticky keys on first launch: an empty `storedModel` makes
+            // the sheet's tick land on the tapped row while the composer chip
+            // still reads the catalog default — looking like the tick never
+            // moves. Persist the harness default once so both always agree.
+            if storedModel.isEmpty {
+                storedModel = HarnessCatalog.defaultModel(for: harness).id
+                ConfigDebug.trace("new-session seed model -> \(storedModel) (harness \(harness))")
+            }
+            if storedReasoning.isEmpty, let fallback = reasoning {
+                storedReasoning = fallback
+                ConfigDebug.trace("new-session seed reasoning -> \(storedReasoning)")
+            }
             focused = true
             if model.launchAutosend {
                 model.launchAutosend = false
@@ -417,7 +433,7 @@ struct NewSessionView: View {
 
 /// Detent bottom sheet in the old app's ModelEffortMenu layout: harness tabs
 /// (hidden once a chat exists — harness is locked, like the old app), a
-/// grouped card of models, and the effort ladder in the same select-row style.
+/// grouped card of models, and the reasoning ladder in the same select-row style.
 /// Mid-session checkout context: the read-only kind label plus the live ref
 /// list (the desktop keeps its branch selector interactive mid-session).
 struct SessionCheckoutContext {
@@ -442,8 +458,33 @@ struct ModelPickerSheet: View {
     /// Present on live git chats: checkout label + switchable refs.
     var checkout: SessionCheckoutContext?
 
+    /// Selection the sheet itself made this presentation (nil until a tap).
+    /// The tick and effort ladder track THIS, not `modelId`: `modelId` can
+    /// hold an id from a previous run (real mode: provider discovery returns
+    /// ids like `gemini-3.1-*` that differ from a later catalog) which isn't
+    /// in `models(for:)`, so `selectedModel` would fall back to row 0 and the
+    /// tick would never land on the tapped row.
+    @State private var localModelId: String?
+    @State private var modelSearchText = ""
+
     private func models(for harness: String) -> [ModelInfo] {
         catalogs[harness] ?? HarnessCatalog.models(for: harness)
+    }
+
+    private var allModels: [ModelInfo] {
+        models(for: harness)
+    }
+
+    private var showsModelSearch: Bool {
+        allModels.count > 10
+    }
+
+    private var filteredModels: [ModelInfo] {
+        guard !modelSearchText.isEmpty else { return allModels }
+        return allModels.filter { model in
+            [model.label, model.id, model.description ?? ""]
+                .contains { $0.localizedCaseInsensitiveContains(modelSearchText) }
+        }
     }
 
     @State private var switching: String?
@@ -464,25 +505,20 @@ struct ModelPickerSheet: View {
 
                     VStack(alignment: .leading, spacing: 8) {
                         SheetLabel("Model")
+                        if showsModelSearch {
+                            modelSearchField
+                        }
                         SheetCard {
-                            let models = models(for: harness)
-                            ForEach(Array(models.enumerated()), id: \.element.id) { ix, m in
-                                SheetSelectRow(title: m.label,
-                                               subtitle: m.description,
-                                               selected: m.id == modelId,
-                                               leading: nil) {
-                                    select(model: m)
-                                }
-                                if ix < models.count - 1 {
-                                    SheetSeparator()
-                                }
+                            ScrollView {
+                                modelRows(filteredModels)
                             }
+                            .frame(maxHeight: 440)
                         }
                     }
 
                     if let m = selectedModel, !m.reasoningLevels.isEmpty {
                         VStack(alignment: .leading, spacing: 8) {
-                            SheetLabel("Effort")
+                            SheetLabel("Reasoning")
                             SheetCard {
                                 ForEach(Array(m.reasoningLevels.enumerated()), id: \.element) { ix, level in
                                     SheetSelectRow(title: HarnessCatalog.reasoningLabel(level),
@@ -567,8 +603,50 @@ struct ModelPickerSheet: View {
         .preferredColorScheme(.dark)
     }
 
+    private var modelSearchField: some View {
+        HStack(spacing: 9) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 14, weight: .medium))
+                .foregroundStyle(Theme.textMuted)
+            TextField("Search models", text: $modelSearchText)
+                .font(Theme.sans(15))
+                .foregroundStyle(Theme.text)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+        }
+        .padding(.horizontal, 14)
+        .frame(height: 42)
+        .background(whiteAlpha(0.06), in: RoundedRectangle(cornerRadius: 13))
+        .overlay(RoundedRectangle(cornerRadius: 13)
+            .strokeBorder(whiteAlpha(0.06), lineWidth: 1))
+    }
+
+    @ViewBuilder
+    private func modelRows(_ models: [ModelInfo]) -> some View {
+        if models.isEmpty {
+            Text("No matching models")
+                .font(Theme.sans(14))
+                .foregroundStyle(Theme.textMuted)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 22)
+        } else {
+            ForEach(Array(models.enumerated()), id: \.element.id) { ix, model in
+                SheetSelectRow(title: model.label,
+                               subtitle: model.description,
+                               selected: localModelId == nil ? model.id == modelId : model.id == localModelId,
+                               leading: nil) {
+                    select(model: model)
+                }
+                if ix < models.count - 1 {
+                    SheetSeparator()
+                }
+            }
+        }
+    }
+
     private var selectedModel: ModelInfo? {
-        models(for: harness).first { $0.id == modelId }
+        let id = localModelId ?? modelId
+        return models(for: harness).first { $0.id == id }
     }
 
     private func harnessTab(_ h: HarnessInfo) -> some View {
@@ -577,7 +655,9 @@ struct ModelPickerSheet: View {
             guard harness != h.id else { return }
             UISelectionFeedbackGenerator().selectionChanged()
             harness = h.id
+            modelSearchText = ""
             let fallback = HarnessCatalog.defaultModel(for: h.id)
+            localModelId = fallback.id
             modelId = fallback.id
             reasoning = HarnessCatalog.defaultReasoning(for: fallback)
             ConfigDebug.trace("picker harness switch -> \(h.id) model=\(fallback.id) reason=\(reasoning ?? "nil")")
@@ -596,13 +676,15 @@ struct ModelPickerSheet: View {
     }
 
     private func select(model m: ModelInfo) {
+        localModelId = m.id
         modelId = m.id
         if let current = reasoning, m.reasoningLevels.contains(current) {
             ConfigDebug.trace("picker select model=\(m.id) harness=\(harness) reason kept=\(current)")
             return
         }
-        reasoning = HarnessCatalog.defaultReasoning(for: m)
-        ConfigDebug.trace("picker select model=\(m.id) harness=\(harness) reason=\(reasoning ?? "nil")")
+        let fallback = HarnessCatalog.defaultReasoning(for: m)
+        ConfigDebug.trace("picker select model=\(m.id) harness=\(harness) reason \(reasoning ?? "nil") -> \(fallback ?? "nil")")
+        reasoning = fallback
     }
 
     /// Checkout: read-only kind (fixed at creation — resume is cwd-scoped)
