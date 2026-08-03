@@ -177,7 +177,9 @@ pub fn detect_install() -> InstallKind {
     let Ok(exe) = std::env::current_exe() else {
         return InstallKind::Unmanaged;
     };
-    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from);
     detect_install_from(&exe, home.as_deref())
 }
 

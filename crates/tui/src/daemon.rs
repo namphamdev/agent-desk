@@ -267,7 +267,7 @@ pub fn resolve_comet_bin() -> anyhow::Result<PathBuf> {
         }
     }
 
-    if let Some(home) = std::env::var_os("HOME") {
+    if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
         let installed = PathBuf::from(home)
             .join(".comet-native/app/current")
             .join(exe_name);

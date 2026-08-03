@@ -54,7 +54,7 @@ use normalize::{
 };
 use rpc::{Incoming, RpcClient};
 
-const CUSTOM_PROVIDER_ID: &str = "comet_custom";
+const CUSTOM_PROVIDER_ID: &str = "custom";
 const CUSTOM_PROVIDER_API_KEY_ENV: &str = "COMET_CODEX_CUSTOM_PROVIDER_API_KEY";
 
 /// Locate the device's installed Codex CLI: `CODEX_EXECUTABLE`, then our own
@@ -84,10 +84,21 @@ fn resolve_codex_executable() -> Option<PathBuf> {
                 .map(|d| d.join(exe)),
         );
     }
-    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
-        candidates.push(home.join(".local").join("bin").join("codex"));
-        candidates.push(home.join(".codex").join("bin").join("codex"));
-        candidates.push(home.join(".npm-global").join("bin").join("codex"));
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from);
+    if let Some(home) = home {
+        candidates.push(home.join(".local").join("bin").join(exe));
+        candidates.push(home.join(".codex").join("bin").join(exe));
+        candidates.push(home.join(".npm-global").join("bin").join(exe));
+        if cfg!(windows) {
+            candidates.push(home.join("AppData").join("Local").join("Programs").join("OpenAI").join("Codex").join("bin").join("codex.exe"));
+        }
+    }
+    if cfg!(windows) {
+        if let Some(localappdata) = std::env::var_os("LOCALAPPDATA").map(PathBuf::from) {
+            candidates.push(localappdata.join("Programs").join("OpenAI").join("Codex").join("bin").join("codex.exe"));
+        }
     }
     candidates.push(PathBuf::from("/opt/homebrew/bin/codex"));
     candidates.push(PathBuf::from("/usr/local/bin/codex"));
@@ -202,22 +213,42 @@ impl CodexHarness {
 
         if let Some(path) = &self.custom_providers_path {
             if let Ok(json) = std::fs::read_to_string(path) {
+                tracing::info!(
+                    target: "comet_harness::codex",
+                    path = %path.display(),
+                    "custom providers config loaded"
+                );
                 if let Ok(config) = serde_json::from_str::<serde_json::Value>(&json) {
-                    if let Some(id) = config
+                    let selected_id = config
                         .get("selection")
                         .and_then(|s| s.get("codex"))
-                        .and_then(|v| v.as_str())
-                    {
+                        .and_then(|v| v.as_str());
+                    tracing::info!(
+                        target: "comet_harness::codex",
+                        selected_id = ?selected_id,
+                        "codex provider selection"
+                    );
+                    if let Some(id) = selected_id {
                         if let Some(providers) = config.get("providers").and_then(|p| p.as_array())
                         {
                             if let Some(provider) = providers
                                 .iter()
                                 .find(|p| p.get("id").and_then(|i| i.as_str()) == Some(id))
                             {
+                                let name = provider.get("name").and_then(|v| v.as_str());
+                                let base_url = provider.get("baseUrl").and_then(|v| v.as_str());
+                                let api_key = provider.get("apiKey").and_then(|v| v.as_str());
+                                tracing::info!(
+                                    target: "comet_harness::codex",
+                                    provider_name = ?name,
+                                    has_base_url = ?base_url.is_some(),
+                                    has_api_key = ?api_key.map(|k| !k.is_empty()),
+                                    "selected provider fields"
+                                );
                                 if let (Some(name), Some(base_url), Some(api_key)) = (
-                                    provider.get("name").and_then(|value| value.as_str()),
-                                    provider.get("baseUrl").and_then(|value| value.as_str()),
-                                    provider.get("apiKey").and_then(|value| value.as_str()),
+                                    name,
+                                    base_url,
+                                    api_key,
                                 ) {
                                     let base_url =
                                         crate::provider_models::normalized_api_base_url(base_url)
@@ -281,6 +312,31 @@ impl CodexHarness {
             .kill_on_drop(true);
         cmd
     }
+
+    fn has_custom_provider(&self) -> bool {
+        let Some(path) = &self.custom_providers_path else {
+            return false;
+        };
+        let Ok(json) = std::fs::read_to_string(path) else {
+            return false;
+        };
+        let Ok(config) = serde_json::from_str::<serde_json::Value>(&json) else {
+            return false;
+        };
+        let Some(id) = config
+            .get("selection")
+            .and_then(|s| s.get("codex"))
+            .and_then(|v| v.as_str())
+        else {
+            return false;
+        };
+        let Some(providers) = config.get("providers").and_then(|p| p.as_array()) else {
+            return false;
+        };
+        providers
+            .iter()
+            .any(|p| p.get("id").and_then(|i| i.as_str()) == Some(id))
+    }
 }
 
 #[async_trait]
@@ -330,6 +386,12 @@ impl Harness for CodexHarness {
         controls: RunControls,
     ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError> {
         let exe = self.resolve_executable()?;
+        tracing::info!(
+            target: "comet_harness::codex",
+            has_custom_provider = self.has_custom_provider(),
+            model = ?request.model,
+            "run() start"
+        );
         // Codex ≤0.144.x: the workspace-write sandbox derives a MALFORMED
         // worktree mount when the checked-out branch name contains '/'
         // (verified against the real CLI: `wing/x` in a linked worktree kills
@@ -349,6 +411,24 @@ impl Harness for CodexHarness {
             request.sandbox = comet_proto::SandboxLevel::DangerFullAccess;
         }
         let mut cmd = self.build_command(&exe, &request.cwd);
+
+        // Diagnostic: log the full command line so the exact `-c` args and
+        // the model sent on the wire are visible in logs.
+        {
+            let args: Vec<String> = cmd
+                .as_std()
+                .get_args()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect();
+            tracing::info!(
+                target: "comet_harness::codex",
+                exe = %exe.display(),
+                args = ?args,
+                model_sent_to_wire = ?request.model,
+                "spawning codex app-server"
+            );
+        }
+
         let mut child = cmd.spawn().map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
                 HarnessError::NotInstalled(exe.display().to_string())
@@ -536,6 +616,11 @@ async fn run_session(session: Session) {
         if let Some(model) = &request.model {
             p.insert("model".into(), Value::String(model.clone()));
         }
+        tracing::info!(
+            target: "comet_harness::codex",
+            model = ?request.model,
+            "thread/start params (model field sent to codex)"
+        );
         if let Some(tier) = &service_tier {
             p.insert("serviceTier".into(), Value::String(tier.clone()));
         }
@@ -1305,15 +1390,15 @@ mod tests {
             .filter(|pair| pair[0] == "-c")
             .map(|pair| pair[1].as_str())
             .collect::<Vec<_>>();
-        assert!(config.contains(&r#"model_provider="comet_custom""#));
-        assert!(config.contains(&r#"model_providers.comet_custom.name="Proxy""#));
+        assert!(config.contains(&r#"model_provider="custom""#));
+        assert!(config.contains(&r#"model_providers.custom.name="Proxy""#));
         assert!(
-            config.contains(&r#"model_providers.comet_custom.base_url="https://proxy.example/v1""#)
+            config.contains(&r#"model_providers.custom.base_url="https://proxy.example/v1""#)
         );
         assert!(config.contains(
-            &r#"model_providers.comet_custom.env_key="COMET_CODEX_CUSTOM_PROVIDER_API_KEY""#
+            &r#"model_providers.custom.env_key="COMET_CODEX_CUSTOM_PROVIDER_API_KEY""#
         ));
-        assert!(config.contains(&r#"model_providers.comet_custom.wire_api="responses""#));
+        assert!(config.contains(&r#"model_providers.custom.wire_api="responses""#));
         assert!(config.contains(&r#"agents.default_subagent_model="worker-model""#));
         assert_eq!(args.last().map(String::as_str), Some("app-server"));
         let env = command
@@ -1331,6 +1416,72 @@ mod tests {
                 .and_then(Option::as_deref),
             Some("secret")
         );
+        assert!(harness.has_custom_provider());
+        // Model id is passed through as-is — the full discovered id (which
+        // may include a provider prefix like "codex:gpt-5.6-luna") is what
+        // the upstream provider expects on the wire.
+        let request = RunRequest {
+            prompt: "hi".into(),
+            model: Some("gemini-2.5-flash".into()),
+            reasoning: None,
+            model_options: serde_json::Map::new(),
+            cwd: "/tmp".into(),
+            sandbox: comet_proto::SandboxLevel::ReadOnly,
+            auto_approve: true,
+            attachments: Vec::new(),
+            resume: None,
+            seed: None,
+            seed_purpose: None,
+            seed_role: None,
+        };
+        assert_eq!(request.model.as_deref(), Some("gemini-2.5-flash"));
+    }
+
+    #[test]
+    fn np_provider_passes_full_model_id_and_configures_custom_provider() {
+        // Reproduces the user's exact scenario: provider name "NP", model
+        // "codex:gpt-5.6-luna". The full model id (including the provider
+        // prefix) must be preserved — the upstream NP provider needs it to
+        // route correctly. The `-c` args define and select the `custom`
+        // provider so codex knows where to send requests.
+        let temp = tempfile::tempdir().unwrap();
+        let providers = temp.path().join("custom-providers.json");
+        std::fs::write(
+            &providers,
+            r#"{
+                "providers": [{
+                    "id": "np",
+                    "name": "NP",
+                    "baseUrl": "https://api.np.example",
+                    "apiKey": "np-secret",
+                    "formats": ["responses"],
+                    "codexSubagentModel": "codex:gpt-5.6-luna"
+                }],
+                "selection": {"codex": "np"}
+            }"#,
+        )
+        .unwrap();
+        let harness = CodexHarness::new().with_custom_providers(providers);
+        assert!(harness.has_custom_provider());
+
+        // The -c args: model_provider is "custom", the provider name is "NP",
+        // and the subagent model preserves its full "codex:gpt-5.6-luna" id.
+        let command = harness.build_command(&PathBuf::from("codex"), "/tmp");
+        let args = command
+            .as_std()
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        let config = args
+            .windows(2)
+            .filter(|pair| pair[0] == "-c")
+            .map(|pair| pair[1].as_str())
+            .collect::<Vec<_>>();
+        assert!(config.contains(&r#"model_provider="custom""#));
+        assert!(config.contains(&r#"model_providers.custom.name="NP""#));
+        assert!(config.contains(
+            &r#"agents.default_subagent_model="codex:gpt-5.6-luna""#
+        ));
     }
 
     #[test]

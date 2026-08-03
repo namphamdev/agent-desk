@@ -136,16 +136,12 @@ pub(crate) async fn discover_selected_provider_models(
             if raw.is_empty() || !seen.insert(raw.clone()) {
                 return None;
             }
-            // Some providers namespace their /models ids with the provider
-            // name (`antigravity:gemini-2.5-flash`). Codex routes the model to
-            // the engine-configured `comet_custom` provider, which knows the
-            // BARE model name — a namespaced id would make codex look up a
-            // nonexistent model and the run would fail or fall back. Strip a
-            // single `provider:` prefix so the picker id == the run id.
-            let id = raw
-                .split_once(':')
-                .map_or(raw.as_str(), |(_, rest)| rest)
-                .to_string();
+            // Preserve the full model id as the provider's /models endpoint
+            // returns it. Some providers namespace ids with a provider prefix
+            // (`codex:gpt-5.6-luna`); the upstream needs that full id to
+            // route correctly, so the picker id (what the user selects) must
+            // be exactly what we send on the wire.
+            let id = raw.clone();
             let label = row
                 .display_name
                 .or(row.name)
@@ -337,7 +333,7 @@ mod tests {
 
         // A provider whose /models returns `antigravity:gemini-2.5-flash` must
         // surface as the BARE `gemini-2.5-flash` — codex resolves the model
-        // against the engine-configured `comet_custom` provider, which knows
+        // against the engine-configured `custom` provider, which knows
         // the bare name only.
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -398,7 +394,7 @@ mod tests {
                 .iter()
                 .map(|model| model.id.as_str())
                 .collect::<Vec<_>>(),
-            ["gemini-2.5-flash", "plain-model"]
+            ["antigravity:gemini-2.5-flash", "plain-model"]
         );
         server.await.unwrap();
     }

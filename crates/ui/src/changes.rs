@@ -549,6 +549,8 @@ pub struct Changes {
     selected_harness: Option<HarnessId>,
     selected_model: Option<String>,
     generation_scroll: gpui::ScrollHandle,
+    model_search: Entity<ComposerInput>,
+    _model_search_events: Subscription,
     subject: Entity<ComposerInput>,
     body: Entity<ComposerInput>,
     git_task: Option<Task<()>>,
@@ -563,6 +565,7 @@ impl Changes {
         let observe = cx.observe(&state, |this: &mut Self, _, cx| this.sync(cx));
         let subject = cx.new(|cx| ComposerInput::new("Commit subject", cx));
         let body = cx.new(|cx| ComposerInput::new("Description (optional)", cx));
+        let model_search = cx.new(|cx| ComposerInput::new("Search models", cx));
         let subject_events = cx
             .subscribe(&subject, |_: &mut Self, _, _: &ComposerInputEvent, cx| {
                 cx.notify()
@@ -570,6 +573,12 @@ impl Changes {
         let body_events = cx.subscribe(&body, |_: &mut Self, _, _: &ComposerInputEvent, cx| {
             cx.notify()
         });
+        let model_search_events = cx.subscribe(
+            &model_search,
+            |_: &mut Self, _, _: &ComposerInputEvent, cx| {
+                cx.notify()
+            },
+        );
         let generation_defaults_dir = state.read(cx).data_dir.clone();
         let generation_defaults = generation_defaults_dir
             .as_deref()
@@ -605,6 +614,8 @@ impl Changes {
             selected_harness: None,
             selected_model: None,
             generation_scroll: gpui::ScrollHandle::new(),
+            model_search,
+            _model_search_events: model_search_events,
             subject,
             body,
             git_task: None,
@@ -2015,11 +2026,24 @@ impl Changes {
                 )
             }
             Some(GitGenerationPicker::Model) => {
-                let rows = self
+                let query = self.model_search.read(cx).text().to_string();
+                let labels = self
                     .models
                     .iter()
-                    .enumerate()
-                    .map(|(ix, model)| {
+                    .map(|model| {
+                        format!(
+                            "{} {} {}",
+                            model.label,
+                            model.id,
+                            model.description.as_deref().unwrap_or_default()
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                let filtered_indices = popover::filter_indices(&query, &labels);
+                let rows = filtered_indices
+                    .iter()
+                    .map(|&ix| {
+                        let model = &self.models[ix];
                         let model_id = model.id.clone();
                         let model_label = model.label.clone();
                         let selected = self.selected_model.as_deref() == Some(model.id.as_str());
@@ -2053,23 +2077,35 @@ impl Changes {
                                     this.save_generation_defaults();
                                 }
                                 this.generation_picker = None;
+                                this.model_search.update(cx, |input, cx| {
+                                    input.set_text("", cx);
+                                });
                                 cx.notify();
                             }))
-                            .child(SharedString::from(model.label.clone()))
+                            .child(SharedString::from(self.models[ix].label.clone()))
                             .into_any_element()
                     })
                     .collect::<Vec<_>>();
+                let search = popover::search_input_frame(
+                    theme,
+                    self.model_search.clone().into_any_element(),
+                );
                 Some(
                     div()
                         .id("git-model-options")
                         .flex()
                         .flex_col()
-                        .max_h(px(240.0))
-                        .overflow_y_scroll()
-                        .track_scroll(&self.generation_scroll)
-                        .border_t_1()
-                        .border_color(theme.border)
-                        .children(rows)
+                        .child(search)
+                        .child(
+                            div()
+                                .id("git-model-list")
+                                .flex()
+                                .flex_col()
+                                .max_h(px(200.0))
+                                .overflow_y_scroll()
+                                .track_scroll(&self.generation_scroll)
+                                .children(rows),
+                        )
                         .into_any_element(),
                 )
             }
@@ -2116,12 +2152,19 @@ impl Changes {
                     .child(
                         selector("git-model-select", model_label).when(!disabled, |el| {
                             el.on_click(cx.listener(|this, _, _, cx| {
+                                let closing = this.generation_picker
+                                    == Some(GitGenerationPicker::Model);
                                 this.generation_picker =
                                     if this.generation_picker == Some(GitGenerationPicker::Model) {
                                         None
                                     } else {
                                         Some(GitGenerationPicker::Model)
                                     };
+                                if closing {
+                                    this.model_search.update(cx, |input, cx| {
+                                        input.set_text("", cx);
+                                    });
+                                }
                                 cx.notify();
                             }))
                         }),

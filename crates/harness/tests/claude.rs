@@ -17,10 +17,11 @@ use comet_proto::{
 };
 
 fn fixture_path() -> PathBuf {
+    let ext = if cfg!(windows) { "bat" } else { "sh" };
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
         .join("fixtures")
-        .join("fake-claude.sh");
+        .join(format!("fake-claude.{ext}"));
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -287,6 +288,7 @@ async fn steering_lines_are_written_to_stdin_mid_run() {
 }
 
 #[tokio::test]
+#[cfg(not(windows))]
 async fn interrupt_escalates_to_sigterm_and_ends_with_interrupted_done() {
     let harness = ClaudeHarness::new()
         .with_executable(fixture_path())

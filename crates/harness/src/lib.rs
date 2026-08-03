@@ -80,8 +80,15 @@ pub mod shell_env;
 /// Dock/Finder-launched app never runs.
 pub(crate) fn node_version_manager_bins() -> Vec<std::path::PathBuf> {
     use std::path::PathBuf;
-    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from);
     let mut dirs: Vec<PathBuf> = Vec::new();
+    if cfg!(windows) {
+        if let Some(appdata) = std::env::var_os("APPDATA").map(PathBuf::from) {
+            dirs.push(appdata.join("npm"));
+        }
+    }
     // fnm: `aliases/default` is a stable symlink to the active default
     // installation (the multishell PATH entries are ephemeral, per-shell).
     let mut fnm_roots: Vec<PathBuf> = std::env::var_os("FNM_DIR")
@@ -92,6 +99,9 @@ pub(crate) fn node_version_manager_bins() -> Vec<std::path::PathBuf> {
         fnm_roots.push(home.join(".local").join("share").join("fnm"));
         fnm_roots.push(home.join("Library").join("Application Support").join("fnm"));
         fnm_roots.push(home.join(".fnm"));
+        if cfg!(windows) {
+            fnm_roots.push(home.join("AppData").join("Local").join("fnm"));
+        }
     }
     for root in fnm_roots {
         dirs.push(root.join("aliases").join("default").join("bin"));
@@ -102,6 +112,10 @@ pub(crate) fn node_version_manager_bins() -> Vec<std::path::PathBuf> {
         dirs.push(home.join(".bun").join("bin"));
         dirs.push(home.join("Library").join("pnpm"));
         dirs.push(home.join(".local").join("share").join("pnpm"));
+        if cfg!(windows) {
+            dirs.push(home.join("AppData").join("Local").join("Volta"));
+            dirs.push(home.join("AppData").join("Local").join("pnpm"));
+        }
         // nvm: every installed version's bin, newest first.
         let nvm = home.join(".nvm").join("versions").join("node");
         if let Ok(entries) = std::fs::read_dir(&nvm) {

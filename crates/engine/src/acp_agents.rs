@@ -408,52 +408,90 @@ fn launch_json(
 }
 
 fn find_executable(name: &str) -> Option<PathBuf> {
-    let executable = if cfg!(windows) {
-        format!("{name}.exe")
-    } else {
-        name.to_string()
-    };
-    let mut candidates: Vec<PathBuf> = std::env::var_os("PATH")
-        .map(|path| {
-            std::env::split_paths(&path)
-                .map(|directory| directory.join(&executable))
-                .collect()
-        })
+    let mut search_dirs: Vec<PathBuf> = std::env::var_os("PATH")
+        .map(|path| std::env::split_paths(&path).collect())
         .unwrap_or_default();
-    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
-        candidates.extend([
-            home.join(".local").join("bin").join(&executable),
-            home.join(".volta").join("bin").join(&executable),
-            home.join(".bun").join("bin").join(&executable),
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from);
+    if let Some(home) = home {
+        search_dirs.extend([
+            home.join(".local").join("bin"),
+            home.join(".volta").join("bin"),
+            home.join(".bun").join("bin"),
             home.join(".local")
                 .join("share")
                 .join("fnm")
                 .join("aliases")
                 .join("default")
-                .join("bin")
-                .join(&executable),
+                .join("bin"),
             home.join(".fnm")
                 .join("aliases")
                 .join("default")
-                .join("bin")
-                .join(&executable),
+                .join("bin"),
         ]);
+        if cfg!(windows) {
+            if let Some(appdata) = std::env::var_os("APPDATA").map(PathBuf::from) {
+                search_dirs.push(appdata.join("npm"));
+            }
+            search_dirs.extend([
+                home.join("AppData").join("Local").join("fnm").join("aliases").join("default").join("bin"),
+                home.join("AppData").join("Local").join("Volta"),
+                home.join("AppData").join("Local").join("pnpm"),
+            ]);
+        }
         let nvm = home.join(".nvm").join("versions").join("node");
         if let Ok(entries) = std::fs::read_dir(nvm) {
             let mut versions: Vec<PathBuf> = entries
                 .flatten()
-                .map(|entry| entry.path().join("bin").join(&executable))
+                .map(|entry| entry.path().join("bin"))
                 .collect();
             versions.sort();
             versions.reverse();
-            candidates.extend(versions);
+            search_dirs.extend(versions);
         }
     }
-    candidates.extend([
-        PathBuf::from("/opt/homebrew/bin").join(&executable),
-        PathBuf::from("/usr/local/bin").join(&executable),
+    search_dirs.extend([
+        PathBuf::from("/opt/homebrew/bin"),
+        PathBuf::from("/usr/local/bin"),
     ]);
-    candidates.into_iter().find(|path| path.is_file())
+
+    let extensions = if cfg!(windows) {
+        let mut exts = vec!["".to_string()];
+        if let Some(pathext) = std::env::var_os("PATHEXT") {
+            for ext in std::env::split_paths(&pathext) {
+                let ext_str = ext.to_string_lossy().to_string();
+                if !ext_str.is_empty() {
+                    if ext_str.starts_with('.') {
+                        exts.push(ext_str);
+                    } else {
+                        exts.push(format!(".{ext_str}"));
+                    }
+                }
+            }
+        }
+        if exts.len() == 1 {
+            exts.extend([
+                ".exe".to_string(),
+                ".cmd".to_string(),
+                ".bat".to_string(),
+                ".ps1".to_string(),
+            ]);
+        }
+        exts
+    } else {
+        vec!["".to_string()]
+    };
+
+    for dir in search_dirs {
+        for ext in &extensions {
+            let candidate = dir.join(format!("{name}{ext}"));
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
 }
 
 fn prepend_executable_path(env: &mut BTreeMap<String, String>, executable: &Path) {

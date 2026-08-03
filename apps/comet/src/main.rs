@@ -209,6 +209,8 @@ fn harness_from_env() -> comet_engine::HarnessId {
 }
 
 fn dirs_data_dir() -> std::path::PathBuf {
-    let home = std::env::var_os("HOME").expect("HOME not set");
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .expect("neither HOME nor USERPROFILE is set");
     std::path::PathBuf::from(home).join(".comet-native")
 }

@@ -553,12 +553,34 @@ impl Pickers {
         let harness = self.effective_harness(cx)?;
         let models = self.models.get(&harness)?.ready()?;
         match self.effective_model_id(cx) {
-            Some(id) => models
-                .iter()
-                .find(|m| m.id == id)
-                .or_else(|| default_model(models)),
+            Some(id) => {
+                let found = models.iter().find(|m| m.id == id);
+                if found.is_none() {
+                    // Only log when the exact match fails — this is the bug
+                    // condition we're debugging (gpt-5.6-luna:compress not
+                    // found, falls back to default_model).
+                    eprintln!(
+                        "[pickers:DEBUG] selected_model: id {:?} NOT in catalog {:?}, falling back to default {:?}",
+                        id,
+                        models.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+                        default_model(models).map(|m| m.id.as_str()),
+                    );
+                }
+                found.or_else(|| default_model(models))
+            }
             None => default_model(models),
         }
+    }
+
+    /// Index of the selected model row in the filtered list, so the keyboard-
+    /// nav highlight lands ON the pick instead of row 0 (which shares the
+    /// selected row's background, reading as a second selection).
+    fn selected_model_index(&self, cx: &App) -> usize {
+        let rows = self.filtered_model_rows(cx);
+        let Some(id) = self.selected_model(cx).map(|m| m.id.as_str()) else {
+            return 0;
+        };
+        rows.iter().position(|m| m.id == id).unwrap_or(0)
     }
 
     /// The explicit (non-default) option picks: the chat's persisted
@@ -653,10 +675,23 @@ impl Pickers {
             },
             PickerKind::Permission => self.effective_permission_mode(cx) as usize,
             PickerKind::Branch => self.selected_ref_index(cx),
+            PickerKind::HarnessModel => self.selected_model_index(cx),
             _ => 0,
         };
         if kind == PickerKind::HarnessModel {
-            self.model_scroll.set_offset(gpui::Point::default());
+            // Scroll the selected row into view so the highlight is visible
+            // without manual scrolling (deferred one frame because the list
+            // view may not have laid out the new items yet).
+            let target = self.active;
+            let weak = cx.weak_entity();
+            cx.defer(move |cx| {
+                weak.update(cx, |this, cx| {
+                    if this.open == Some(PickerKind::HarnessModel) {
+                        this.model_scroll.scroll_to_item(target);
+                        cx.notify();
+                    }
+                }).ok();
+            });
         }
         // Searchable pickers focus the filter input (it sits inside the frame,
         // so the frame's key handler still sees arrows/Enter); the rest focus
@@ -784,6 +819,14 @@ impl Pickers {
                     }
                 }
                 pickers.models.insert(harness, loaded);
+                // Models arrived after the picker was already open: re-center
+                // the keyboard highlight on the selected row, otherwise it
+                // stays at 0 (set when the list was empty) and reads as a
+                // second selection alongside the real pick.
+                if pickers.open == Some(PickerKind::HarnessModel) {
+                    pickers.active = pickers.selected_model_index(cx);
+                    pickers.model_scroll.scroll_to_item(pickers.active);
+                }
                 cx.notify();
             })
             .ok();
@@ -1074,6 +1117,7 @@ impl Pickers {
     }
 
     fn pick_model(&mut self, model_id: String, cx: &mut Context<Self>) {
+        eprintln!("[pickers:DEBUG] pick_model: called with model_id = {:?}", model_id);
         self.open = None;
         if self.state.read(cx).selected_chat.is_some() {
             // Existing chat: persist to the chat row (Mutate setChatConfig) —
@@ -2158,6 +2202,12 @@ impl Pickers {
                             let id = model.id.clone();
                             let is_selected = selected.as_deref() == Some(model.id.as_str())
                                 || (selected.is_none() && ix == 0);
+                            if is_selected || ix == active {
+                                eprintln!(
+                                    "[pickers:DEBUG] render_model_row[{}]: row id = {:?}, selected = {:?}, is_selected = {}, is_active = {}",
+                                    ix, model.id, selected, is_selected, ix == active
+                                );
+                            }
                             popover::menu_row_nav(
                                 &theme,
                                 is_selected,

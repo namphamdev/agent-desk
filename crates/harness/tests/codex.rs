@@ -17,10 +17,11 @@ use comet_proto::{
 };
 
 fn fixture_path() -> PathBuf {
+    let ext = if cfg!(windows) { "bat" } else { "sh" };
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
         .join("fixtures")
-        .join("fake-codex.sh");
+        .join(format!("fake-codex.{ext}"));
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -468,6 +469,7 @@ async fn interrupt_sends_turn_interrupt_and_maps_aborted() {
 }
 
 #[tokio::test]
+#[cfg(not(windows))]
 async fn unresponsive_child_is_reaped_with_interrupted_done() {
     let harness = CodexHarness::new()
         .with_executable(fixture_path())
@@ -592,4 +594,65 @@ async fn models_returns_curated_catalog() {
     // lazy descriptor must stay in lockstep).
     assert_eq!(missing.display_name(), "Codex");
     assert_eq!(missing.reasoning_levels().len(), 7);
+}
+
+#[tokio::test]
+async fn custom_provider_preserves_full_model_id_on_wire() {
+    // Reproduces the user's exact scenario: provider name "NP", model
+    // "codex:gpt-5.6-luna". The full model id (including the provider prefix)
+    // must be preserved on the wire — the upstream NP provider needs the full
+    // namespaced id to route correctly. The fake codex script verifies this.
+    let temp = tempfile::tempdir().unwrap();
+    let providers = temp.path().join("custom-providers.json");
+    std::fs::write(
+        &providers,
+        r#"{
+            "providers": [{
+                "id": "np",
+                "name": "NP",
+                "baseUrl": "https://api.np.example",
+                "apiKey": "np-secret",
+                "formats": ["responses"]
+            }],
+            "selection": {"codex": "np"}
+        }"#,
+    )
+    .unwrap();
+
+    let harness = CodexHarness::new()
+        .with_executable(fixture_path())
+        .with_custom_providers(providers);
+
+    let (controls, _steer, _token) = controls("Yes");
+    let mut req = request("scenario:custom-provider-model");
+    // The full model id as returned by the provider's /models endpoint.
+    req.model = Some("codex:gpt-5.6-luna".into());
+
+    let events = run_to_end(&harness, req, controls).await;
+
+    // The fake fails the turn with a descriptive error if the full id was
+    // not preserved. A successful completion means the right id was sent.
+    let error = events.iter().find_map(|e| match e {
+        AgentEvent::Done {
+            status: DoneStatus::Errored,
+            error,
+            ..
+        } => error.clone(),
+        _ => None,
+    });
+    assert!(
+        error.is_none(),
+        "codex rejected the model: {}",
+        error.unwrap_or_default()
+    );
+    assert!(events.contains(&AgentEvent::TextDelta { text: "ok".into() }));
+    assert_eq!(
+        events.last(),
+        Some(&AgentEvent::Done {
+            status: DoneStatus::Completed,
+            result: None,
+            error: None,
+            session_id: Some("th-1".into()),
+        })
+    );
 }

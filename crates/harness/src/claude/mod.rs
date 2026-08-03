@@ -70,9 +70,12 @@ fn resolve_claude_executable() -> Option<PathBuf> {
                 .map(|d| d.join(exe)),
         );
     }
-    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
-        candidates.push(home.join(".claude").join("local").join("claude"));
-        candidates.push(home.join(".local").join("bin").join("claude"));
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from);
+    if let Some(home) = home {
+        candidates.push(home.join(".claude").join("local").join(exe));
+        candidates.push(home.join(".local").join("bin").join(exe));
     }
     candidates.push(PathBuf::from("/opt/homebrew/bin/claude"));
     candidates.push(PathBuf::from("/usr/local/bin/claude"));

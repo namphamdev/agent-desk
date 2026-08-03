@@ -194,6 +194,22 @@ case "$turnline" in
   emit '{"method":"turn/completed","params":{"turn":{"id":"t-1"}}}'
   ;;
 
+# Verifies that the model field on turn/start and thread/start preserves the
+# full provider-namespaced model id (e.g. "codex:gpt-5.6-luna"). The upstream
+# provider needs the full id to route correctly.
+*scenario:custom-provider-model*)
+  # thread/start must carry the full namespaced model id.
+  has "$thread_line" '"model":"codex:gpt-5.6-luna"' ||
+    { fail_turn "$tid" "thread/start model should be codex:gpt-5.6-luna: $thread_line"; exit 0; }
+  # turn/start must also carry the full id.
+  has "$turnline" '"model":"codex:gpt-5.6-luna"' ||
+    { fail_turn "$tid" "turn/start model should be codex:gpt-5.6-luna: $turnline"; exit 0; }
+  emit "{\"id\":$tid,\"result\":{\"turn\":{\"id\":\"t-1\"}}}"
+  emit '{"method":"turn/started","params":{"turn":{"id":"t-1"}}}'
+  emit '{"method":"item/agentMessage/delta","params":{"itemId":"m1","delta":"ok"}}'
+  emit '{"method":"turn/completed","params":{"turn":{"id":"t-1"}}}'
+  ;;
+
 *)
   fail_turn "$tid" "unknown scenario"
   ;;

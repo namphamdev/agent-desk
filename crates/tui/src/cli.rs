@@ -117,7 +117,9 @@ pub fn run(args: TuiArgs) -> anyhow::Result<()> {
 
 /// `~/.comet-native`, matching `apps/comet`'s `dirs_data_dir`.
 pub fn default_data_dir() -> PathBuf {
-    let home = std::env::var_os("HOME").expect("HOME not set");
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .expect("neither HOME nor USERPROFILE is set");
     PathBuf::from(home).join(".comet-native")
 }
 

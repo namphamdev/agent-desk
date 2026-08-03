@@ -143,10 +143,19 @@ fn open_shortcut_window(shortcut: AiShortcut, engine: Option<EngineHandle>, cx: 
             return;
         }
     };
-    // The shortcut panel is an NSPanel (non-activating); `open_window` already
-    // made it key, so don't call `cx.activate` or `activate_window` here —
-    // doing so yanks focus away from the user's current app, and the main
-    // comet window comes along with it. Keep the panel as-is.
+    // macOS: the shortcut panel is an NSPanel (non-activating); `open_window`
+    // already made it key, so don't call `activate_window` — doing so yanks
+    // focus away from the user's current app, and the main comet window comes
+    // along with it.
+    //
+    // Windows/Linux: the popup window is created as a WS_EX_TOOLWINDOW. Without
+    // an explicit activate the OS keeps the previously focused app in the
+    // foreground and the popup is hidden behind it. Activate the window so it
+    // appears on top.
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = handle.update(cx, |_, window, _cx| window.activate_window());
+    }
     let _ = handle;
 }
 
@@ -409,6 +418,11 @@ fn capture_selected_text_or_clipboard() -> Option<String> {
         copy_current_selection();
         std::thread::sleep(Duration::from_millis(90));
     }
+    #[cfg(target_os = "windows")]
+    {
+        copy_current_selection();
+        std::thread::sleep(Duration::from_millis(90));
+    }
     clipboard_text()
         .filter(|text| !text.trim().is_empty())
         .or(previous)
@@ -452,6 +466,62 @@ fn copy_current_selection() {
         if !up.is_null() {
             CFRelease(up);
         }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn copy_current_selection() {
+    // Simulate Ctrl+C via SendInput to copy the active selection in the
+    // previously focused window. The shortcut window hasn't been activated yet
+    // (the capture runs before `open_shortcut_window`), so the keystroke is
+    // delivered to whichever app the user was in when they pressed the global
+    // hotkey.
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, SendInput, VK_C, VK_CONTROL,
+    };
+
+    let inputs = [
+        INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: VK_CONTROL,
+                    ..Default::default()
+                },
+            },
+        },
+        INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: VK_C,
+                    ..Default::default()
+                },
+            },
+        },
+        INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: VK_C,
+                    dwFlags: KEYEVENTF_KEYUP,
+                    ..Default::default()
+                },
+            },
+        },
+        INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: VK_CONTROL,
+                    dwFlags: KEYEVENTF_KEYUP,
+                    ..Default::default()
+                },
+            },
+        },
+    ];
+    unsafe {
+        SendInput(&inputs, std::mem::size_of::<INPUT>() as i32);
     }
 }
 
