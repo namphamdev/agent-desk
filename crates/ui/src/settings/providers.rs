@@ -99,14 +99,15 @@ impl ProvidersPage {
     }
 
     fn load_codex_models(&mut self, cx: &mut Context<Self>) {
-        let has_custom_codex = self
+        let Some(provider_id) = self
             .snapshot
             .ready()
-            .is_some_and(|snapshot| snapshot.selection.contains_key(&HarnessId::Codex));
-        if !has_custom_codex {
+            .and_then(|snapshot| snapshot.selection.get(&HarnessId::Codex))
+            .cloned()
+        else {
             self.codex_models = Loadable::Idle;
             return;
-        }
+        };
         let Some(engine) = self.engine(cx) else {
             self.codex_models = Loadable::Error("Engine not connected".into());
             return;
@@ -116,15 +117,26 @@ impl ProvidersPage {
             let result = engine
                 .client()
                 .call(
-                    methods::LIST_MODELS,
-                    serde_json::json!({ "harness": HarnessId::Codex }),
+                    methods::LIST_CUSTOM_PROVIDER_MODELS,
+                    serde_json::json!({ "providerId": provider_id }),
                 )
                 .await;
             this.update(cx, |page, cx| {
                 page.codex_models = match result {
-                    Ok(value) => serde_json::from_value(value)
-                        .map(Loadable::Ready)
-                        .unwrap_or_else(|error| Loadable::Error(error.to_string())),
+                    Ok(value) => match serde_json::from_value::<Vec<String>>(value) {
+                        Ok(ids) => Loadable::Ready(
+                            ids.into_iter()
+                                .map(|id| Model {
+                                    label: id.clone(),
+                                    id,
+                                    description: None,
+                                    reasoning_levels: Vec::new(),
+                                    options: Vec::new(),
+                                })
+                                .collect(),
+                        ),
+                        Err(error) => Loadable::Error(error.to_string()),
+                    },
                     Err(error) => Loadable::Error(error.to_string()),
                 };
                 cx.notify();

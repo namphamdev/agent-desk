@@ -190,7 +190,7 @@ impl CustomProviders {
     /// Fetch an OpenAI-compatible model catalog with the provider's saved
     /// credential. Credentials never cross the RPC boundary.
     pub async fn list_chat_models(&self, provider_id: &str) -> anyhow::Result<Vec<String>> {
-        let provider = self.chat_provider(provider_id)?;
+        let provider = self.models_provider(provider_id)?;
         let response = reqwest::Client::new()
             .get(openai_endpoint(&provider.base_url, "models")?)
             .bearer_auth(provider.api_key.as_deref().unwrap_or_default())
@@ -264,6 +264,27 @@ impl CustomProviders {
             .contains(&CustomProviderFormat::ChatCompletions)
         {
             bail!("Provider does not support Chat Completions");
+        }
+        if provider.api_key.as_deref().is_none_or(str::is_empty) {
+            bail!("Provider API key is missing");
+        }
+        Ok(provider)
+    }
+
+    fn models_provider(&self, provider_id: &str) -> anyhow::Result<StoredCustomProvider> {
+        let config = self.load_config()?;
+        let provider = config
+            .providers
+            .into_iter()
+            .find(|provider| provider.id == provider_id)
+            .ok_or_else(|| anyhow::anyhow!("Provider not found: {provider_id}"))?;
+        if !provider.formats.iter().any(|format| {
+            matches!(
+                format,
+                CustomProviderFormat::Responses | CustomProviderFormat::ChatCompletions
+            )
+        }) {
+            bail!("Provider does not support model discovery");
         }
         if provider.api_key.as_deref().is_none_or(str::is_empty) {
             bail!("Provider API key is missing");

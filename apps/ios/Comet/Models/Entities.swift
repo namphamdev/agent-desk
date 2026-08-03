@@ -144,6 +144,7 @@ struct Chat: Identifiable, Hashable {
     var createdAt: Int64
     var spaceId: String?
     var lastSeenAt: Int64?
+    var settledAt: Int64? = nil
 
     var displayTitle: String {
         if let title, !title.isEmpty { return title }
@@ -178,6 +179,18 @@ enum ChatIndicator: Int {
     case working = 2
     case completed = 3
     case idle = 4
+}
+
+extension ChatIndicator {
+    var activityLabel: String {
+        switch self {
+        case .awaitingInput: return "Needs input"
+        case .errored: return "Needs attention"
+        case .working: return "Running"
+        case .completed: return "Completed"
+        case .idle: return "Seen"
+        }
+    }
 }
 
 /// state.rs:277 — a Working/AwaitingInput row older than this reads as stale

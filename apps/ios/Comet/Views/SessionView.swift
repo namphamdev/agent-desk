@@ -156,6 +156,7 @@ struct SessionView: View {
         }
         .onAppear {
             model.markSeen(chatId: chatId)
+            model.notifications.activeChatId = chatId
             if model.launchSheet == "config" {
                 model.launchSheet = nil
                 showConfig = true
@@ -163,6 +164,9 @@ struct SessionView: View {
         }
         .onDisappear {
             model.markSeen(chatId: chatId)
+            if model.notifications.activeChatId == chatId {
+                model.notifications.activeChatId = nil
+            }
             model.releaseSessionStore(chatId: chatId)
         }
     }

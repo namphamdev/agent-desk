@@ -49,6 +49,7 @@ fn chat(id: &str, title: &str) -> Chat {
         harness_session_cwd: None,
         space_id: Some("s1".into()),
         last_seen_at: Some(Utc::now()),
+        settled_at: None,
     }
 }
 

@@ -185,7 +185,8 @@ final class WorkspaceStore {
                         lastMessageAt: m["lastMessageAt"]?.i64Value,
                         createdAt: m["createdAt"]?.i64Value ?? 0,
                         spaceId: m["spaceId"]?.stringValue,
-                        lastSeenAt: m["lastSeenAt"]?.i64Value)
+                        lastSeenAt: m["lastSeenAt"]?.i64Value,
+                        settledAt: m["settledAt"]?.i64Value)
         }
 
         var rows: [String: SessionRow] = [:]
@@ -432,6 +433,20 @@ final class WorkspaceStore {
         updateChat(chatId) { row in
             try row.insert(key: "lastSeenAt", v: nowMs())
         }
+    }
+
+    func setSettled(chatId: String, settled: Bool) {
+        let map = doc.getMap(id: "chats")
+        guard let row = map.get(key: chatId)?.asLoroMap() else { return }
+        do {
+            if settled {
+                try row.insert(key: "settledAt", v: nowMs())
+            } else {
+                try row.delete(key: "settledAt")
+            }
+            doc.commit()
+            project()
+        } catch {}
     }
 
     func rename(chatId: String, title: String) {

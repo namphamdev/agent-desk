@@ -172,8 +172,15 @@ struct HarnessBadge: View {
     var neutral: Color = Theme.text
 
     var body: some View {
-        BrandMarkShape(mark: BrandMark.forHarness(harness))
-            .fill((BrandMark.brandTint(for: harness) ?? neutral).opacity(dimmed ? 0.6 : 0.9))
-            .frame(width: size, height: size)
+        Group {
+            if harness == "acp" {
+                Image(systemName: "square.grid.2x2")
+                    .font(.system(size: size, weight: .medium))
+            } else {
+                BrandMarkShape(mark: BrandMark.forHarness(harness))
+            }
+        }
+        .foregroundStyle((BrandMark.brandTint(for: harness) ?? neutral).opacity(dimmed ? 0.6 : 0.9))
+        .frame(width: size, height: size)
     }
 }

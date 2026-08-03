@@ -2362,6 +2362,7 @@ mod tests {
             harness_session_cwd: None,
             space_id: Some(space_id.into()),
             last_seen_at: None,
+            settled_at: None,
         }
     }
 

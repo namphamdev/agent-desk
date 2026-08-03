@@ -680,6 +680,27 @@ impl AppState {
         rows
     }
 
+    /// Flat cross-space feed for the desktop Activity surface. Settled rows
+    /// remain available to the caller for the collapsible Done section.
+    pub fn activity_chats(&self, now: DateTime<Utc>) -> Vec<(ChatIndicator, &Chat)> {
+        let mut rows: Vec<(ChatIndicator, &Chat)> = self
+            .visible_chats()
+            .filter(|c| {
+                c.space_id
+                    .as_deref()
+                    .is_some_and(|id| self.space_row(id).is_some())
+            })
+            .map(|c| (display_status(c, self.session_for(&c.id), now), c))
+            .collect();
+        rows.sort_by(|(_, a), (_, b)| {
+            b.last_message_at
+                .or(Some(b.created_at))
+                .cmp(&a.last_message_at.or(Some(a.created_at)))
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        rows
+    }
+
     pub fn session_for(&self, chat_id: &str) -> Option<&Session> {
         self.sessions.iter().find(|s| s.chat_id == chat_id)
     }
@@ -850,6 +871,43 @@ impl AppState {
             }
         })
         .detach();
+    }
+
+    /// Synced Activity completion marker. Unlike archive, this keeps the
+    /// transcript and chat available in the Done section.
+    pub fn set_chat_settled(&mut self, chat_id: &str, settled: bool, cx: &mut Context<Self>) {
+        let Some(chat) = self.chats.iter_mut().find(|c| c.id == chat_id) else {
+            return;
+        };
+        chat.settled_at = settled.then(Utc::now);
+        cx.notify();
+        let Some(handle) = self.engine.clone() else {
+            return;
+        };
+        let chat_id = chat_id.to_string();
+        cx.spawn(async move |_, _| {
+            let params = serde_json::json!({
+                "op": "setChatSettled",
+                "chatId": chat_id,
+                "settled": settled,
+            });
+            if let Err(err) = handle.client().call(methods::MUTATE, params).await {
+                tracing::warn!(chat = %chat_id, error = %err, "setChatSettled failed");
+            }
+        })
+        .detach();
+    }
+
+    pub fn mark_all_activity_read(&mut self, cx: &mut Context<Self>) {
+        let ids: Vec<String> = self
+            .activity_chats(Utc::now())
+            .into_iter()
+            .filter(|(_, chat)| chat.unseen())
+            .map(|(_, chat)| chat.id.clone())
+            .collect();
+        for id in ids {
+            self.mark_chat_seen(&id, cx);
+        }
     }
 }
 
@@ -1224,6 +1282,7 @@ mod tests {
             harness_session_cwd: None,
             space_id: None,
             last_seen_at: None,
+            settled_at: None,
         }
     }
 

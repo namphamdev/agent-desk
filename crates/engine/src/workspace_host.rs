@@ -389,6 +389,7 @@ impl WorkspaceHost {
             harness_session_cwd: None,
             space_id,
             last_seen_at: None,
+            settled_at: None,
         })?;
         Ok(())
     }
@@ -525,6 +526,7 @@ impl WorkspaceHost {
             harness_session_cwd: None,
             space_id: Some(space.id),
             last_seen_at: None,
+            settled_at: None,
         })?;
         Ok(())
     }
@@ -580,6 +582,14 @@ impl WorkspaceHost {
         at: chrono::DateTime<Utc>,
     ) -> Result<bool, EngineError> {
         Ok(self.inner.doc.set_chat_seen(chat_id, at)?)
+    }
+
+    pub fn set_chat_settled(
+        &self,
+        chat_id: &str,
+        settled_at: Option<chrono::DateTime<Utc>>,
+    ) -> Result<bool, EngineError> {
+        Ok(self.inner.doc.set_chat_settled(chat_id, settled_at)?)
     }
 
     /// Owner-only git stamp (SpacesSync). Refuses rows owned by another device.

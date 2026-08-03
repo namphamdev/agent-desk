@@ -430,6 +430,10 @@ enum MutateParams {
         #[serde(default)]
         at: Option<i64>,
     },
+    /// Keep a finished chat in history without letting it compete with active
+    /// work in the Activity surface.
+    #[serde(rename_all = "camelCase")]
+    SetChatSettled { chat_id: String, settled: bool },
 }
 
 pub struct EngineRpc {
@@ -810,6 +814,11 @@ impl EngineRpc {
                     .map_err(failed)
                     .map(drop)
             }
+            MutateParams::SetChatSettled { chat_id, settled } => self
+                .workspace
+                .set_chat_settled(&chat_id, settled.then(chrono::Utc::now))
+                .map_err(failed)
+                .map(drop),
         }
     }
 }

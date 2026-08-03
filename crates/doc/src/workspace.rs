@@ -10,7 +10,7 @@
 //!   gitDetected, gitCheckedAt?, checkoutId?, createdAt}
 //! - `chats`: LoroMap keyed by chatId → row map {id, deviceId, title?, archived, cwd?,
 //!   branch?, checkoutId?, config?(json), lastMessagePreview?, lastMessageAt?, createdAt,
-//!   harnessSessionId?, harnessSessionCwd?, spaceId?, lastSeenAt?}
+//!   harnessSessionId?, harnessSessionCwd?, spaceId?, lastSeenAt?, settledAt?}
 //! - `sessions`: LoroMap keyed by chatId → row map {chatId, deviceId, status, startedAt?,
 //!   updatedAt}
 //! - `meta`: LoroMap {schemaVersion} — in-band detection for future destructive changes
@@ -299,6 +299,7 @@ impl WorkspaceDoc {
         )?;
         set_opt_str(&row, "spaceId", chat.space_id.as_deref())?;
         set_opt_ms(&row, "lastSeenAt", chat.last_seen_at)?;
+        set_opt_ms(&row, "settledAt", chat.settled_at)?;
         self.doc.commit();
         Ok(())
     }
@@ -318,6 +319,21 @@ impl WorkspaceDoc {
             return Ok(true);
         }
         row.insert("lastSeenAt", at.timestamp_millis())?;
+        self.doc.commit();
+        Ok(true)
+    }
+
+    /// Mark a chat done without archiving it. This is a synced LWW marker so
+    /// the Activity surface stays consistent across devices.
+    pub fn set_chat_settled(
+        &self,
+        chat_id: &str,
+        settled_at: Option<DateTime<Utc>>,
+    ) -> Result<bool, DocError> {
+        let Some(row) = self.existing_row("chats", chat_id) else {
+            return Ok(false);
+        };
+        set_opt_ms(&row, "settledAt", settled_at)?;
         self.doc.commit();
         Ok(true)
     }
@@ -680,6 +696,8 @@ struct RawChat {
     space_id: Option<String>,
     #[serde(default)]
     last_seen_at: Option<i64>,
+    #[serde(default)]
+    settled_at: Option<i64>,
 }
 
 impl From<RawChat> for Chat {
@@ -700,6 +718,7 @@ impl From<RawChat> for Chat {
             harness_session_cwd: raw.harness_session_cwd,
             space_id: raw.space_id,
             last_seen_at: raw.last_seen_at.map(dt),
+            settled_at: raw.settled_at.map(dt),
         }
     }
 }
@@ -781,6 +800,7 @@ mod tests {
             harness_session_cwd: None,
             space_id: None,
             last_seen_at: None,
+            settled_at: None,
         }
     }
 

@@ -449,6 +449,10 @@ pub struct Shell {
     changes: Option<Entity<Changes>>,
     /// Chat outlet vs settings pages.
     route: Route,
+    /// Sidebar surface: the normal Spaces/Sessions view or the flat Activity
+    /// feed.
+    activity_open: bool,
+    activity_done_open: bool,
     /// Route history behind the titlebar back/forward buttons (§ nav history).
     nav: NavHistory,
     devices_page: Option<Entity<DevicesPage>>,
@@ -680,6 +684,8 @@ impl Shell {
             terminal: None,
             changes: None,
             route,
+            activity_open: false,
+            activity_done_open: false,
             nav,
             devices_page: None,
             archived_page: None,
@@ -1472,6 +1478,14 @@ impl Shell {
         cx.notify();
     }
 
+    fn set_chat_settled(&mut self, chat_id: String, settled: bool, cx: &mut Context<Self>) {
+        self.chat_menu = None;
+        self.state.update(cx, |state, cx| {
+            state.set_chat_settled(&chat_id, settled, cx)
+        });
+        cx.notify();
+    }
+
     fn delete_chat(&mut self, chat_id: String, cx: &mut Context<Self>) {
         self.delete_confirm = None;
         if self.state.read(cx).selected_chat.as_deref() == Some(chat_id.as_str()) {
@@ -2135,6 +2149,185 @@ impl Shell {
         (scrolled > 1.0, scrolled < max_scroll - 1.0)
     }
 
+    fn render_activity_sidebar(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let now = Utc::now();
+        let (active, done): (Vec<_>, Vec<_>) = {
+            let state = self.state.read(cx);
+            let rows: Vec<_> = state
+                .activity_chats(now)
+                .into_iter()
+                .map(|(status, chat)| (status, chat.clone()))
+                .collect();
+            rows.into_iter()
+                .partition(|(_, chat)| chat.settled_at.is_none())
+        };
+        let has_activity = !active.is_empty() || !done.is_empty();
+        let selected = self.state.read(cx).selected_chat.clone();
+        let mut column = div().flex().flex_col().gap(px(2.0));
+        let groups = [
+            (
+                "Needs attention",
+                active
+                    .iter()
+                    .filter(|(status, _)| {
+                        matches!(
+                            status,
+                            comet_proto::ChatIndicator::AwaitingInput
+                                | comet_proto::ChatIndicator::Errored
+                        )
+                    })
+                    .collect::<Vec<_>>(),
+            ),
+            (
+                "Completed",
+                active
+                    .iter()
+                    .filter(|(status, _)| *status == comet_proto::ChatIndicator::Completed)
+                    .collect::<Vec<_>>(),
+            ),
+            (
+                "Running",
+                active
+                    .iter()
+                    .filter(|(status, _)| *status == comet_proto::ChatIndicator::Working)
+                    .collect::<Vec<_>>(),
+            ),
+            (
+                "Seen",
+                active
+                    .iter()
+                    .filter(|(status, _)| *status == comet_proto::ChatIndicator::Idle)
+                    .collect::<Vec<_>>(),
+            ),
+        ];
+        for (label, rows) in groups {
+            if rows.is_empty() {
+                continue;
+            }
+            column = column.child(
+                div()
+                    .px(px(Theme::SPACE_SM))
+                    .pt(px(8.0))
+                    .pb(px(2.0))
+                    .text_size(px(11.0))
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(theme.text_muted.opacity(0.6))
+                    .child(SharedString::from(label)),
+            );
+            for (status, chat) in rows {
+                let space = self
+                    .state
+                    .read(cx)
+                    .space_for_chat(chat)
+                    .map(|s| s.display_name().to_string())
+                    .unwrap_or_else(|| "?".into());
+                let branch = chat
+                    .branch
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|b| !b.is_empty())
+                    .map(SharedString::from);
+                let row = self.render_chat_row(
+                    chat.id.clone(),
+                    chat.title
+                        .clone()
+                        .unwrap_or_else(|| "New session".into())
+                        .into(),
+                    format_time_ago(chat.last_message_at.unwrap_or(chat.created_at), now).into(),
+                    space.into(),
+                    branch,
+                    chat.config.as_ref().map(|c| c.harness),
+                    *status,
+                    selected.as_deref() == Some(chat.id.as_str()),
+                    theme,
+                    cx,
+                );
+                column = column.child(row);
+            }
+        }
+        if !done.is_empty() {
+            let done_count = done.len();
+            let toggle = self.activity_done_open;
+            column = column.child(
+                div()
+                    .id("activity-done-toggle")
+                    .flex()
+                    .flex_row()
+                    .justify_between()
+                    .px(px(Theme::SPACE_SM))
+                    .pt(px(10.0))
+                    .pb(px(3.0))
+                    .text_size(px(11.0))
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(theme.text_muted.opacity(0.7))
+                    .cursor_pointer()
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.activity_done_open = !this.activity_done_open;
+                        cx.notify();
+                    }))
+                    .child(SharedString::from(format!("Done  {done_count}")))
+                    .child(
+                        icon(if toggle {
+                            icons::ALT_ARROW_DOWN
+                        } else {
+                            icons::ALT_ARROW_RIGHT
+                        })
+                        .size(px(12.0)),
+                    ),
+            );
+            if self.activity_done_open {
+                for (status, chat) in &done {
+                    let space = self
+                        .state
+                        .read(cx)
+                        .space_for_chat(chat)
+                        .map(|s| s.display_name().to_string())
+                        .unwrap_or_else(|| "?".into());
+                    let branch = chat
+                        .branch
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|b| !b.is_empty())
+                        .map(SharedString::from);
+                    column = column.child(
+                        div().opacity(0.6).child(
+                            self.render_chat_row(
+                                chat.id.clone(),
+                                chat.title
+                                    .clone()
+                                    .unwrap_or_else(|| "New session".into())
+                                    .into(),
+                                format_time_ago(
+                                    chat.last_message_at.unwrap_or(chat.created_at),
+                                    now,
+                                )
+                                .into(),
+                                space.into(),
+                                branch,
+                                chat.config.as_ref().map(|c| c.harness),
+                                *status,
+                                selected.as_deref() == Some(chat.id.as_str()),
+                                theme,
+                                cx,
+                            ),
+                        ),
+                    );
+                }
+            }
+        }
+        if !has_activity {
+            column = column.child(
+                div()
+                    .px(px(Theme::SPACE_SM))
+                    .pt(px(16.0))
+                    .text_size(px(12.0))
+                    .text_color(theme.text_faint)
+                    .child(SharedString::from("No activity yet")),
+            );
+        }
+        column.into_any_element()
+    }
+
     /// Chat-mode sidebar (spaces overhaul): window-control strip, the Spaces
     /// section (folder + device rows, add-space), the global Active sessions
     /// list, the notice strip, and the UserMenu (§1.6).
@@ -2216,6 +2409,86 @@ impl Shell {
         let user_menu = self.render_user_menu(user_line.clone(), user_email.clone(), theme, cx);
 
         let spaces_section = self.render_spaces_section(theme, cx);
+        let activity_open = self.activity_open;
+        let surface_header = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .px(px(Theme::SPACE_SM))
+            .py(px(6.0))
+            .child(
+                div()
+                    .text_size(px(13.0))
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(theme.text)
+                    .child(SharedString::from(if activity_open {
+                        "Activity"
+                    } else {
+                        "Projects"
+                    })),
+            )
+            .child(
+                div()
+                    .id("sidebar-activity-toggle")
+                    .size(px(24.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(6.0))
+                    .cursor_pointer()
+                    .bg(if activity_open {
+                        theme.element_active
+                    } else {
+                        crate::theme::wash(0.0)
+                    })
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.activity_open = !this.activity_open;
+                        this.sidebar_scroll = gpui::ScrollHandle::new();
+                        cx.notify();
+                    }))
+                    .child(
+                        icon(icons::BELL_MINIMALISTIC)
+                            .size(px(15.0))
+                            .text_color(theme.text_muted),
+                    ),
+            );
+        let sidebar_content = if activity_open {
+            self.render_activity_sidebar(theme, cx)
+        } else {
+            div()
+                .flex()
+                .flex_col()
+                .child(spaces_section)
+                .child(
+                    div()
+                        .px(px(Theme::SPACE_SM))
+                        .pt(px(12.0))
+                        .pb(px(4.0))
+                        .text_size(px(11.0))
+                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .text_color(theme.text_muted.opacity(0.6))
+                        .child(SharedString::from("Sessions")),
+                )
+                .child(if !list_items.is_empty() {
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(2.0))
+                        .pb(px(Theme::SPACE_SM))
+                        .children(list_items)
+                        .into_any_element()
+                } else {
+                    div()
+                        .px(px(Theme::SPACE_SM))
+                        .pb(px(Theme::SPACE_SM))
+                        .text_size(px(12.0))
+                        .text_color(theme.text_faint)
+                        .child(SharedString::from("No sessions yet"))
+                        .into_any_element()
+                })
+                .into_any_element()
+        };
 
         div()
             .w(px(self.settings.sidebar_width))
@@ -2244,34 +2517,8 @@ impl Shell {
                             .px(px(Theme::SPACE_SM))
                             .flex()
                             .flex_col()
-                            .child(spaces_section)
-                            .child(
-                                div()
-                                    .px(px(Theme::SPACE_SM))
-                                    .pt(px(12.0))
-                                    .pb(px(4.0))
-                                    .text_size(px(11.0))
-                                    .font_weight(gpui::FontWeight::MEDIUM)
-                                    .text_color(theme.text_muted.opacity(0.6))
-                                    .child(SharedString::from("Sessions")),
-                            )
-                            .child(if !list_items.is_empty() {
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .gap(px(2.0))
-                                    .pb(px(Theme::SPACE_SM))
-                                    .children(list_items)
-                                    .into_any_element()
-                            } else {
-                                div()
-                                    .px(px(Theme::SPACE_SM))
-                                    .pb(px(Theme::SPACE_SM))
-                                    .text_size(px(12.0))
-                                    .text_color(theme.text_faint)
-                                    .child(SharedString::from("No sessions yet"))
-                                    .into_any_element()
-                            }),
+                            .child(surface_header)
+                            .child(sidebar_content),
                     )
                     .when(lists_fade_top && !glass, |el| {
                         el.child(div().absolute().top_0().left_0().right_0().h(px(24.0)).bg(
@@ -2639,6 +2886,15 @@ impl Shell {
             let rename_id = chat_id.clone();
             let archive_id = chat_id.clone();
             let delete_id = chat_id.clone();
+            let settled = self
+                .state
+                .read(cx)
+                .chats
+                .iter()
+                .find(|chat| chat.id == chat_id)
+                .and_then(|chat| chat.settled_at)
+                .is_some();
+            let settle_id = chat_id.clone();
             let menu = popover::popover_card(&theme)
                 .w(px(170.0))
                 .on_mouse_down_out(cx.listener(|this, _, _, cx| {
@@ -2668,6 +2924,23 @@ impl Shell {
                                 .text_color(theme.text_muted),
                         )
                         .child(SharedString::from("Archive")),
+                )
+                .child(
+                    popover::menu_row(&theme, false, format!("chat-menu-settle-{chat_id}"))
+                        .id("chat-menu-settle")
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.set_chat_settled(settle_id.clone(), !settled, cx)
+                        }))
+                        .child(
+                            icon(icons::CHECK)
+                                .size(px(16.0))
+                                .text_color(theme.text_muted),
+                        )
+                        .child(SharedString::from(if settled {
+                            "Undo done"
+                        } else {
+                            "Done"
+                        })),
                 )
                 .child(popover::menu_separator())
                 .child(

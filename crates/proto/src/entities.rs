@@ -122,6 +122,10 @@ pub struct Chat {
     /// device clears the badge everywhere.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_seen_at: Option<DateTime<Utc>>,
+    /// Synced completion marker used by the Activity surface. Settled chats
+    /// remain in history but no longer compete with active work.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settled_at: Option<DateTime<Utc>>,
 }
 
 impl Chat {
