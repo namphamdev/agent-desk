@@ -1,0 +1,51 @@
+{
+  "expo": {
+    "name": "Comet",
+    "slug": "comet",
+    "version": "0.0.2",
+    "orientation": "default",
+    "icon": "./assets/icon.png",
+    "scheme": "comet",
+    "userInterfaceStyle": "dark",
+    "splash": {
+      "backgroundColor": "#060606",
+      "resizeMode": "contain",
+      "image": "./assets/splash.png"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "dev.cometnative.Comet",
+      "associatedDomains": [],
+      "infoPlist": {
+        "UISupportedInterfaceOrientations": [
+          "UIInterfaceOrientationPortrait",
+          "UIInterfaceOrientationLandscapeLeft",
+          "UIInterfaceOrientationLandscapeRight"
+        ],
+        "NSAppTransportSecurity": {
+          "NSAllowsLocalNetworking": true
+        }
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#060606"
+      },
+      "package": "dev.cometnative.Comet"
+    },
+    "plugins": [
+      "expo-font",
+      "expo-notifications",
+      [
+        "expo-notifications",
+        {
+          "color": "#ffffff"
+        }
+      ]
+    ],
+    "experiments": {
+      "tsconfigPaths": true
+    }
+  }
+}
