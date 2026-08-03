@@ -298,6 +298,12 @@ struct CustomProviderIdParams {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct SetSyncedShortcutsParams {
+    shortcuts: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct RunAiShortcutParams {
     provider_id: String,
     model: String,
@@ -1497,6 +1503,22 @@ impl RpcService for EngineRpc {
                     .await
                     .map_err(|error| RpcError::Failed(error.to_string()))?;
                 RpcReply::value(&snapshot)
+            }
+            methods::GET_SYNCED_SHORTCUTS => {
+                let shortcuts = self
+                    .custom_providers
+                    .synced_shortcuts()
+                    .await
+                    .map_err(|error| RpcError::Failed(error.to_string()))?;
+                RpcReply::value(&shortcuts)
+            }
+            methods::SET_SYNCED_SHORTCUTS => {
+                let p: SetSyncedShortcutsParams = parse_params(params)?;
+                self.custom_providers
+                    .set_synced_shortcuts(p.shortcuts)
+                    .await
+                    .map_err(|error| RpcError::Failed(error.to_string()))?;
+                RpcReply::value(&serde_json::json!({ "ok": true }))
             }
             methods::LIST_CUSTOM_PROVIDER_MODELS => {
                 let p: CustomProviderIdParams = parse_params(params)?;

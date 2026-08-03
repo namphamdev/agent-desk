@@ -15,6 +15,8 @@ export interface Env {
    * routes (code exchange, refresh, orgs). Unset ⇒ those routes answer 501,
    * matching the old apps/server dev-mode behavior. */
   WORKOS_API_KEY?: string;
+  /** Base64 32-byte secret key for AES-256-GCM encryption of account settings at rest in BLOBS R2. */
+  SETTINGS_ENCRYPTION_KEY?: string;
 }
 
 /** Header the Worker stamps on requests it forwards into DOs after verifying

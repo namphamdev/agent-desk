@@ -119,6 +119,9 @@ pub mod methods {
     pub const RUN_AI_SHORTCUT: &str = "RunAiShortcut";
     /// Discover the OpenAI-compatible model catalog for one custom provider.
     pub const LIST_CUSTOM_PROVIDER_MODELS: &str = "ListCustomProviderModels";
+    /// Account-scoped shortcut settings, encrypted at rest by the edge.
+    pub const GET_SYNCED_SHORTCUTS: &str = "GetSyncedShortcuts";
+    pub const SET_SYNCED_SHORTCUTS: &str = "SetSyncedShortcuts";
     // Uploads / attachments (ControlRpc, relay-forwardable — target the chat's host device).
     pub const UPLOAD_CHUNK: &str = "UploadChunk";
     pub const UPLOAD_COMMIT: &str = "UploadCommit";

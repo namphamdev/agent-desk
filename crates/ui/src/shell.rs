@@ -20,6 +20,7 @@ use gpui::{
     MouseButton, MouseDownEvent, MouseUpEvent, Pixels, Point, Render, SharedString, Subscription,
     Task, Window, WindowControlArea, actions, div, prelude::*, px,
 };
+use serde::{Deserialize, Serialize};
 
 use comet_rpc::methods;
 use gpui_tokio::Tokio;
@@ -42,7 +43,7 @@ use crate::settings::providers::{ProvidersEvent, ProvidersPage};
 use crate::settings::shortcuts::{ShortcutsEvent, ShortcutsPage};
 use crate::settings::workflows::{WorkflowsEvent, WorkflowsPage};
 use crate::settings::{
-    KeymapConfig, RIGHT_PANE_DEFAULT, RIGHT_PANE_MAX, RIGHT_PANE_MIN, SAVE_DEBOUNCE_MS,
+    AiShortcut, KeymapConfig, RIGHT_PANE_DEFAULT, RIGHT_PANE_MAX, RIGHT_PANE_MIN, SAVE_DEBOUNCE_MS,
     SIDEBAR_DEFAULT, SIDEBAR_MAX, SIDEBAR_MIN, TERMINAL_DEFAULT_HEIGHT, UiSettings, platform_combo,
 };
 use crate::state::{
@@ -436,6 +437,13 @@ struct OrgGateUi {
     _events: Subscription,
 }
 
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SyncedShortcuts {
+    keymap: KeymapConfig,
+    ai_shortcuts: Vec<AiShortcut>,
+}
+
 pub struct Shell {
     state: Entity<AppState>,
     transcript: Entity<Transcript>,
@@ -468,6 +476,7 @@ pub struct Shell {
     notifications_page: Option<Entity<NotificationsPage>>,
     notifications_sub: Option<Subscription>,
     shortcuts_sub: Option<Subscription>,
+    shortcuts_sync_loaded: bool,
     workflows_sub: Option<Subscription>,
     /// Session-row context menu: (chat id, window position).
     chat_menu: Option<(String, Point<Pixels>)>,
@@ -700,6 +709,7 @@ impl Shell {
             notifications_page: None,
             notifications_sub: None,
             shortcuts_sub: None,
+            shortcuts_sync_loaded: false,
             workflows_sub: None,
             chat_menu: None,
             rename_dialog: None,
@@ -813,6 +823,19 @@ impl Shell {
     // ---- splash ----
 
     fn on_state_changed(&mut self, state: &Entity<AppState>, cx: &mut Context<Self>) {
+        if !self.shortcuts_sync_loaded
+            && let Some(engine) = state.read(cx).engine().cloned()
+        {
+            self.shortcuts_sync_loaded = true;
+            self.load_synced_shortcuts(
+                engine,
+                SyncedShortcuts {
+                    keymap: self.settings.keymap.clone(),
+                    ai_shortcuts: self.settings.ai_shortcuts.clone(),
+                },
+                cx,
+            );
+        }
         // Capture knob: the add-space palette needs only the device registry.
         if self.debug_dialog.as_deref() == Some("add-space") && !state.read(cx).devices.is_empty() {
             self.debug_dialog = None;
@@ -964,6 +987,79 @@ impl Shell {
             ConnectionStatus::Failed(_) => self.splash = SplashPhase::Gone,
             ConnectionStatus::Connecting => {}
         }
+    }
+
+    fn load_synced_shortcuts(
+        &mut self,
+        engine: crate::state::EngineHandle,
+        local: SyncedShortcuts,
+        cx: &mut Context<Self>,
+    ) {
+        self.mutate_task = Some(cx.spawn(async move |this, cx| {
+            let Ok(value) = engine
+                .client()
+                .call(
+                    comet_rpc::methods::GET_SYNCED_SHORTCUTS,
+                    serde_json::json!({}),
+                )
+                .await
+            else {
+                return;
+            };
+            if value.is_null() {
+                if let Err(error) = engine
+                    .client()
+                    .call(
+                        comet_rpc::methods::SET_SYNCED_SHORTCUTS,
+                        serde_json::json!({ "shortcuts": local }),
+                    )
+                    .await
+                {
+                    tracing::warn!(%error, "failed to initialize synced shortcut settings");
+                }
+                return;
+            }
+            let Ok(settings) = serde_json::from_value::<SyncedShortcuts>(value) else {
+                tracing::warn!("invalid synced shortcut settings");
+                return;
+            };
+            let _ = this.update(cx, |shell, cx| {
+                shell.settings.keymap = settings.keymap;
+                shell.settings.ai_shortcuts = settings.ai_shortcuts;
+                apply_keymap(cx, &shell.settings.keymap);
+                if let Some(runtime) = cx
+                    .try_global::<crate::global_shortcuts::GlobalShortcutRuntimeHandle>()
+                    .map(|runtime| runtime.0.clone())
+                {
+                    let shortcuts = shell.settings.ai_shortcuts.clone();
+                    runtime.update(cx, |runtime, cx| runtime.configure(shortcuts, cx));
+                }
+                shell.schedule_save(cx);
+                cx.notify();
+            });
+        }));
+    }
+
+    fn sync_shortcuts(&mut self, cx: &mut Context<Self>) {
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            return;
+        };
+        let shortcuts = SyncedShortcuts {
+            keymap: self.settings.keymap.clone(),
+            ai_shortcuts: self.settings.ai_shortcuts.clone(),
+        };
+        self.mutate_task = Some(cx.spawn(async move |_this, _cx| {
+            if let Err(error) = engine
+                .client()
+                .call(
+                    comet_rpc::methods::SET_SYNCED_SHORTCUTS,
+                    serde_json::json!({ "shortcuts": shortcuts }),
+                )
+                .await
+            {
+                tracing::warn!(%error, "failed to sync shortcut settings");
+            }
+        }));
     }
 
     // ---- layout state ----
@@ -1365,6 +1461,7 @@ impl Shell {
                                 });
                             }
                             this.schedule_save(cx);
+                            this.sync_shortcuts(cx);
                             cx.notify();
                         },
                     ));

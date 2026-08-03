@@ -7,12 +7,15 @@ use comet_proto::{CustomProvider, CustomProviderFormat, CustomProviderSnapshot, 
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
 
+use crate::doc_host::EdgeConfig;
+
 pub const CUSTOM_PROVIDERS_FILE: &str = "custom-providers.json";
 
 #[derive(Clone)]
 pub struct CustomProviders {
     data_dir: Arc<PathBuf>,
     mutation: Arc<tokio::sync::Mutex<()>>,
+    edge: Option<EdgeConfig>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -20,6 +23,14 @@ pub struct CustomProviders {
 struct CustomProvidersConfig {
     providers: Vec<StoredCustomProvider>,
     selection: HashMap<HarnessId, String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+struct AccountSettings {
+    custom_providers: CustomProvidersConfig,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    shortcuts: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -36,10 +47,11 @@ struct StoredCustomProvider {
 }
 
 impl CustomProviders {
-    pub fn new(data_dir: impl Into<PathBuf>) -> Self {
+    pub fn new(data_dir: impl Into<PathBuf>, edge: Option<EdgeConfig>) -> Self {
         Self {
             data_dir: Arc::new(data_dir.into()),
             mutation: Arc::new(tokio::sync::Mutex::new(())),
+            edge,
         }
     }
 
@@ -48,7 +60,7 @@ impl CustomProviders {
     }
 
     pub async fn list(&self) -> anyhow::Result<CustomProviderSnapshot> {
-        let config = self.load_config()?;
+        let config = self.sync_from_account().await?;
         Ok(snapshot(config))
     }
 
@@ -112,6 +124,7 @@ impl CustomProviders {
         });
 
         self.save_config(&config)?;
+        self.sync_to_account(&config).await?;
         Ok(snapshot(config))
     }
 
@@ -123,6 +136,7 @@ impl CustomProviders {
         config.selection.retain(|_, selected_id| selected_id != id);
 
         self.save_config(&config)?;
+        self.sync_to_account(&config).await?;
         Ok(snapshot(config))
     }
 
@@ -162,6 +176,7 @@ impl CustomProviders {
         }
 
         self.save_config(&config)?;
+        self.sync_to_account(&config).await?;
         Ok(snapshot(config))
     }
 
@@ -184,7 +199,25 @@ impl CustomProviders {
             .map(|model| model.trim().to_string())
             .filter(|model| !model.is_empty());
         self.save_config(&config)?;
+        self.sync_to_account(&config).await?;
         Ok(snapshot(config))
+    }
+
+    pub async fn synced_shortcuts(&self) -> anyhow::Result<Option<serde_json::Value>> {
+        Ok(self
+            .fetch_account_settings()
+            .await?
+            .and_then(|settings| settings.shortcuts))
+    }
+
+    pub async fn set_synced_shortcuts(&self, shortcuts: serde_json::Value) -> anyhow::Result<()> {
+        let _guard = self.mutation.lock().await;
+        let mut settings = self.fetch_account_settings().await?.unwrap_or_default();
+        settings.shortcuts = Some(shortcuts);
+        if self.edge.is_some() {
+            self.put_account_settings(&settings).await?;
+        }
+        Ok(())
     }
 
     /// Fetch an OpenAI-compatible model catalog with the provider's saved
@@ -322,6 +355,102 @@ impl CustomProviders {
         std::fs::rename(tmp, path)?;
         Ok(())
     }
+
+    async fn sync_from_account(&self) -> anyhow::Result<CustomProvidersConfig> {
+        let local = self.load_config()?;
+        let settings = match self.fetch_account_settings().await {
+            Ok(settings) => settings,
+            Err(error) => {
+                tracing::warn!(%error, "failed to refresh account provider settings");
+                return Ok(local);
+            }
+        };
+        let Some(settings) = settings else {
+            if self.edge.is_some() && (!local.providers.is_empty() || !local.selection.is_empty()) {
+                self.sync_to_account(&local).await?;
+            }
+            return Ok(local);
+        };
+        self.save_config(&settings.custom_providers)?;
+        Ok(settings.custom_providers)
+    }
+
+    async fn sync_to_account(&self, config: &CustomProvidersConfig) -> anyhow::Result<()> {
+        let settings = match self.fetch_account_settings().await {
+            Ok(settings) => settings,
+            Err(error) => {
+                tracing::warn!(%error, "failed to load account settings before provider sync");
+                return Ok(());
+            }
+        };
+        let Some(mut settings) = settings else {
+            if self.edge.is_none() {
+                return Ok(());
+            }
+            if let Err(error) = self
+                .put_account_settings(&AccountSettings {
+                    custom_providers: config.clone(),
+                    ..Default::default()
+                })
+                .await
+            {
+                tracing::warn!(%error, "failed to sync account provider settings");
+            }
+            return Ok(());
+        };
+        settings.custom_providers = config.clone();
+        if let Err(error) = self.put_account_settings(&settings).await {
+            tracing::warn!(%error, "failed to sync account provider settings");
+        }
+        Ok(())
+    }
+
+    async fn fetch_account_settings(&self) -> anyhow::Result<Option<AccountSettings>> {
+        let Some(edge) = &self.edge else {
+            return Ok(None);
+        };
+        let token = edge.bearer().await.context("not signed in")?;
+        let response = reqwest::Client::new()
+            .get(format!(
+                "{}/account-settings",
+                edge.url.trim_end_matches('/')
+            ))
+            .bearer_auth(token)
+            .send()
+            .await
+            .context("read account settings")?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        let response = response
+            .error_for_status()
+            .context("read account settings")?;
+        response
+            .json()
+            .await
+            .context("decode account settings")
+            .map(Some)
+    }
+
+    async fn put_account_settings(&self, settings: &AccountSettings) -> anyhow::Result<()> {
+        let Some(edge) = &self.edge else {
+            return Ok(());
+        };
+        let token = edge.bearer().await.context("not signed in")?;
+        reqwest::Client::new()
+            .put(format!(
+                "{}/account-settings",
+                edge.url.trim_end_matches('/')
+            ))
+            .bearer_auth(token)
+            .json(settings)
+            .send()
+            .await
+            .context("write account settings")?
+            .error_for_status()
+            .context("write account settings")?;
+        Ok(())
+    }
 }
 
 fn openai_endpoint(base_url: &str, path: &str) -> anyhow::Result<reqwest::Url> {
@@ -395,7 +524,7 @@ mod tests {
     #[tokio::test]
     async fn snapshots_never_return_keys_and_edits_preserve_them() {
         let dir = tempfile::tempdir().unwrap();
-        let settings = CustomProviders::new(dir.path());
+        let settings = CustomProviders::new(dir.path(), None);
         let snapshot = add_provider(&settings).await;
         assert!(snapshot.providers[0].has_api_key);
         assert_eq!(snapshot.providers[0].base_url, "https://api.example.com");
@@ -435,7 +564,7 @@ mod tests {
     #[tokio::test]
     async fn selection_enforces_harness_formats_and_delete_clears_it() {
         let dir = tempfile::tempdir().unwrap();
-        let settings = CustomProviders::new(dir.path());
+        let settings = CustomProviders::new(dir.path(), None);
         add_provider(&settings).await;
         assert!(
             settings
@@ -470,7 +599,7 @@ mod tests {
     #[tokio::test]
     async fn rejects_missing_credentials_and_non_http_urls() {
         let dir = tempfile::tempdir().unwrap();
-        let settings = CustomProviders::new(dir.path());
+        let settings = CustomProviders::new(dir.path(), None);
         assert!(
             settings
                 .upsert(

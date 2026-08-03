@@ -202,7 +202,7 @@ impl EngineCore {
         let uploads = Uploads::new(data_dir, edge.clone());
         let agent_accounts = AgentAccounts::new(AgentAccountsConfig::detect(data_dir));
         let acp_agents = AcpAgents::new(data_dir);
-        let custom_providers = CustomProviders::new(data_dir);
+        let custom_providers = CustomProviders::new(data_dir, edge.clone());
         sessions.set_titles(TitleGenerator::new(
             workspace.clone(),
             registry.clone(),

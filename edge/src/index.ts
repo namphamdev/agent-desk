@@ -26,8 +26,11 @@
  *   PUT  /attachments/:sha256         — content-addressed upload
  *   GET  /attachments/:sha256
  *   HEAD /attachments/:sha256
+ *   GET  /account-settings            — read encrypted account settings
+ *   PUT  /account-settings            — update encrypted account settings
  */
 import { authenticate } from "./auth";
+import { handleAccountSettings } from "./account-settings";
 import { handleAuthRoute } from "./auth-routes";
 import { AUTH_USER_HEADER, ROOM_KIND_HEADER, type Env } from "./env";
 import { SessionRoom } from "./session-room";
@@ -263,6 +266,11 @@ export default {
           request.method === "GET" && "body" in object ? (object as R2ObjectBody).body : null;
         return new Response(body, { headers });
       }
+    }
+
+    // ── account settings: encrypted per-user sync blob ─────────────────────
+    if (parts[0] === "account-settings" && parts.length === 1) {
+      return handleAccountSettings(request, env, auth.userId);
     }
 
     return json({ error: "not_found" }, 404);

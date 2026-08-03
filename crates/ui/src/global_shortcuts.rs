@@ -134,17 +134,20 @@ fn open_shortcut_window(shortcut: AiShortcut, engine: Option<EngineHandle>, cx: 
         app_id: Some("comet-shortcut".into()),
         ..Default::default()
     };
-    match cx.open_window(options, move |window, cx| {
+    let handle = match cx.open_window(options, move |window, cx| {
         cx.new(|cx| ShortcutWindow::new(shortcut, engine, start_input, window, cx))
     }) {
-        Ok(handle) => {
-            cx.activate(true);
-            handle
-                .update(cx, |_, window, _| window.activate_window())
-                .ok();
+        Ok(handle) => handle,
+        Err(error) => {
+            tracing::warn!(%error, "failed to open shortcut result window");
+            return;
         }
-        Err(error) => tracing::warn!(%error, "failed to open shortcut result window"),
-    }
+    };
+    // The shortcut panel is an NSPanel (non-activating); `open_window` already
+    // made it key, so don't call `cx.activate` or `activate_window` here —
+    // doing so yanks focus away from the user's current app, and the main
+    // comet window comes along with it. Keep the panel as-is.
+    let _ = handle;
 }
 
 #[derive(Clone)]
@@ -373,10 +376,11 @@ impl gpui::Render for ShortcutWindow {
                                     .bg(theme.text)
                                     .text_color(theme.bg)
                                     .cursor_pointer()
-                                    .on_click(move |_, _, cx| {
+                                    .on_click(move |_, window, cx| {
                                         cx.write_to_clipboard(gpui::ClipboardItem::new_string(
                                             text.to_string(),
                                         ));
+                                        window.remove_window();
                                     })
                                     .child("Copy result"),
                             )
@@ -384,7 +388,16 @@ impl gpui::Render for ShortcutWindow {
                     ),
             )
             .on_mouse_down(gpui::MouseButton::Left, |_, window, _| {
-                window.activate_window()
+                #[cfg(target_os = "macos")]
+                {
+                    // Keep the panel non-activating. Activating it here would
+                    // cause AppKit to activate Comet's main window on close.
+                    let _ = window;
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    window.activate_window();
+                }
             })
     }
 }
