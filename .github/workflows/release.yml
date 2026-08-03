@@ -17,6 +17,10 @@ on:
     tags: ["v*"]
   workflow_dispatch:
 
+env:
+  COMET_EDGE_URL: ${{ secrets.COMET_EDGE_URL }}
+  COMET_WORKOS_CLIENT_ID: ${{ secrets.COMET_WORKOS_CLIENT_ID }}
+
 permissions:
   contents: write
 
