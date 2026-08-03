@@ -2007,7 +2007,7 @@ impl Shell {
                 .bg(dot_color)
                 .into_any_element()
         };
-        let (hover, text) = (theme.element_hover, theme.text);
+        let (hover, text) = (theme.glass_hover(), theme.text);
         let selected_wash = crate::theme::glass_selected_bg();
         let subline = theme.text_muted.opacity(0.5);
         let select_id = id.clone();
@@ -2507,12 +2507,12 @@ impl Shell {
             // (`data-[state=open]`) the slightly stronger `bg-white/[0.06]`;
             // the hover wash fades over `transition-colors`.
             .bg(if open {
-                theme.element_hover
+                theme.glass_hover()
             } else {
                 motion::hover_blend(
                     "user-menu-trigger",
-                    crate::theme::wash(0.0),
-                    crate::theme::wash(0.11),
+                    theme.glass_hover().opacity(0.0),
+                    theme.glass_hover().opacity(0.8),
                 )
             })
             .on_hover(motion::hover_listener("user-menu-trigger"))
@@ -3315,7 +3315,7 @@ impl Shell {
                         .text_size(px(13.0))
                         .text_color(theme.text)
                         .cursor_pointer()
-                        .hover(|s| s.bg(theme.element_hover))
+                        .hover(|s| s.bg(theme.glass_hover()))
                         .on_click(cx.listener(|this, _, _, cx| this.retry_engine(cx)))
                         .child(SharedString::from("Retry")),
                 )
@@ -3444,7 +3444,7 @@ impl Shell {
                                 .border_color(theme.border)
                                 .text_color(theme.text)
                                 .cursor_pointer()
-                                .hover(|s| s.bg(theme.element_hover))
+                                .hover(|s| s.bg(theme.glass_hover()))
                                 .on_click(cx.listener(|this, _, _, cx| this.load_orgs(cx)))
                                 .child(SharedString::from("Retry")),
                         ),
@@ -3733,8 +3733,8 @@ fn window_control_button(
         // comet window-controls.tsx: `transition-colors` — the wash fades.
         .bg(motion::hover_blend(
             &fade_key,
-            crate::theme::wash(0.0),
-            theme.element_hover,
+            theme.glass_hover().opacity(0.0),
+            theme.glass_hover(),
         ))
         .on_hover(motion::hover_listener(fade_key))
         // Buttons in/over a titlebar drag strip must be EXCLUDED from the
