@@ -1588,6 +1588,8 @@ impl Shell {
         if self.state.read(cx).selected_chat.as_deref() == Some(chat_id.as_str()) {
             self.state.update(cx, |s, cx| s.select_chat(None, cx));
         }
+        self.composer
+            .update(cx, |composer, _| composer.purge_chat(&chat_id));
         self.mutate(
             serde_json::json!({ "op": "deleteChat", "chatId": chat_id }),
             cx,
@@ -2108,6 +2110,8 @@ impl Shell {
                 .child(loaders::mini_gradient_spinner(
                     format!("chat-working-{id}"),
                     2.0,
+                    cx.entity_id(),
+                    cx,
                 ))
                 .into_any_element()
         } else {
@@ -2131,6 +2135,11 @@ impl Shell {
         } else {
             crate::theme::wash(0.0)
         };
+        // A selected row must NOT drift toward the hover wash: in dark the two
+        // fills are identical so the blend is a no-op, but light's hover sits
+        // below its near-opaque selected fill, and blending toward it visibly
+        // dimmed the active row under the pointer (user report).
+        let hover_bg = if selected { selected_wash } else { hover };
         let rest_text = if selected { text } else { text.opacity(0.8) };
         div()
             .id(SharedString::from(format!("chat-{id}")))
@@ -2141,7 +2150,7 @@ impl Shell {
             .px(px(Theme::SPACE_SM))
             .py(px(6.0))
             .text_color(motion::hover_blend(&fade_key, rest_text, text))
-            .bg(motion::hover_blend(&fade_key, rest_bg, hover))
+            .bg(motion::hover_blend(&fade_key, rest_bg, hover_bg))
             .when(selected, |el| {
                 el.shadow(crate::theme::glass_selected_shadows())
             })
@@ -3567,7 +3576,13 @@ impl Shell {
                 let word =
                     transcript::flavour_word(transcript::flavour_seed(&chat_id), elapsed_secs);
                 strip
-                    .child(loaders::gradient_spinner("working-indicator", &theme, 2.5))
+                    .child(loaders::gradient_spinner(
+                        "working-indicator",
+                        &theme,
+                        2.5,
+                        cx.entity_id(),
+                        cx,
+                    ))
                     .child(
                         div()
                             .text_size(px(12.0))
@@ -3589,7 +3604,13 @@ impl Shell {
                 .child(SharedString::from("Run failed"))
                 .into_any_element(),
             Indicator::None if sending => strip
-                .child(loaders::gradient_spinner("sending-indicator", &theme, 2.5))
+                .child(loaders::gradient_spinner(
+                    "sending-indicator",
+                    &theme,
+                    2.5,
+                    cx.entity_id(),
+                    cx,
+                ))
                 .child(
                     div()
                         .text_size(px(12.0))
@@ -3799,7 +3820,13 @@ impl Shell {
             match &orgs {
                 Loadable::Idle | Loadable::Loading => div()
                     .mt(px(24.0))
-                    .child(popover::skeleton_rows("org-skeleton", &theme, 2))
+                    .child(popover::skeleton_rows(
+                        "org-skeleton",
+                        &theme,
+                        2,
+                        cx.entity_id(),
+                        cx,
+                    ))
                     .into_any_element(),
                 Loadable::Error(message) => div()
                     .mt(px(24.0))
@@ -4465,8 +4492,16 @@ impl Render for Shell {
 
         // Boot splash overlay: visible → crossfades out on Ready → removed.
         match self.splash {
-            SplashPhase::Visible => root.child(loaders::splash_overlay(Theme::of(cx), false)),
-            SplashPhase::FadingOut => root.child(loaders::splash_overlay(Theme::of(cx), true)),
+            SplashPhase::Visible => {
+                let theme = Theme::of(cx).clone();
+                let view = cx.entity_id();
+                root.child(loaders::splash_overlay(&theme, false, view, cx))
+            }
+            SplashPhase::FadingOut => {
+                let theme = Theme::of(cx).clone();
+                let view = cx.entity_id();
+                root.child(loaders::splash_overlay(&theme, true, view, cx))
+            }
             SplashPhase::Gone => root,
         }
     }

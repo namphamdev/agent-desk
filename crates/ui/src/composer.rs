@@ -3379,6 +3379,12 @@ impl Composer {
         cx.notify();
     }
 
+    /// Drop a deleted chat's per-chat composer state — staged attachments hold
+    /// raw image bytes, and a deleted chat's stage could never be sent again.
+    pub fn purge_chat(&mut self, chat_id: &str) {
+        self.attachments.remove(chat_id);
+    }
+
     /// The staged-thumbnail strip (attachment-ui.tsx AttachmentStrip):
     /// `flex flex-wrap gap-2 px-4 pt-3`, 56px rounded thumbs, a remove button
     /// revealed on hover, click opens the full-size preview.
@@ -3683,6 +3689,8 @@ impl Composer {
                 "file-mention-loading",
                 theme,
                 3,
+                cx.entity_id(),
+                cx,
             ));
         } else if let Some(error) = self.mention.error.clone() {
             card = card.child(

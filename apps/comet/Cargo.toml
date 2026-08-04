@@ -12,10 +12,10 @@ path = "src/main.rs"
 [dependencies]
 comet-engine.workspace = true
 comet-ui.workspace = true
-comet-tui.workspace = true
 comet-update.workspace = true
 tokio.workspace = true
 clap.workspace = true
+mimalloc.workspace = true
 anyhow.workspace = true
 dotenvy.workspace = true
 tracing.workspace = true

@@ -2598,6 +2598,8 @@ impl Render for Changes {
                     "changes-preparing",
                     &theme,
                     3.0,
+                    cx.entity_id(),
+                    cx,
                 ))
                 .child(
                     div()
@@ -2654,6 +2656,8 @@ impl Render for Changes {
                             "changes-parsing",
                             &theme,
                             3.0,
+                            cx.entity_id(),
+                            cx,
                         ))
                         .into_any_element()
                 }

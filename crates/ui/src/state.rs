@@ -27,7 +27,9 @@ use gpui::{App, Context, Entity, Task};
 use gpui_tokio::Tokio;
 use serde::de::DeserializeOwned;
 
-use comet_doc::{MessagePart, MessageRole, MessageStatus, SessionMessageEntry};
+use comet_doc::{
+    MessagePart, MessageRole, MessageStatus, SessionMessageEntry, TranscriptDesync, TranscriptFrame,
+};
 use comet_engine::{Engine, EngineConfig, EngineRuntime, rpc::AuthRpc};
 use comet_proto::{AuthState, Chat, ChatIndicator, Device, HarnessId, Session, Space};
 use comet_rpc::{RpcClient, RpcError, RpcReply, RpcService, connect_ws, memory_client, methods};
@@ -290,10 +292,9 @@ impl EngineHandle {
 // ---------------------------------------------------------------------------
 
 // The frontend-agnostic derivations (sort orders, staleness gating, sidebar
-// grouping, the boot gate, relative times) live in `comet_proto::view` so the
-// terminal viewport (`comet-tui`) shares one implementation and one test suite
-// with this one — a sort order that differs per surface is a bug. Re-exported
-// here because every call site in this crate reads them as `state::…`.
+// grouping, the boot gate, relative times) live in `comet_proto::view`, pure
+// and with their own test suite. Re-exported here because every call site in
+// this crate reads them as `state::…`.
 pub use comet_proto::view::{
     ChatGroup, ConnectionStatus, GatePhase, Indicator, SESSION_STALE_MS, attention_rank,
     chat_location, display_status, effective_indicator, format_time_ago, gate_phase, group_chats,
@@ -536,6 +537,22 @@ impl AppState {
             }
         }
         self.transcript = entries;
+    }
+
+    /// Apply a `WatchDocMessages` delta frame in place. `Err` = this copy has
+    /// diverged; the watch task resubscribes for a fresh reset.
+    pub fn apply_transcript_frame(
+        &mut self,
+        frame: TranscriptFrame,
+    ) -> Result<(), TranscriptDesync> {
+        comet_doc::apply_transcript_frame(&mut self.transcript, frame)?;
+        if let Some(chat_id) = self.selected_chat.as_deref()
+            && let Some(echoes) = self.echoes.get_mut(chat_id)
+        {
+            let transcript = &self.transcript;
+            echoes.retain(|echo| !transcript.iter().any(|e| e.id == echo.id));
+        }
+        Ok(())
     }
 
     /// Add an optimistic user echo (composer send path).
@@ -1029,36 +1046,48 @@ fn spawn_transcript_watch(
     chat_id: String,
 ) -> Task<()> {
     cx.spawn(async move |this, cx| {
-        let params = serde_json::json!({ "chatId": chat_id });
-        let mut rx = match handle
-            .client()
-            .subscribe(methods::WATCH_DOC_MESSAGES, params)
-            .await
-        {
-            Ok(rx) => rx,
-            Err(err) => {
-                tracing::warn!(%chat_id, error = %err, "transcript watch failed");
-                return;
-            }
-        };
-        while let Some(value) = rx.recv().await {
-            let entries: Vec<SessionMessageEntry> = match serde_json::from_value(value) {
-                Ok(entries) => entries,
+        // Outer loop: a delta desync (missed frame, schema skew) resubscribes;
+        // the fresh stream opens with a full reset that heals the copy.
+        'resubscribe: loop {
+            let params = serde_json::json!({ "chatId": chat_id });
+            let mut rx = match handle
+                .client()
+                .subscribe(methods::WATCH_DOC_MESSAGES, params)
+                .await
+            {
+                Ok(rx) => rx,
                 Err(err) => {
-                    tracing::warn!(error = %err, "dropping malformed transcript frame");
-                    continue;
+                    tracing::warn!(%chat_id, error = %err, "transcript watch failed");
+                    return;
                 }
             };
-            let alive = this.update(cx, |state, cx| {
-                // Guard against a stale pump racing a newer selection.
-                if state.selected_chat.as_deref() == Some(chat_id.as_str()) {
-                    state.apply_transcript(entries);
-                    cx.notify();
+            while let Some(value) = rx.recv().await {
+                let frame: TranscriptFrame = match serde_json::from_value(value) {
+                    Ok(frame) => frame,
+                    Err(err) => {
+                        tracing::warn!(error = %err, "dropping malformed transcript frame");
+                        continue;
+                    }
+                };
+                let mut desync = false;
+                let alive = this.update(cx, |state, cx| {
+                    // Guard against a stale pump racing a newer selection.
+                    if state.selected_chat.as_deref() == Some(chat_id.as_str()) {
+                        if let Err(err) = state.apply_transcript_frame(frame) {
+                            tracing::warn!(%chat_id, error = %err, "resubscribing transcript");
+                            desync = true;
+                        }
+                        cx.notify();
+                    }
+                });
+                if alive.is_err() {
+                    return;
                 }
-            });
-            if alive.is_err() {
-                break;
+                if desync {
+                    continue 'resubscribe;
+                }
             }
+            return; // stream ended: chat deleted or engine gone
         }
     })
 }
@@ -1123,7 +1152,7 @@ mod tests {
         .unwrap();
         assert_eq!(handle.mode(), EngineMode::InProcess);
 
-        // Attach the way `comet-tui` does, and speak the same protocol.
+        // Attach the way an external viewport would, and speak the same protocol.
         let attached = connect_ws(&format!("ws://127.0.0.1:{port}"))
             .await
             .expect("a second viewport must be able to attach");

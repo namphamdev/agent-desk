@@ -1584,10 +1584,13 @@ impl Transcript {
                     .border_1()
                     .border_color(crate::theme::hairline(0.08))
                     .bg(crate::theme::ink(0.055))
-                    .with_animation(
-                        SharedString::from(format!("{row_id}#att-pulse{aix}")),
-                        motion::COMET_PULSE.repeating(),
-                        move |el, delta| el.opacity(0.35 + 0.4 * motion::pulse_wave(delta)),
+                    .opacity(
+                        0.35 + 0.4
+                            * motion::pulse_wave(motion::pulse_delta(
+                                &motion::COMET_PULSE,
+                                cx.entity_id(),
+                                cx,
+                            )),
                     )
                     .into_any_element(),
             };
@@ -2531,6 +2534,9 @@ fn entry_fingerprint(entry: &SessionMessageEntry, pending: bool) -> u64 {
 
 impl Render for Transcript {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Release gpui-side decoded copies of any images the attachment LRU
+        // evicted since the last frame (no-op when nothing was evicted).
+        crate::attachments::flush_evicted(Some(window), cx);
         // Spring driver: one on_next_frame callback at a time; each tick
         // notifies, which re-enters render and schedules the next frame until
         // the spring parks. Reduced motion never schedules (sync snaps).

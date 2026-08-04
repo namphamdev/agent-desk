@@ -509,7 +509,18 @@ impl Shell {
             .px(px(Theme::SPACE_SM))
             .py(px(6.0))
             .text_color(motion::hover_blend(&fade_key, rest_text, theme.text))
-            .bg(motion::hover_blend(&fade_key, rest_bg, theme.glass_hover()))
+            // Selected rows pin their hover target to the selected fill — see
+            // the chat-row comment in shell.rs (light hover sits below the
+            // near-opaque selected fill; blending toward it dims the row).
+            .bg(motion::hover_blend(
+                &fade_key,
+                rest_bg,
+                if selected {
+                    rest_bg
+                } else {
+                    theme.glass_hover()
+                },
+            ))
             .when(selected, |el| {
                 el.shadow(crate::theme::glass_selected_shadows())
             })
@@ -595,9 +606,13 @@ impl Shell {
                 .into_iter()
                 .map(|(status, chat)| {
                     let space = state.space_for_chat(chat);
-                    let folder = space
+                    let mut folder = space
                         .map(|s| s.display_name().to_string())
                         .unwrap_or_else(|| "?".to_string());
+                    // Unknown device → no fragment, same as the archived list.
+                    if let Some(device) = state.device_name(&chat.device_id) {
+                        folder = format!("{folder}@{device}");
+                    }
                     // The branch shows whenever the engine has stamped one —
                     // main-checkout sessions included, not just worktrees.
                     let branch = chat
@@ -1280,7 +1295,13 @@ impl Shell {
             div()
                 .px(px(8.0))
                 .py(px(6.0))
-                .child(popover::skeleton_rows("add-space-skeleton", &theme, 6))
+                .child(popover::skeleton_rows(
+                    "add-space-skeleton",
+                    &theme,
+                    6,
+                    cx.entity_id(),
+                    cx,
+                ))
                 .into_any_element()
         } else if let Some(message) = load_error {
             let device_line = device
@@ -1350,10 +1371,10 @@ impl Shell {
                                 ix == active,
                                 format!("add-space-folder-{ix}"),
                             )
-                            // The active-tab/session selection language: the wash
+                            // The floating-card selection language: the wash
                             // plus the ring-only inset outline.
                             .when(ix == active, |el| {
-                                el.shadow(crate::theme::glass_selected_shadows())
+                                el.shadow(crate::theme::card_selected_shadows())
                             })
                             .id(("add-space-folder", ix))
                             .on_click(cx.listener(move |this, _, _, cx| {
@@ -1431,7 +1452,7 @@ impl Shell {
                         // The floating-card selection language: wash +
                         // ring-only inset outline.
                         el.bg(crate::theme::card_selected_bg())
-                            .shadow(crate::theme::glass_selected_shadows())
+                            .shadow(crate::theme::card_selected_shadows())
                             .text_color(theme.text)
                     })
                     .when(!is_active, |el| {

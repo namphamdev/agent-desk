@@ -1833,7 +1833,7 @@ impl Pickers {
         let body: AnyElement =
             match &self.refs {
                 Loadable::Loading | Loadable::Idle => {
-                    popover::skeleton_rows("branch-skeleton", &theme, 4)
+                    popover::skeleton_rows("branch-skeleton", &theme, 4, cx.entity_id(), cx)
                 }
                 Loadable::Error(message) => {
                     let message = message.clone();
@@ -2078,7 +2078,13 @@ impl Pickers {
         let rail: AnyElement = match &self.harnesses {
             Loadable::Loading | Loadable::Idle => div()
                 .p(px(4.0))
-                .child(popover::skeleton_rows("harness-skeleton", &theme, 3))
+                .child(popover::skeleton_rows(
+                    "harness-skeleton",
+                    &theme,
+                    3,
+                    cx.entity_id(),
+                    cx,
+                ))
                 .into_any_element(),
             Loadable::Error(message) => {
                 let message = message.clone();
@@ -2132,11 +2138,16 @@ impl Pickers {
                             })
                             .when(is_viewed, |el| {
                                 el.bg(crate::theme::card_selected_bg())
-                                    .shadow(crate::theme::glass_selected_shadows())
+                                    .shadow(crate::theme::card_selected_shadows())
                             })
                             .when(is_disabled, |el| el.opacity(0.35))
-                            .when(!is_disabled, |el| {
-                                el.cursor_pointer().hover(|s| s.bg(crate::theme::ink(0.06)))
+                            .when(!is_disabled, |el| el.cursor_pointer())
+                            // Hover must not replace the viewed row's selected
+                            // fill with the weaker wash — that dims the active
+                            // row under the pointer (same rule as the sidebar
+                            // rows in shell.rs).
+                            .when(!is_disabled && !is_viewed, |el| {
+                                el.hover(|s| s.bg(crate::theme::ink(0.06)))
                             })
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.pick_harness(harness, cx);
@@ -2191,12 +2202,6 @@ impl Pickers {
                             let id = model.id.clone();
                             let is_selected = selected.as_deref() == Some(model.id.as_str())
                                 || (selected.is_none() && ix == 0);
-                            if is_selected || ix == active {
-                                eprintln!(
-                                    "[pickers:DEBUG] render_model_row[{}]: row id = {:?}, selected = {:?}, is_selected = {}, is_active = {}",
-                                    ix, model.id, selected, is_selected, ix == active
-                                );
-                            }
                             popover::menu_row_nav(
                                 &theme,
                                 is_selected,
@@ -2204,7 +2209,7 @@ impl Pickers {
                                 format!("model-row-{ix}"),
                             )
                             .when(is_selected || ix == active, |el| {
-                                el.shadow(crate::theme::glass_selected_shadows())
+                                el.shadow(crate::theme::card_selected_shadows())
                             })
                             .id(("model-row", ix))
                             .on_click(cx.listener(move |this, _, _, cx| {
@@ -2367,7 +2372,7 @@ impl Pickers {
     fn render_traits_sections(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = Theme::of(cx).clone();
         let Some(model) = self.selected_model(cx).cloned() else {
-            return popover::skeleton_rows("traits-skeleton", &theme, 3);
+            return popover::skeleton_rows("traits-skeleton", &theme, 3, cx.entity_id(), cx);
         };
         let levels = self.trait_ladder(cx);
         // Display the effective level (draft pick or the chat's config), so
@@ -2484,7 +2489,7 @@ fn trait_chip(theme: &Theme, active: bool) -> gpui::Div {
                 .hover(|s| s.bg(theme.element_hover))
         })
         .when(active, |el| {
-            el.shadow(crate::theme::glass_selected_shadows())
+            el.shadow(crate::theme::card_selected_shadows())
         })
 }
 
