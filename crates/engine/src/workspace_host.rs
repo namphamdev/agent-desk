@@ -87,6 +87,9 @@ pub struct WorkspaceHostConfig {
     /// When present, the host joins `/workspace/{orgId}/ws`. `None` = fully offline
     /// (local snapshots only; the doc still drives everything device-side).
     pub edge: Option<EdgeConfig>,
+    /// Stable hardware fingerprint for stale-registration merge. `None` on
+    /// platforms where the OS machine UUID is unavailable.
+    pub machine_fingerprint: Option<String>,
 }
 
 struct WorkspaceHostInner {
@@ -145,12 +148,13 @@ impl WorkspaceHost {
         doc.ensure_schema_version()?;
 
         // Boot: upsert our own device row. A user-set name (RenameDevice is LWW from
-        // any device) survives restarts — only a missing row gets the hostname.
+        // any device) survives restarts - only a missing row gets the hostname.
         let now = Utc::now();
         let existing = doc
             .read_devices()?
             .into_iter()
             .find(|d| d.id == config.device_id);
+        let existing_fingerprint = existing.as_ref().and_then(|d| d.machine_fingerprint.clone());
         doc.upsert_device(&Device {
             id: config.device_id.clone(),
             name: existing
@@ -161,11 +165,16 @@ impl WorkspaceHost {
             platform: config.platform.clone(),
             last_seen_at: Some(now),
             // First registration stamps `createdAt`; restarts keep the original
-            // (the Devices page "Added …" fragment).
+            // (the Devices page "Added ..." fragment).
             created_at: existing.and_then(|d| d.created_at).or(Some(now)),
             // Every boot restamps the running binary's version (fleet staleness
-            // on the Devices page; workspace version — same for every crate).
+            // on the Devices page; workspace version - same for every crate).
             version: Some(env!("CARGO_PKG_VERSION").to_string()),
+            // Hardware fingerprint for stale-registration merge after cache loss.
+            // An existing row keeps its fingerprint (it was set on first boot and
+            // is immutable for the lifetime of the physical machine).
+            machine_fingerprint: existing_fingerprint
+                .or_else(|| config.machine_fingerprint.clone()),
         })?;
 
         let (changed_tx, changed_rx) = watch::channel(0u64);
@@ -739,9 +748,18 @@ impl WorkspaceHostInner {
         }
     }
 
-    /// Upgrades used to be able to create a fresh device id. Once the old row
-    /// arrives from sync, move its owned rows to this running (newer) version
-    /// and remove the offline registration.
+    /// Detect and heal stale device registrations left behind when a cache wipe
+    /// or app upgrade minted a new device id for this physical machine. Two
+    /// merge paths, strongest signal first:
+    ///
+    /// 1. **Fingerprint match** (primary): if both the current and another row
+    ///    carry the same non-empty `machineFingerprint`, they are the same
+    ///    physical machine. This covers cache loss at any version — the case
+    ///    the version heuristic cannot catch.
+    /// 2. **Version heuristic** (fallback): same `name` + `platform`, and the
+    ///    current row's version is strictly newer. This was the original merge
+    ///    trigger (app upgrades that regenerated the id) and stays for devices
+    ///    whose fingerprint was never stamped (pre-existing doc rows).
     fn merge_obsolete_device_registrations(&self) {
         let Ok(devices) = self.doc.read_devices() else {
             return;
@@ -752,22 +770,35 @@ impl WorkspaceHostInner {
         else {
             return;
         };
-        let Some(current_version) = current.version.as_deref() else {
-            return;
-        };
+        let current_version = current.version.as_deref();
         for obsolete in devices.iter().filter(|device| {
-            device.id != current.id
+            if device.id == current.id {
+                return false;
+            }
+            // Path 1: fingerprint match (strongest signal).
+            if let (Some(fp), Some(their_fp)) =
+                (current.machine_fingerprint.as_deref(), device.machine_fingerprint.as_deref())
+            {
+                return fp == their_fp;
+            }
+            // Path 2: version heuristic (legacy fallback for un-fingerprinted rows).
+            if let Some(current_version) = current_version
                 && device.name == current.name
                 && device.platform == current.platform
                 && device
                     .version
                     .as_deref()
-                    .is_some_and(|version| version_is_newer(current_version, version))
+                    .is_some_and(|v| version_is_newer(current_version, v))
+            {
+                return true;
+            }
+            false
         }) {
             match self.doc.merge_device_into(&obsolete.id, &current.id) {
                 Ok(true) => tracing::info!(
                     obsolete_device = %obsolete.id,
                     device = %current.id,
+                    fingerprint = ?current.machine_fingerprint.as_deref(),
                     "merged obsolete device registration"
                 ),
                 Ok(false) => {}

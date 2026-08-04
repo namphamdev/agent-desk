@@ -511,6 +511,7 @@ mod tests {
             last_seen_at: Some(last_seen_at),
             created_at: None,
             version: Some(version.into()),
+            machine_fingerprint: None,
         }
     }
 

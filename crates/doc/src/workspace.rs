@@ -106,6 +106,7 @@ impl WorkspaceDoc {
         set_opt_ms(&row, "lastSeenAt", device.last_seen_at)?;
         set_opt_ms(&row, "createdAt", device.created_at)?;
         set_opt_str(&row, "version", device.version.as_deref())?;
+        set_opt_str(&row, "machineFingerprint", device.machine_fingerprint.as_deref())?;
         self.doc.commit();
         Ok(())
     }
@@ -629,6 +630,8 @@ struct RawDevice {
     created_at: Option<i64>,
     #[serde(default)]
     version: Option<String>,
+    #[serde(default)]
+    machine_fingerprint: Option<String>,
 }
 
 impl From<RawDevice> for Device {
@@ -640,6 +643,7 @@ impl From<RawDevice> for Device {
             last_seen_at: raw.last_seen_at.map(dt),
             created_at: raw.created_at.map(dt),
             version: raw.version,
+            machine_fingerprint: raw.machine_fingerprint,
         }
     }
 }
@@ -785,6 +789,7 @@ mod tests {
             last_seen_at: Some(ts(1_000)),
             created_at: Some(ts(500)),
             version: Some("0.1.0".into()),
+            machine_fingerprint: None,
         }
     }
 

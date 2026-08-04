@@ -23,6 +23,12 @@ pub struct Device {
     /// glance (Devices page). Optional so pre-existing docs stay readable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
+    /// Stable hardware fingerprint (truncated SHA-256 of the OS machine UUID).
+    /// Used to merge stale device registrations after cache loss: two rows with
+    /// the same fingerprint are the same physical machine. `None` on platforms
+    /// where the OS UUID is unavailable, or in pre-existing docs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub machine_fingerprint: Option<String>,
 }
 
 /// A synced (device, folder) pair — the unit of organization in the sidebar.

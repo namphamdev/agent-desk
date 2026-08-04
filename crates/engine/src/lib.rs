@@ -19,6 +19,7 @@ pub mod agent_accounts;
 pub mod auth;
 pub mod context_engine;
 pub mod custom_providers;
+pub mod device_identity;
 pub mod diff_sync;
 pub mod doc_host;
 pub mod git;
@@ -159,7 +160,9 @@ impl EngineCore {
         // SQLite snapshots + journals. Taken before any store opens or the IPC
         // port binds; held (and kernel-released on crash) for the engine's life.
         let lock = InstanceLock::acquire(data_dir)?;
-        let device_id = load_or_create_device_id(data_dir)?;
+        let device_id = device_identity::load_or_create_device_id(data_dir)?;
+        // Machine fingerprint for stale-registration merge (cache-loss recovery).
+        let machine_fingerprint = device_identity::machine_fingerprint();
         // Identity-scoped storage: snapshots, the command ledger, and run
         // journals live under `orgs/{orgId}/{userId}/` so switching accounts or
         // orgs on one machine never reuses another identity's cached docs.
@@ -187,6 +190,7 @@ impl EngineCore {
                 org_id: org_id.to_string(),
                 user_id: user_id.to_string(),
                 edge: edge.clone(),
+                machine_fingerprint,
             },
         )?;
         doc_host.set_workspace(workspace.clone());
@@ -804,17 +808,4 @@ fn sanitize_path_id(id: &str) -> String {
             }
         })
         .collect()
-}
-
-/// Stable per-installation device id, persisted at `{data_dir}/device-id`.
-fn load_or_create_device_id(data_dir: &Path) -> Result<String, EngineError> {
-    let path = data_dir.join("device-id");
-    match std::fs::read_to_string(&path) {
-        Ok(id) if !id.trim().is_empty() => Ok(id.trim().to_string()),
-        Ok(_) | Err(_) => {
-            let id = new_id();
-            std::fs::write(&path, &id)?;
-            Ok(id)
-        }
-    }
 }

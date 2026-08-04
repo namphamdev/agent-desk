@@ -1271,6 +1271,7 @@ dependencies = [
  "async-trait",
  "base64",
  "bzip2",
+ "cfg-if",
  "chrono",
  "comet-doc",
  "comet-harness",
