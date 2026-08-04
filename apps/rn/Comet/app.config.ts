@@ -29,7 +29,7 @@ export default {
     name: 'AgentDeski',
     slug: 'agentdeski',
     owner: 'namcyeon',
-    version: '0.0.4',
+    version: '0.0.5',
     orientation: 'default',
     icon: './assets/icon.png',
     scheme: 'agentdeski',
@@ -59,7 +59,13 @@ export default {
       },
       package: 'com.npdev.agentdeski',
     },
-    plugins: ['expo-font', 'expo-notifications'],
+    plugins: ['expo-font', 'expo-notifications', 'expo-updates'],
+    updates: {
+      url: 'https://u.expo.dev/83b80ffb-ca4f-4bac-b5f5-a6ad54a4d634',
+    },
+    runtimeVersion: {
+      policy: 'appVersion',
+    },
     extra: {
       edgeURL,
       workosClientId,

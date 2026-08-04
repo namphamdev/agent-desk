@@ -1,12 +1,13 @@
 {
   "name": "agentdeski-react-native",
-  "version": "0.0.4",
+  "version": "0.0.5",
   "main": "index.ts",
   "scripts": {
     "start": "expo start",
     "android": "expo run:android",
     "ios": "expo run:ios",
     "typecheck": "tsc --noEmit",
+    "update": "eas update --branch production --message",
     "lint": "eslint . --ext .ts,.tsx",
     "postinstall": "patch-package"
   },
@@ -29,6 +30,7 @@
     "expo-secure-store": "~57.0.1",
     "expo-splash-screen": "~57.0.5",
     "expo-status-bar": "~57.0.1",
+    "expo-updates": "~57.0.12",
     "expo-web-browser": "~57.0.2",
     "loro-react-native": "^1.10.3",
     "react": "19.2.3",
