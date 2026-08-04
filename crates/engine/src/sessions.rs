@@ -39,6 +39,22 @@ use crate::registry::HarnessRegistry;
 use crate::run_journal::RunJournal;
 use crate::{EngineError, new_id, now_ms};
 
+/// A status transition that may warrant a push notification.
+#[derive(Debug, Clone)]
+pub struct StatusTransition {
+    pub chat_id: String,
+    pub from: SessionStatus,
+    pub to: SessionStatus,
+    pub chat_title: Option<String>,
+}
+
+/// Trait for delivering push notifications when sessions transition.
+/// The engine fires this on Working → Idle / Errored / AwaitingInput.
+/// Implementations make an HTTP call to the edge's /push/send endpoint.
+pub trait PushNotifier: Send + Sync {
+    fn notify(&self, transition: StatusTransition);
+}
+
 /// One journaled event: the durable seq plus the event, as broadcast to subscribers.
 #[derive(Debug, Clone)]
 pub struct JournaledEvent {
@@ -85,6 +101,8 @@ struct Inner {
     journal: Arc<RunJournal>,
     registry: Arc<HarnessRegistry>,
     doc_host: OnceLock<DocHost>,
+    /// Push notification notifier (optional — set when edge push is configured).
+    push_notifier: OnceLock<Option<Arc<dyn PushNotifier>>>,
     /// chat_id → live run.
     runs: Mutex<HashMap<String, RunHandle>>,
     /// chat_id → broadcast hub (retained across runs so subscribers survive turns).
@@ -125,6 +143,7 @@ impl SessionsEngine {
                 journal,
                 registry,
                 doc_host: OnceLock::new(),
+                push_notifier: OnceLock::new(),
                 runs: Mutex::new(HashMap::new()),
                 hubs: Mutex::new(HashMap::new()),
                 statuses: Mutex::new(HashMap::new()),
@@ -146,6 +165,13 @@ impl SessionsEngine {
     /// completed exchange the run task fires it for still-untitled chats.
     pub fn set_titles(&self, titles: crate::titles::TitleGenerator) {
         let _ = self.inner.titles.set(titles);
+    }
+
+    /// Wire the push notifier (called once at engine assembly when edge push
+    /// is configured). After each status transition the engine fires it so
+    /// the edge can relay a push notification to mobile devices.
+    pub fn set_push_notifier(&self, notifier: Arc<dyn PushNotifier>) {
+        let _ = self.inner.push_notifier.set(Some(notifier));
     }
 
     fn doc_handle(&self, chat_id: &str) -> Result<Arc<ChatDocHandle>, EngineError> {
@@ -613,7 +639,9 @@ impl SessionsEngine {
                             resume: None,
                             seed: None,
                             seed_purpose: None,
+        harness: None,
                             seed_role: None,
+                            acp_agent_id: None,
                         })
                     });
                 let Some(mut request) = request else {
@@ -714,6 +742,10 @@ impl Inner {
     fn set_status(&self, chat_id: &str, status: SessionStatus, fresh_start: bool) {
         let now = Utc::now();
         let agent_running = lock(&self.runs).contains_key(chat_id);
+        // Capture the previous status so we can fire push on transitions.
+        let previous_status = lock(&self.statuses)
+            .get(chat_id)
+            .map(|s| s.status);
         let session = {
             let mut statuses = lock(&self.statuses);
             let entry = statuses
@@ -750,6 +782,40 @@ impl Inner {
         // remote devices' sidebars show this run (staleness-checked client-side).
         if let Some(ws) = self.workspace() {
             ws.record_session(&session);
+        }
+        // Fire push notification on relevant transitions.
+        if let Some(prev) = previous_status {
+            if prev != status {
+                self.maybe_push_transition(chat_id, prev, status);
+            }
+        }
+    }
+
+    /// Fire a push notification (if a notifier is wired) on transitions that
+    /// mobile users care about: Working → Idle, Working → Errored, and
+    /// * → AwaitingInput.
+    fn maybe_push_transition(
+        &self,
+        chat_id: &str,
+        from: SessionStatus,
+        to: SessionStatus,
+    ) {
+        let should_notify = match (from, to) {
+            (SessionStatus::Working, SessionStatus::Idle) => true,
+            (SessionStatus::Working, SessionStatus::Errored) => true,
+            (_, SessionStatus::AwaitingInput) => true,
+            _ => false,
+        };
+        if !should_notify {
+            return;
+        }
+        if let Some(Some(notifier)) = self.push_notifier.get() {
+            notifier.notify(StatusTransition {
+                chat_id: chat_id.to_string(),
+                from,
+                to,
+                chat_title: None, // title lookup is async; the edge can enrich
+            });
         }
     }
 

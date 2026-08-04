@@ -1568,6 +1568,7 @@ mod tests {
             model_options: serde_json::Map::new(),
             sandbox: comet_proto::SandboxLevel::WorkspaceWrite,
             permission_mode: Default::default(),
+            acp_agent_id: None,
         };
         state.apply_chat_config("a", config.clone());
         assert_eq!(
@@ -1593,6 +1594,7 @@ mod tests {
                 model_options: serde_json::Map::new(),
                 sandbox: comet_proto::SandboxLevel::WorkspaceWrite,
                 permission_mode: Default::default(),
+                acp_agent_id: None,
             },
         );
     }

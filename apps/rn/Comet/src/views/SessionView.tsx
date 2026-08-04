@@ -2,7 +2,7 @@
 // composer (or question panel while input is requested).
 
 import React, { useEffect, useState } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { KeyboardAvoidingView, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { AppModel } from '../app/AppModel';
@@ -50,7 +50,7 @@ export function SessionView({ model, chatId, onBack, onOpenChanges, onOpenConfig
         model.notifications.activeChatId = undefined;
       }
     };
-  }, [chat, chatId, model]);
+  }, [chat?.id, chatId, model]);
 
   if (!chat || !store) {
     return (
@@ -70,40 +70,45 @@ export function SessionView({ model, chatId, onBack, onOpenChanges, onOpenConfig
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: Theme.bg }} edges={['top']}>
-      <SessionHeader
-        chat={chat}
-        model={model}
-        onBack={onBack}
-        onOpenConfig={onOpenConfig}
-        onOpenChanges={chat.cwd ? onOpenChanges : undefined}
-      />
-      <View style={{ flex: 1 }}>
-        <TranscriptView store={store} chatId={chat.id} />
-        <View pointerEvents="none" style={styles.statusStrip}>
-          {status === 'working' ? (
-            <>
-              <WorkingSpinner />
-              <Text style={{ fontFamily: Fonts.sans, fontSize: 12, color: Theme.textMuted, marginLeft: 6 }}>
-                {flavourWord(flavourSeed(chat.id), (nowMs() - sessionStartedAt(model, chat.id)) / 1000)}…
-              </Text>
-              <Text style={{ fontFamily: Fonts.sans, fontSize: 11, color: Theme.textFaint, marginLeft: 4 }}>
-                {formatElapsed((nowMs() - sessionStartedAt(model, chat.id)) / 1000)}
-              </Text>
-            </>
-          ) : status === 'errored' ? (
-            <Text style={{ fontFamily: Fonts.sans, fontSize: 11, color: Theme.danger }}>Run failed</Text>
-          ) : null}
-        </View>
-      </View>
-      {openInput ? (
-        <QuestionPanel
-          requestId={openInput.requestId}
-          questions={openInput.questions}
-          onRespond={(rid, answers) => store.respondInput(rid, answers)}
+      <KeyboardAvoidingView
+        style={styles.keyboardAvoidingView}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      >
+        <SessionHeader
+          chat={chat}
+          model={model}
+          onBack={onBack}
+          onOpenConfig={onOpenConfig}
+          onOpenChanges={chat.cwd ? onOpenChanges : undefined}
         />
-      ) : (
-        <ComposerView store={store} chat={chat} runLive={status === 'working'} />
-      )}
+        <View style={{ flex: 1 }}>
+          <TranscriptView store={store} chatId={chat.id} />
+          <View pointerEvents="none" style={styles.statusStrip}>
+            {status === 'working' ? (
+              <>
+                <WorkingSpinner />
+                <Text style={{ fontFamily: Fonts.sans, fontSize: 12, color: Theme.textMuted, marginLeft: 6 }}>
+                  {flavourWord(flavourSeed(chat.id), (nowMs() - sessionStartedAt(model, chat.id)) / 1000)}…
+                </Text>
+                <Text style={{ fontFamily: Fonts.sans, fontSize: 11, color: Theme.textFaint, marginLeft: 4 }}>
+                  {formatElapsed((nowMs() - sessionStartedAt(model, chat.id)) / 1000)}
+                </Text>
+              </>
+            ) : status === 'errored' ? (
+              <Text style={{ fontFamily: Fonts.sans, fontSize: 11, color: Theme.danger }}>Run failed</Text>
+            ) : null}
+          </View>
+        </View>
+        {openInput ? (
+          <QuestionPanel
+            requestId={openInput.requestId}
+            questions={openInput.questions}
+            onRespond={(rid, answers) => store.respondInput(rid, answers)}
+          />
+        ) : (
+          <ComposerView store={store} chat={chat} runLive={status === 'working'} />
+        )}
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
@@ -173,6 +178,9 @@ function harnessLabel(harness: string): string {
 }
 
 const styles = StyleSheet.create({
+  keyboardAvoidingView: {
+    flex: 1,
+  },
   statusStrip: {
     position: 'absolute',
     bottom: 0,

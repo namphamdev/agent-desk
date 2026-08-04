@@ -4402,6 +4402,7 @@ impl Composer {
                     SessionCommandPayload::Run {
                         request: RunRequest {
                             prompt: content.clone(),
+                            harness: None,
                             model: resolved.model.clone(),
                             reasoning: resolved.reasoning,
                             model_options: resolved.model_options.clone(),
@@ -4422,6 +4423,7 @@ impl Composer {
                                 .to_string()
                             }),
                             attachments: attachment_paths,
+                            acp_agent_id: resolved.chat_config().as_ref().and_then(|c| c.acp_agent_id.clone()),
                         },
                         message_id: message_id.clone(),
                     }

@@ -110,6 +110,10 @@ pub struct ModelOptionChoice {
 #[serde(rename_all = "camelCase")]
 pub struct RunRequest {
     pub prompt: String,
+    /// Harness to use for this run. Older peers may omit this; callers fall
+    /// back to the chat's workspace-row config or the engine default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness: Option<HarnessId>,
     pub model: Option<String>,
     pub reasoning: Option<ReasoningLevel>,
     /// Harness-specific option selections (option id -> choice id), JSON round-tripped.
@@ -127,6 +131,10 @@ pub struct RunRequest {
     pub seed_purpose: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seed_role: Option<String>,
+    /// Selected ACP agent id when the harness is `Acp`. When `None`, the
+    /// device's active ACP agent is used. Ignored by non-ACP harnesses.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acp_agent_id: Option<String>,
     /// Absolute paths of image attachments already staged on the run device
     /// (composer uploads: UploadChunk/UploadCommit → durable path). The same
     /// paths also ride the prompt text as `Attached images (local files …)`
@@ -345,6 +353,25 @@ mod tests {
         let round: RunRequest =
             serde_json::from_value(serde_json::to_value(&req).unwrap()).unwrap();
         assert_eq!(round.attachments, vec!["/tmp/a.png".to_string()]);
+    }
+
+    #[test]
+    fn run_request_harness_default_and_round_trip() {
+        // Old-wire JSON without harness parses (additive compat)…
+        let old = r#"{"prompt":"p","model":null,"reasoning":null,"cwd":".","sandbox":"workspace-write","resume":null}"#;
+        let req: RunRequest = serde_json::from_str(old).unwrap();
+        assert!(req.harness.is_none());
+        // …and None serializes away (old readers never see it).
+        let json = serde_json::to_value(&req).unwrap();
+        assert!(json.get("harness").is_none());
+        // Populated harness round-trips.
+        let req = RunRequest {
+            harness: Some(HarnessId::Codex),
+            ..req
+        };
+        let round: RunRequest =
+            serde_json::from_value(serde_json::to_value(&req).unwrap()).unwrap();
+        assert_eq!(round.harness, Some(HarnessId::Codex));
     }
 
     #[test]

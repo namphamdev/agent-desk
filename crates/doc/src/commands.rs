@@ -314,7 +314,9 @@ mod tests {
             resume: None,
             seed: None,
             seed_purpose: None,
+        harness: None,
             seed_role: None,
+            acp_agent_id: None,
         }
     }
 }

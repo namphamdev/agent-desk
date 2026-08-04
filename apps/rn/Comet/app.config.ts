@@ -28,6 +28,7 @@ export default {
   expo: {
     name: 'AgentDeski',
     slug: 'agentdeski',
+    owner: 'namcyeon',
     version: '0.0.2',
     orientation: 'default',
     icon: './assets/icon.png',
@@ -62,6 +63,9 @@ export default {
     extra: {
       edgeURL,
       workosClientId,
+      eas: {
+        projectId: '83b80ffb-ca4f-4bac-b5f5-a6ad54a4d634',
+      },
     },
   },
 };

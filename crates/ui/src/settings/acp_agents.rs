@@ -114,7 +114,7 @@ impl AcpAgentsPage {
                     )),
             )
             .when(active, |row| {
-                row.child(widgets::badge_active(&theme, "Active"))
+                row.child(widgets::badge_active(&theme, "Default"))
             })
             .when(!active, |row| {
                 row.child(
@@ -127,7 +127,7 @@ impl AcpAgentsPage {
                                 this.action(methods::ACTIVATE_ACP_AGENT, activate_id.clone(), cx);
                             }
                         }))
-                        .child("Use"),
+                        .child("Set default"),
                 )
             })
             .child(
@@ -341,7 +341,7 @@ impl gpui::Render for AcpAgentsPage {
                     )
                     .child(widgets::page_subtitle(
                         &theme,
-                        "Add an ACP-compatible coding agent and choose which one Comet launches.",
+                        "Add ACP-compatible coding agents. Any installed agent can be selected when starting a session; one is the default.",
                     ))
                     .when_some(self.snapshot.error().map(str::to_string), |page, error| {
                         page.child(

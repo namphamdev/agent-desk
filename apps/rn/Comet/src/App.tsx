@@ -7,8 +7,10 @@ import { Linking, Pressable, StatusBar, Text, View } from 'react-native';
 import {
   NavigationContainer,
   DarkTheme,
+  createNavigationContainerRef,
   type LinkingOptions,
 } from '@react-navigation/native';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import * as SplashScreen from 'expo-splash-screen';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
@@ -29,6 +31,10 @@ import { MenuView } from './views/MenuView';
 
 // Keep the splash screen visible while we restore session.
 void SplashScreen.preventAutoHideAsync();
+
+// Navigation ref so the notification tap handler can navigate from outside
+// the component tree.
+export const navigationRef = createNavigationContainerRef<RootStackParamList>();
 
 export type RootStackParamList = {
   Home: undefined;
@@ -88,6 +94,16 @@ export default function App() {
     return () => clearInterval(id);
   }, [model, model.phase.kind]);
 
+  // Wire notification tap → navigate to the chat.
+  useEffect(() => {
+    model.notifications.onNotificationTap = (chatId: string) => {
+      navigationRef.navigate('Chat', { chatId });
+    };
+    return () => {
+      model.notifications.onNotificationTap = undefined;
+    };
+  }, [model]);
+
   useAppModel(model);
 
   // Demo mode shortcut for development.
@@ -109,19 +125,21 @@ export default function App() {
   return (
     <SafeAreaProvider>
       <StatusBar barStyle="light-content" backgroundColor={Theme.bg} />
-      <NavigationContainer theme={navTheme} linking={linking}>
-        {model.phase.kind === 'signedOut' ? (
-          <SignInView model={model} />
-        ) : model.phase.kind === 'pickingOrg' ? (
-          <OrgPickerView
-            model={model}
-            tokens={model.phase.tokens}
-            orgs={model.phase.orgs}
-          />
-        ) : (
-          <MainStack model={model} />
-        )}
-      </NavigationContainer>
+      <GestureHandlerRootView style={{ flex: 1 }}>
+        <NavigationContainer ref={navigationRef} theme={navTheme} linking={linking}>
+          {model.phase.kind === 'signedOut' ? (
+            <SignInView model={model} />
+          ) : model.phase.kind === 'pickingOrg' ? (
+            <OrgPickerView
+              model={model}
+              tokens={model.phase.tokens}
+              orgs={model.phase.orgs}
+            />
+          ) : (
+            <MainStack model={model} />
+          )}
+        </NavigationContainer>
+      </GestureHandlerRootView>
     </SafeAreaProvider>
   );
 }

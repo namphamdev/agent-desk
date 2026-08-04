@@ -18,7 +18,9 @@ fn run_request_attachments_survive_command_round_trip() {
         resume: None,
         seed: None,
         seed_purpose: None,
+        harness: None,
         seed_role: None,
+        acp_agent_id: None,
     };
     doc.queue_command(&SessionCommandEntry {
         id: "c1".into(),

@@ -309,7 +309,9 @@ async fn target_device_id_routes_over_the_relay() {
             resume: None,
             seed: None,
             seed_purpose: None,
+        harness: None,
             seed_role: None,
+            acp_agent_id: None,
         },
         message_id: "m-a-1".into(),
     })

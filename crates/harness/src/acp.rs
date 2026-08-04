@@ -86,6 +86,13 @@ impl AcpHarness {
     }
 
     fn command(&self) -> Result<String, HarnessError> {
+        self.command_for(None)
+    }
+
+    /// Resolve the launch command for a specific ACP agent id. When `agent_id`
+    /// is `None` (or not found among installed agents), falls back to the
+    /// device's active agent.
+    fn command_for(&self, agent_id: Option<&str>) -> Result<String, HarnessError> {
         self.command
             .clone()
             .or_else(|| std::env::var(ENV_AGENT).ok())
@@ -93,11 +100,14 @@ impl AcpHarness {
                 let file = self.config_file.as_ref()?;
                 let json = std::fs::read_to_string(file).ok()?;
                 let config: AcpHarnessConfig = serde_json::from_str(&json).ok()?;
-                let active = config.active_agent_id?;
+                // Prefer the explicitly requested agent id; fall back to active.
+                let wanted = agent_id
+                    .filter(|id| config.agents.iter().any(|a| &a.id == id))
+                    .or(config.active_agent_id.as_deref());
                 config
                     .agents
                     .into_iter()
-                    .find(|agent| agent.id == active)
+                    .find(|agent| Some(agent.id.as_str()) == wanted)
                     .map(|agent| agent.command)
             })
             .filter(|command| !command.trim().is_empty())
@@ -210,7 +220,7 @@ impl Harness for AcpHarness {
         request: RunRequest,
         controls: RunControls,
     ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError> {
-        let command = self.command()?;
+        let command = self.command_for(request.acp_agent_id.as_deref())?;
         let agent = AcpAgent::from_str(&command).map_err(|error| {
             HarnessError::Protocol(format!("invalid ACP agent config: {error}"))
         })?;
@@ -1306,6 +1316,36 @@ mod tests {
         .unwrap();
         let harness = AcpHarness::new().with_config_file(config);
         assert_eq!(harness.command().unwrap(), "second-agent --acp");
+    }
+
+    #[test]
+    fn specific_agent_id_overrides_active() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = temp.path().join("acp-agents.json");
+        std::fs::write(
+            &config,
+            r#"{
+                "activeAgentId": "second",
+                "agents": [
+                    {"id": "first", "command": "first-agent"},
+                    {"id": "second", "command": "second-agent --acp"}
+                ]
+            }"#,
+        )
+        .unwrap();
+        let harness = AcpHarness::new().with_config_file(config);
+        // Requesting "first" overrides the default "second".
+        assert_eq!(
+            harness.command_for(Some("first")).unwrap(),
+            "first-agent"
+        );
+        // Requesting an unknown id falls back to the active agent.
+        assert_eq!(
+            harness.command_for(Some("nonexistent")).unwrap(),
+            "second-agent --acp"
+        );
+        // No override uses the active agent.
+        assert_eq!(harness.command_for(None).unwrap(), "second-agent --acp");
     }
 
     #[test]

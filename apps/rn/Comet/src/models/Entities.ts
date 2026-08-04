@@ -96,6 +96,7 @@ export interface ChatConfig {
   reasoning?: string;
   sandbox?: string;
   permissionMode?: PermissionModeValue;
+  acpAgentId?: string;
 }
 
 export function effectivePermissionMode(config?: ChatConfig | null): PermissionModeMeta {
@@ -382,6 +383,7 @@ export const COMMAND_DEFAULT_TTL_MS = 86_400_000;
 // comet-proto RunRequest (agent.rs:81).
 export interface RunRequest {
   prompt: string;
+  harness?: string;
   model?: string;
   reasoning?: string;
   modelOptions?: Record<string, string>;
@@ -390,6 +392,7 @@ export interface RunRequest {
   autoApprove: boolean;
   permissionMode?: PermissionModeValue;
   resume?: string;
+  acpAgentId?: string;
 }
 
 export function nowMs(): number {

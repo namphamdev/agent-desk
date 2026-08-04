@@ -53,6 +53,8 @@ pub struct DraftConfig {
     /// option id → choice id (only non-defaults are meaningful).
     pub model_options: serde_json::Map<String, serde_json::Value>,
     pub permission_mode: PermissionMode,
+    /// When `harness == Some(Acp)`, identifies the picked ACP agent.
+    pub acp_agent_id: Option<String>,
     /// The picked ref (base branch in NewWorktree mode; a worktree's branch
     /// when reusing one). `None` = the repo's current branch.
     pub branch: Option<String>,
@@ -98,6 +100,8 @@ pub struct ResolvedRunConfig {
     pub reasoning: Option<ReasoningLevel>,
     pub model_options: serde_json::Map<String, serde_json::Value>,
     pub permission_mode: PermissionMode,
+    /// When `harness == Some(Acp)`, identifies the picked ACP agent.
+    pub acp_agent_id: Option<String>,
 }
 
 impl ResolvedRunConfig {
@@ -110,6 +114,7 @@ impl ResolvedRunConfig {
             model_options: self.model_options.clone(),
             sandbox: self.permission_mode.sandbox(),
             permission_mode: self.permission_mode,
+            acp_agent_id: self.acp_agent_id.clone(),
         })
     }
 }
@@ -609,6 +614,7 @@ impl Pickers {
             reasoning: self.effective_reasoning(cx),
             model_options: self.explicit_options(cx),
             permission_mode: self.effective_permission_mode(cx),
+            acp_agent_id: self.config.acp_agent_id.clone(),
         }
     }
 
@@ -1084,11 +1090,18 @@ impl Pickers {
         cx.notify();
     }
 
-    fn pick_harness(&mut self, harness: HarnessId, cx: &mut Context<Self>) {
+    fn pick_harness(
+        &mut self,
+        harness: HarnessId,
+        acp_agent_id: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
         if self.harness_locked(cx) {
             return;
         }
-        if self.config.harness != Some(harness) {
+        if self.config.harness != Some(harness)
+            || self.config.acp_agent_id != acp_agent_id
+        {
             // The remembered model for this harness takes over via the
             // defaults fallback; a foreign pick must not linger.
             self.config.model = None;
@@ -1096,6 +1109,7 @@ impl Pickers {
             self.config.model_options.clear();
         }
         self.config.harness = Some(harness);
+        self.config.acp_agent_id = acp_agent_id;
         self.defaults.harness = Some(harness);
         self.save_defaults();
         self.active = 0;
@@ -2116,7 +2130,10 @@ impl Pickers {
                     .child(popover::menu_heading(&theme, "Agents"))
                     .children(descriptors.into_iter().enumerate().map(|(ix, descriptor)| {
                         let harness = descriptor.id;
-                        let is_viewed = effective == Some(harness);
+                        let acp_agent_id = descriptor.acp_agent_id.clone();
+                        let is_viewed = effective == Some(harness)
+                            && (harness != HarnessId::Acp
+                                || self.config.acp_agent_id == acp_agent_id);
                         let is_disabled = locked && !is_viewed;
                         let (icon_path, tint) = harness_brand_icon(harness);
                         let name: SharedString = descriptor.name.clone().into();
@@ -2150,7 +2167,7 @@ impl Pickers {
                                 el.hover(|s| s.bg(crate::theme::ink(0.06)))
                             })
                             .on_click(cx.listener(move |this, _, _, cx| {
-                                this.pick_harness(harness, cx);
+                                this.pick_harness(harness, acp_agent_id.clone(), cx);
                             }))
                             .child(
                                 crate::icons::icon(icon_path)
@@ -3015,6 +3032,7 @@ mod tests {
             supports_steering: true,
             steering_mode: comet_proto::SteeringMode::StepBoundary,
             reasoning_levels: vec![],
+            acp_agent_id: None,
         };
         let mixed = vec![
             descriptor(HarnessId::Mock, "Mock"),

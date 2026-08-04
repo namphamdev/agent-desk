@@ -8,7 +8,7 @@
 // Loro's native React Native binding exposes the same document model without
 // requiring a browser WebAssembly loader.
 
-import { LoroDoc, VersionVector } from 'loro-react-native';
+import { EphemeralStore, LoroDoc, VersionVector } from 'loro-react-native';
 
 import { AppConfig } from '../app/AppConfig';
 import {
@@ -61,6 +61,7 @@ interface LocalPendingBatch {
  * single-threaded so all mutations happen on the JS thread.
  */
 export class RoomClient {
+  readonly eph = new EphemeralStore(30_000n);
   private socket: RawSocket | null = null;
   private pingTimer: ReturnType<typeof setInterval> | null = null;
   private livenessTimer: ReturnType<typeof setInterval> | null = null;
@@ -348,7 +349,6 @@ export class RoomClient {
       if (wasProbe) {
         return; // probe answers only prove liveness
       }
-      console.info(`[room ${this.roomId}] joined`);
       await this.send({
         kind: 'joinRequest',
         crdt: 'loroEphemeral',
@@ -358,8 +358,16 @@ export class RoomClient {
       });
       this.events('connected');
     } else if (crdt === 'loroEphemeral') {
-      // No ephemeral encoding from the JS side in this port — presence would
-      // be sent here. Left as a no-op until the ephemeral store is wired.
+      const all = this.eph.encodeAll();
+      if (all.byteLength > 0) {
+        await this.send({
+          kind: 'docUpdate',
+          crdt: 'loroEphemeral',
+          roomId: this.roomId,
+          updates: [new Uint8Array(all)],
+          batchId: newBatchId(),
+        });
+      }
     }
   }
 
@@ -381,7 +389,24 @@ export class RoomClient {
       }
       if (imported) this.events('remoteUpdate');
     } else if (crdt === 'loroEphemeral') {
-      this.events('ephemeralUpdate');
+      let applied = false;
+      for (const update of updates) {
+        if (update.length === 0) continue;
+        try {
+          this.eph.apply(
+            update.buffer.slice(
+              update.byteOffset,
+              update.byteOffset + update.byteLength,
+            ) as ArrayBuffer,
+          );
+          applied = true;
+        } catch (err) {
+          console.warn(`[room ${this.roomId}] ephemeral update failed to apply`, err);
+        }
+      }
+      if (applied) {
+        this.events('ephemeralUpdate');
+      }
     }
   }
 

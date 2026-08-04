@@ -163,7 +163,9 @@ fn run_request(prompt: &str) -> RunRequest {
         resume: None,
         seed: None,
         seed_purpose: None,
+        harness: None,
         seed_role: None,
+        acp_agent_id: None,
     }
 }
 
@@ -423,6 +425,7 @@ async fn chat_config_selects_the_run_harness() {
                 model_options: Default::default(),
                 sandbox: SandboxLevel::WorkspaceWrite,
                 permission_mode: Default::default(),
+                acp_agent_id: None,
             }),
             None,
         )

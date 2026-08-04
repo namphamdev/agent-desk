@@ -5,6 +5,8 @@ export interface Env {
   /** Release artifacts (headless tarballs, dmgs, latest.txt) served at
    * /releases/* for the curl-install flow. */
   RELEASES: R2Bucket;
+  /** Push token store: key = `push:{userId}`, value = Expo push token. */
+  PUSH_TOKENS: KVNamespace;
   WORKOS_CLIENT_ID: string;
   /** "workos" (verify AuthKit JWTs) or "dev" (bearer == userId, never prod). */
   AUTH_MODE: string;
@@ -17,6 +19,9 @@ export interface Env {
   WORKOS_API_KEY?: string;
   /** Base64 32-byte secret key for AES-256-GCM encryption of account settings at rest in BLOBS R2. */
   SETTINGS_ENCRYPTION_KEY?: string;
+  /** Shared secret for internal /push/send calls from the Rust engine.
+   * Set via `wrangler secret put PUSH_INTERNAL_SECRET`. */
+  PUSH_INTERNAL_SECRET?: string;
 }
 
 /** Header the Worker stamps on requests it forwards into DOs after verifying

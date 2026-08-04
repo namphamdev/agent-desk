@@ -150,9 +150,15 @@ export class WorkspaceStore {
   // MARK: Presence
 
   private projectPresence(): void {
-    // The ephemeral presence channel lives in %EPH; this port doesn't yet
-    // decode presence states into the presence map. Falls through to the
-    // derived view, which then treats every device as "offline recently".
+    const room = this.room;
+    if (!room) return;
+    const fresh: Record<string, number> = {};
+    for (const key of room.eph.keys()) {
+      const value = room.eph.get(key);
+      if (!key.startsWith('presence/') || typeof value !== 'number') continue;
+      fresh[key.slice('presence/'.length)] = value;
+    }
+    this.presence = fresh;
     this.notify();
   }
 
@@ -419,11 +425,12 @@ export class WorkspaceStore {
 
   // MARK: Writes (viewer-device discipline)
 
-  createChat(space: Space, cfg: ChatConfig, branch?: string, cwd?: string): string {
+  createChat(space: Space, cfg: ChatConfig, branch?: string, cwd?: string): string | undefined {
     const chatId = makeUuid();
+    console.log('[WorkspaceStore] createChat — cfg in:', JSON.stringify(cfg), '| chatId:', chatId);
     try {
       const chats = this.doc.getMap('chats');
-      const row = chats.set(chatId, {}) as unknown as LoroMap;
+      const row = chats.insertContainer(chatId, new LoroMap());
       row.set('id', chatId);
       row.set('deviceId', space.deviceId);
       row.set('archived', false);
@@ -431,11 +438,19 @@ export class WorkspaceStore {
       row.set('spaceId', space.id);
       row.set('createdAt', nowMs());
       if (branch) row.set('branch', branch);
-      row.set('config', chatConfigToLoro(cfg) as never);
+      const loroCfg = chatConfigToLoro(cfg);
+      console.log('[WorkspaceStore] createChat — loroCfg:', JSON.stringify(loroCfg));
+      row.set('config', loroCfg as never);
       this.doc.commit();
+      // Read back immediately to verify
+      const readBack = this.doc.toJSON() as Record<string, unknown>;
+      const chatsMap = (readBack.chats ?? {}) as Record<string, Record<string, unknown>>;
+      const readRow = chatsMap[chatId];
+      console.log('[WorkspaceStore] createChat — readBack config:', JSON.stringify(readRow?.config));
       this.project();
     } catch (err) {
       console.warn('[workspace] createChat failed', err);
+      return undefined;
     }
     return chatId;
   }
@@ -454,7 +469,7 @@ export class WorkspaceStore {
       // from any device; the owner stamps git on arrival.
       try {
         const spaces = this.doc.getMap('spaces');
-        const row = spaces.set(spaceId, {}) as unknown as LoroMap;
+        const row = spaces.insertContainer(spaceId, new LoroMap());
         row.set('id', spaceId);
         row.set('deviceId', deviceId);
         row.set('path', path);
@@ -497,7 +512,7 @@ export class WorkspaceStore {
   private updateChat(chatId: string, mutate: (row: LoroMap) => void): void {
     try {
       const chats = this.doc.getMap('chats');
-      const existing = chats.get(chatId) as unknown as LoroMap | undefined;
+      const existing = chats.get(chatId)?.asLoroMap() as LoroMap | undefined;
       if (!existing) return;
       mutate(existing);
       this.doc.commit();

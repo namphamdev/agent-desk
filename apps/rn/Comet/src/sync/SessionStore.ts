@@ -197,6 +197,7 @@ export class SessionStore {
   // MARK: Command plane
 
   sendRun(prompt: string, chat: Chat): void {
+    console.log('[SessionStore] sendRun — chat.config:', JSON.stringify(chat.config));
     if (this.offline) {
       this.demoResponder?.(prompt);
       return;
@@ -205,6 +206,7 @@ export class SessionStore {
     const mode = effectivePermissionMode(chat.config);
     const request: RunRequest = {
       prompt,
+      harness: chat.config?.harness,
       model: chat.config?.model,
       reasoning: chat.config?.reasoning,
       cwd: chat.cwd ?? '',
@@ -212,6 +214,7 @@ export class SessionStore {
       autoApprove: mode.autoApprove,
       permissionMode: mode.value,
     };
+    console.log('[SessionStore] sendRun — request:', JSON.stringify(request));
     this.queueCommand('run', {
       kind: 'run',
       request,
@@ -259,7 +262,7 @@ export class SessionStore {
   private queueCommand(kind: string, payload: Record<string, unknown>): void {
     try {
       const commands = this.doc.getList('commands');
-      const map = commands.insert(0, {}) as unknown as LoroMap;
+      const map = commands.insertContainer(0, new LoroMap());
       // NB: the native Loro container push API varies across versions; the
       // schema-shape writes are what matter for cross-device parity. If the
       // exact container push fails, the host will still drain from VV backfill.

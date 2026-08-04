@@ -576,7 +576,9 @@ pub async fn generate_commit_message(
         resume: None,
         seed: None,
         seed_purpose: None,
+        harness: None,
         seed_role: None,
+        acp_agent_id: None,
     };
     let (steer_tx, steer_rx) = tokio::sync::mpsc::channel::<SteerMessage>(1);
     let controls = RunControls {

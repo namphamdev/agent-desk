@@ -382,24 +382,14 @@ impl WorkspaceHost {
             Some(cwd) => Some(self.space_for_path(cwd)?),
             None => None,
         };
-        self.inner.doc.upsert_chat(&Chat {
-            id: chat_id.to_string(),
-            device_id: self.inner.config.device_id.clone(),
-            title: None,
-            archived: false,
-            cwd: cwd.map(str::to_string),
-            branch: None,
-            checkout_id: None,
-            config: None,
-            last_message_preview: None,
-            last_message_at: None,
-            created_at: Utc::now(),
-            harness_session_id: None,
-            harness_session_cwd: None,
-            space_id,
-            last_seen_at: None,
-            settled_at: None,
-        })?;
+        // Minimal claim: don't clobber config/title/branch a composer may have
+        // already written in a concurrent workspace-doc update.
+        self.inner.doc.claim_chat_minimal(
+            chat_id,
+            &self.inner.config.device_id,
+            cwd,
+            space_id.as_deref(),
+        )?;
         Ok(())
     }
 

@@ -25,23 +25,42 @@ const CODEX_MAX_LADDER = ['low', 'medium', 'high', 'xhigh', 'max'];
 const CODEX_XHIGH_LADDER = ['low', 'medium', 'high', 'xhigh'];
 
 export const HarnessCatalog = {
+  // Static (built-in) harnesses. ACP agents appear as dynamic top-level
+  // entries via acpAgentHarnessId() — they are not listed here.
   harnesses: [
     { id: 'claude-code', label: 'Claude Code' },
     { id: 'codex', label: 'Codex' },
-    { id: 'acp', label: 'ACP' },
   ] as HarnessInfo[],
 
+  // The wire harness value for all ACP agents.
+  ACP_WIRE: 'acp',
+
+  // Build a synthetic picker harness id for an ACP agent, e.g. "acp:factory-droid".
+  acpAgentHarnessId(agentId: string): string {
+    return `acp:${agentId}`;
+  },
+
+  isAcpAgentHarness(harness: string): boolean {
+    return harness.startsWith('acp:');
+  },
+
+  acpAgentIdFromHarness(harness: string): string | null {
+    if (!this.isAcpAgentHarness(harness)) return null;
+    return harness.slice('acp:'.length);
+  },
+
   modelsFor(harness: string): ModelInfo[] {
+    if (this.isAcpAgentHarness(harness) || harness === this.ACP_WIRE) {
+      return [
+        {
+          id: 'default',
+          label: 'Agent default',
+          description: "Use the active ACP agent's default model",
+          reasoningLevels: [],
+        },
+      ];
+    }
     switch (harness) {
-      case 'acp':
-        return [
-          {
-            id: 'default',
-            label: 'Agent default',
-            description: "Use the active ACP agent's default model",
-            reasoningLevels: [],
-          },
-        ];
       case 'codex':
         return [
           { id: 'gpt-5.6-sol', label: 'GPT-5.6-Sol', description: 'Frontier reasoning flagship', reasoningLevels: CODEX_ULTRA_LADDER },

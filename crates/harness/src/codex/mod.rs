@@ -1435,7 +1435,9 @@ mod tests {
             resume: None,
             seed: None,
             seed_purpose: None,
+        harness: None,
             seed_role: None,
+            acp_agent_id: None,
         };
         assert_eq!(request.model.as_deref(), Some("gemini-2.5-flash"));
     }

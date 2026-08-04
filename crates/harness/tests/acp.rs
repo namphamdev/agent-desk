@@ -164,6 +164,8 @@ async fn parked_acp_session_does_not_busy_poll() {
         seed: None,
         seed_role: None,
         seed_purpose: None,
+        harness: None,
+            acp_agent_id: None,
     };
 
     let mut stream = harness.run(request, controls).await.unwrap();
@@ -224,6 +226,8 @@ async fn streams_and_normalizes_an_acp_session() {
         seed: None,
         seed_role: None,
         seed_purpose: None,
+        harness: None,
+            acp_agent_id: None,
     };
 
     let stream = harness.run(request, controls).await.unwrap();
@@ -297,6 +301,8 @@ async fn emits_a_turn_boundary_for_a_steer_after_completion() {
         seed: None,
         seed_role: None,
         seed_purpose: None,
+        harness: None,
+            acp_agent_id: None,
     };
 
     let mut stream = harness.run(request, controls).await.unwrap();

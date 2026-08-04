@@ -89,6 +89,10 @@ pub struct ChatConfig {
     pub sandbox: SandboxLevel,
     #[serde(default)]
     pub permission_mode: PermissionMode,
+    /// Selected ACP agent id (when harness is `Acp`). `None` means use the
+    /// device's active ACP agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acp_agent_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

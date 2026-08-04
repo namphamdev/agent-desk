@@ -19,6 +19,11 @@ pub struct HarnessDescriptor {
     pub supports_steering: bool,
     pub steering_mode: SteeringMode,
     pub reasoning_levels: Vec<ReasoningLevel>,
+    /// When `id == HarnessId::Acp`, identifies which installed ACP agent this
+    /// descriptor represents. `None` for the generic/legacy ACP slot or any
+    /// non-ACP harness. The UI renders one rail entry per installed agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acp_agent_id: Option<String>,
 }
 
 fn describe(harness: &dyn Harness) -> HarnessDescriptor {
@@ -28,6 +33,7 @@ fn describe(harness: &dyn Harness) -> HarnessDescriptor {
         supports_steering: harness.supports_steering(),
         steering_mode: harness.steering_mode(),
         reasoning_levels: harness.reasoning_levels().to_vec(),
+        acp_agent_id: None,
     }
 }
 
@@ -198,6 +204,7 @@ pub fn default_registry_with_config(
                 ReasoningLevel::XHigh,
                 ReasoningLevel::Max,
             ],
+            acp_agent_id: None,
         },
         Box::new({
             let mcp_server_url = mcp_server_url.map(str::to_owned);
@@ -237,6 +244,7 @@ pub fn default_registry_with_config(
                 ReasoningLevel::Max,
                 ReasoningLevel::Ultra,
             ],
+            acp_agent_id: None,
         },
         Box::new({
             let mcp_server_url = mcp_server_url.map(str::to_owned);
@@ -262,6 +270,7 @@ pub fn default_registry_with_config(
             supports_steering: true,
             steering_mode: SteeringMode::TurnBoundary,
             reasoning_levels: vec![ReasoningLevel::Medium],
+            acp_agent_id: None,
         },
         Box::new({
             let mcp_server_url = mcp_server_url.map(str::to_owned);
@@ -299,6 +308,7 @@ mod tests {
                 supports_steering: true,
                 steering_mode: SteeringMode::StepBoundary,
                 reasoning_levels: vec![],
+                acp_agent_id: None,
             },
             Box::new(move || {
                 counted.fetch_add(1, Ordering::SeqCst);

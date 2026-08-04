@@ -32,6 +32,7 @@
 import { authenticate } from "./auth";
 import { handleAccountSettings } from "./account-settings";
 import { handleAuthRoute } from "./auth-routes";
+import { handlePushRegister, handlePushSend } from "./push";
 import { AUTH_USER_HEADER, ROOM_KIND_HEADER, type Env } from "./env";
 import { SessionRoom } from "./session-room";
 import { DeviceRoom } from "./device-room";
@@ -121,6 +122,25 @@ export default {
     //    access token yet; the org routes verify the bearer themselves) ─────
     const authRouted = await handleAuthRoute(request, env, url);
     if (authRouted) return authRouted;
+
+    // ── push notifications ─────────────────────────────────────────────────
+    // POST /push/register — mobile app registers its Expo push token (JWT auth).
+    // POST /push/send     — engine triggers a push via shared secret.
+    if (parts[0] === "push" && parts[1] === "register" && request.method === "POST") {
+      console.info("[push] register route hit");
+      const auth = await authenticate(env, request);
+      if (!auth) {
+        console.warn("[push] register: auth failed");
+        return json({ error: "unauthenticated" }, 401);
+      }
+      console.info("[push] register: auth ok, userId=" + auth.userId);
+      // Clone the request so the body is readable after authenticate consumed
+      // the original Request (Workers may have drained it).
+      return handlePushRegister(request.clone(), env, auth.userId);
+    }
+    if (parts[0] === "push" && parts[1] === "send" && request.method === "POST") {
+      return handlePushSend(request, env);
+    }
 
     const auth = await authenticate(env, request);
     if (!auth) return json({ error: "unauthenticated" }, 401);

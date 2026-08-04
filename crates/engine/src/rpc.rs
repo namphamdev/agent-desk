@@ -64,7 +64,7 @@ use crate::auth::Auth;
 use crate::custom_providers::CustomProviders;
 use crate::diff_sync::CheckoutDiffSync;
 use crate::doc_host::DocHost;
-use crate::registry::HarnessRegistry;
+use crate::registry::{HarnessDescriptor, HarnessRegistry};
 use crate::repos::{Repos, home_dir};
 use crate::sessions::SessionsEngine;
 use crate::terminals::Terminals;
@@ -1085,7 +1085,32 @@ impl RpcService for EngineRpc {
                 .await;
         }
         match method {
-            methods::LIST_HARNESSES => RpcReply::value(&self.registry.descriptors()),
+            methods::LIST_HARNESSES => {
+                let mut descriptors = self.registry.descriptors();
+                // Expand the generic ACP slot into one entry per installed
+                // agent (each carrying its `acp_agent_id`). The generic slot
+                // is kept only when no agents are installed.
+                match self.acp_agents.list().await {
+                    Ok(snapshot) if !snapshot.installed.is_empty() => {
+                        let acp_base = descriptors
+                            .iter()
+                            .find(|d| d.id == HarnessId::Acp)
+                            .cloned();
+                        descriptors.retain(|d| d.id != HarnessId::Acp);
+                        if let Some(base) = acp_base {
+                            for agent in &snapshot.installed {
+                                descriptors.push(HarnessDescriptor {
+                                    name: agent.name.clone(),
+                                    acp_agent_id: Some(agent.id.clone()),
+                                    ..base.clone()
+                                });
+                            }
+                        }
+                    }
+                    _ => {} // no agents installed: keep the generic ACP slot
+                }
+                RpcReply::value(&descriptors)
+            }
             methods::GET_PROJECT_HARNESS => {
                 let p: GetProjectHarnessParams = parse_params(params)?;
                 RpcReply::value(&crate::project_harness::get_project_harness(

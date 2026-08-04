@@ -726,14 +726,19 @@ impl DocHost {
                 if let Some(ws) = self.workspace() {
                     ws.claim_chat(chat_id, Some(&request.cwd))?;
                 }
-                let harness = self.harness_for(chat_id);
+                // Prefer the harness carried in the request (authoritative —
+                // set by the composer). Fall back to the workspace-row config
+                // for older peers that don't send it, then the engine default.
+                let harness = request.harness.unwrap_or_else(|| self.harness_for(chat_id));
                 let row_config = self.workspace().and_then(|ws| ws.chat_config(chat_id));
                 tracing::info!(
                     chat = %chat_id,
-                    harness = ?harness,
+                    request_harness = ?request.harness,
+                    resolved_harness = ?harness,
+                    row_config_harness = ?row_config.as_ref().map(|c| c.harness),
                     request_model = %request.model.clone().unwrap_or_else(|| "<none>".into()),
                     row_model = %row_config.as_ref().and_then(|c| c.model.clone()).unwrap_or_else(|| "<none>".into()),
-                    "debug: dispatch run (model change trace)"
+                    "debug: dispatch run (harness trace)"
                 );
                 sessions
                     .dispatch(chat_id, harness, request.clone(), Some(message_id.clone()))
@@ -879,7 +884,9 @@ impl DocHost {
             model: config.as_ref().and_then(|c| c.model.clone()),
             seed: None,
             seed_purpose: None,
+        harness: None,
             seed_role: None,
+            acp_agent_id: config.as_ref().and_then(|c| c.acp_agent_id.clone()),
             reasoning: config.as_ref().and_then(|c| c.reasoning),
             model_options: config
                 .as_ref()

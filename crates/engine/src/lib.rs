@@ -31,6 +31,7 @@ pub mod rpc;
 pub mod run_journal;
 pub mod session_summary;
 pub mod sessions;
+pub mod push_notifier;
 pub mod spaces;
 pub mod terminals;
 pub mod titles;
@@ -51,7 +52,7 @@ pub use registry::{
 pub use repos::{CheckoutIdentity, Repos, worktree_branch_from_title};
 pub use rpc::EngineRpc;
 pub use run_journal::{JournalError, RunJournal};
-pub use sessions::{JournaledEvent, SessionsEngine, SteerOutcome};
+pub use sessions::{JournaledEvent, PushNotifier, SessionsEngine, StatusTransition, SteerOutcome};
 pub use spaces::SpacesSync;
 pub use terminals::Terminals;
 pub use titles::TitleGenerator;
@@ -212,6 +213,21 @@ impl EngineCore {
             registry.clone(),
             repos.clone(),
         ));
+        // Wire push notifications: if the edge URL and push secret are set,
+        // the engine fires /push/send on session status transitions so
+        // mobile devices get real APNs/FCM pushes even in background.
+        let push_cfg = edge.as_ref().and_then(|e| {
+            let secret = std::env::var("COMET_PUSH_SECRET").ok()?;
+            if secret.is_empty() {
+                return None;
+            }
+            Some(crate::push_notifier::PushConfig {
+                edge_url: e.url.clone(),
+                secret,
+                user_id: user_id.to_string(),
+            })
+        });
+        sessions.set_push_notifier(crate::push_notifier::make_notifier(push_cfg));
         let diff_sync = CheckoutDiffSync::start(repos.clone(), workspace.clone(), &device_id, edge);
         let spaces_sync = SpacesSync::start(repos.clone(), workspace.clone(), &device_id);
         Ok(Self {

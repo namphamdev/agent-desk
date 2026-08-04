@@ -211,9 +211,24 @@ export class AppModel {
     this.config = config;
     const store = new WorkspaceStore(config);
     this.workspace = store;
-    store.subscribe(() => this.notify());
+    store.subscribe(() => {
+      this.notify();
+      // Scan session statuses immediately on every workspace update so
+      // we don't miss transitions while the 15s timer is dormant.
+      this.scanSessionStatuses();
+    });
     void store.start();
-    void this.notifications.requestPermissionIfNeeded();
+    // Let NotificationManager trigger rescans on app foreground.
+    this.notifications.onRescan = () => this.scanSessionStatuses();
+    // Request notification permission, then register the push token once
+    // granted. These must be sequential — the push token fetch requires
+    // permission to be granted first.
+    void (async () => {
+      await this.notifications.requestPermissionIfNeeded();
+      await this.notifications.registerForPushNotifications(
+        (token) => config.registerPushToken(token),
+      );
+    })();
     this.phase = { kind: 'ready' };
     this.notify();
   }
@@ -260,7 +275,8 @@ export class AppModel {
   }
 
   chat(id: string): Chat | undefined {
-    return (this.demo?.chats ?? this.workspace?.chats)?.find((c) => c.id === id);
+    const chat = (this.demo?.chats ?? this.workspace?.chats)?.find((c) => c.id === id);
+    return chat;
   }
 
   spaceFor(chat: Chat): Space | undefined {

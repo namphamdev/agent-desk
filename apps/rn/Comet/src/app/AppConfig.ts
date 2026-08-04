@@ -134,4 +134,29 @@ export class AppConfig {
       return `${this.wsBase}/device/${deviceId}/ws?${params.toString()}`;
     })();
   }
+
+  /** POST /push/register {token} — register this device's Expo push token. */
+  async registerPushToken(pushToken: string): Promise<boolean> {
+    const token = await this.currentToken();
+    if (!token) {
+      console.warn('[appconfig] push register: no auth token');
+      return false;
+    }
+    try {
+      const res = await fetch(`${this.edgeURL}/push/register`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ token: pushToken }),
+      });
+      const body = await res.text();
+      console.info('[appconfig] push register response:', res.status, body);
+      return res.ok;
+    } catch (err) {
+      console.warn('[appconfig] push register failed', err);
+      return false;
+    }
+  }
 }

@@ -15,6 +15,7 @@ import {
   View,
 } from 'react-native';
 import * as Haptics from 'expo-haptics';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Fonts, Theme } from '../theme/Theme';
 import { whiteAlpha } from '../theme/color';
@@ -83,8 +84,10 @@ export function ComposerShell({
         fontFamily: Fonts.sans,
         fontSize: 16,
         color: Theme.text,
-        padding: 0,
+        paddingHorizontal: 0,
+        paddingVertical: 0,
         margin: 0,
+        minHeight: 24,
       }}
       onFocus={() => setFocused(true)}
       onBlur={() => setFocused(false)}
@@ -126,10 +129,13 @@ export function ComposerShell({
     </Pressable>
   );
 
+  const insets = useSafeAreaInsets();
+
   return (
     <View
       style={{
         marginHorizontal: focused ? 10 : 16,
+        paddingBottom: insets.bottom,
       }}
     >
       <View
@@ -138,25 +144,18 @@ export function ComposerShell({
           {
             flexDirection: expanded ? 'column' : 'row',
             paddingHorizontal: expanded ? 0 : 20,
-            paddingTop: expanded ? 15 : 0,
-            paddingBottom: expanded ? 0 : 15,
+            paddingTop: expanded ? 15 : 8,
+            paddingBottom: expanded ? 0 : 8,
             alignItems: expanded ? 'stretch' : 'center',
           },
         ]}
       >
-        <View style={{ flex: 1, paddingHorizontal: expanded ? 20 : 0 }}>
+        <View style={{ flex: expanded ? 0 : 1, paddingHorizontal: expanded ? 20 : 0 }}>
           {input}
         </View>
         {expanded ? (
           <View
-            style={{
-              flexDirection: 'row',
-              alignItems: 'center',
-              gap: 10,
-              paddingHorizontal: 10,
-              paddingTop: 10,
-              paddingBottom: 10,
-            }}
+            style={styles.expandedActionRow}
           >
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, alignItems: 'center' }}>
               {chips}
@@ -164,7 +163,7 @@ export function ComposerShell({
             {actionButton}
           </View>
         ) : (
-          <View style={{ paddingLeft: 7 }}>{actionButton}</View>
+          <View style={styles.compactActionSlot}>{actionButton}</View>
         )}
       </View>
     </View>
@@ -179,6 +178,16 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderRadius: 28,
     overflow: 'hidden',
+  },
+  compactActionSlot: {
+    paddingLeft: 4,
+  },
+  expandedActionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingHorizontal: 20,
+    paddingVertical: 10,
   },
 });
 

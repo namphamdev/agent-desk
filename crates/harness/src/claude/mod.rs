@@ -865,7 +865,9 @@ mod tests {
             attachments: Vec::new(),
             seed: None,
             seed_purpose: None,
+        harness: None,
             seed_role: None,
+            acp_agent_id: None,
         };
         let command = harness.build_command(&PathBuf::from("claude"), &request);
         let args = command
@@ -916,7 +918,9 @@ mod tests {
             attachments: Vec::new(),
             seed: None,
             seed_purpose: None,
+        harness: None,
             seed_role: None,
+            acp_agent_id: None,
         };
         let command = harness.build_command(&PathBuf::from("claude"), &request);
         let env = command

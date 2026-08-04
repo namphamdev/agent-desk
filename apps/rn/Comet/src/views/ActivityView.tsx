@@ -17,6 +17,7 @@ import {
 import { Fonts, Theme } from '../theme/Theme';
 import { withAlpha } from '../theme/color';
 import { StatusRail, indicatorDotColor } from '../components/Loaders';
+import { SessionSwipeable } from '../components/SessionSwipeable';
 
 interface Props {
   model: AppModel;
@@ -53,43 +54,45 @@ export function ActivityView({ model, onOpenChat, onBack }: Props) {
           data={chats}
           keyExtractor={(c) => c.id}
           renderItem={({ item }) => (
-            <Pressable
-              onPress={() => onOpenChat(item.id)}
-              onLongPress={() => model.archive(item.id)}
-              style={({ pressed }) => ({
-                paddingHorizontal: 12,
-                paddingVertical: 8,
-                marginHorizontal: 12,
-                marginVertical: 2,
-                borderRadius: 10,
-                backgroundColor: pressed ? Theme.elementHover : 'transparent',
-              })}
-            >
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                <StatusRail indicator={model.indicatorFor(item)} />
+            <SessionSwipeable onDelete={() => model.archive(item.id)}>
+              <Pressable
+                onPress={() => onOpenChat(item.id)}
+                onLongPress={() => model.archive(item.id)}
+                style={({ pressed }) => ({
+                  paddingHorizontal: 12,
+                  paddingVertical: 8,
+                  marginHorizontal: 12,
+                  marginVertical: 2,
+                  borderRadius: 10,
+                  backgroundColor: pressed ? Theme.elementHover : 'transparent',
+                })}
+              >
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                  <StatusRail indicator={model.indicatorFor(item)} />
+                  <Text
+                    style={{ flex: 1, fontFamily: Fonts.sans, fontSize: 13, color: Theme.text }}
+                    numberOfLines={1}
+                  >
+                    {chatDisplayTitle(item)}
+                  </Text>
+                  <Text style={{ fontFamily: Fonts.sans, fontSize: 11, color: withAlpha(Theme.textMuted, 0.5) }}>
+                    {relativeTime(item.lastMessageAt ?? item.createdAt)}
+                  </Text>
+                </View>
                 <Text
-                  style={{ flex: 1, fontFamily: Fonts.sans, fontSize: 13, color: Theme.text }}
+                  style={{
+                    paddingLeft: 14,
+                    fontFamily: Fonts.sans,
+                    fontSize: 11,
+                    color: withAlpha(Theme.textMuted, 0.5),
+                    marginTop: 2,
+                  }}
                   numberOfLines={1}
                 >
-                  {chatDisplayTitle(item)}
+                  {item.cwd ? baseName(item.cwd) : ''} · {model.deviceNameFor(item.deviceId)}
                 </Text>
-                <Text style={{ fontFamily: Fonts.sans, fontSize: 11, color: withAlpha(Theme.textMuted, 0.5) }}>
-                  {relativeTime(item.lastMessageAt ?? item.createdAt)}
-                </Text>
-              </View>
-              <Text
-                style={{
-                  paddingLeft: 14,
-                  fontFamily: Fonts.sans,
-                  fontSize: 11,
-                  color: withAlpha(Theme.textMuted, 0.5),
-                  marginTop: 2,
-                }}
-                numberOfLines={1}
-              >
-                {item.cwd ? baseName(item.cwd) : ''} · {model.deviceNameFor(item.deviceId)}
-              </Text>
-            </Pressable>
+              </Pressable>
+            </SessionSwipeable>
           )}
           contentContainerStyle={{ paddingBottom: 32 }}
         />

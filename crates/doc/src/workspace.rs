@@ -420,6 +420,36 @@ impl WorkspaceDoc {
         Ok(true)
     }
 
+    /// Claim a chat row for the host device without clobbering fields that a
+    /// composer may have already written (notably `config`). Only sets id,
+    /// device, cwd, archived, createdAt, and spaceId — leaving config, title,
+    /// branch, etc. untouched so a viewer-device create races with this claim.
+    pub fn claim_chat_minimal(
+        &self,
+        chat_id: &str,
+        device_id: &str,
+        cwd: Option<&str>,
+        space_id: Option<&str>,
+    ) -> Result<(), DocError> {
+        let row = self.row("chats", chat_id)?;
+        row.insert("id", chat_id)?;
+        row.insert("deviceId", device_id)?;
+        row.insert("archived", false)?;
+        if let Some(cwd) = cwd {
+            set_opt_str(&row, "cwd", Some(cwd))?;
+        }
+        if let Some(sid) = space_id {
+            set_opt_str(&row, "spaceId", Some(sid))?;
+        }
+        // Only set createdAt if the row doesn't already have one (don't
+        // overwrite the composer's timestamp).
+        if row.get("createdAt").is_none() {
+            row.insert("createdAt", Utc::now().timestamp_millis())?;
+        }
+        self.doc.commit();
+        Ok(())
+    }
+
     /// LWW config set. `false` when no such row.
     pub fn set_chat_config(&self, chat_id: &str, config: &ChatConfig) -> Result<bool, DocError> {
         let Some(row) = self.existing_row("chats", chat_id) else {

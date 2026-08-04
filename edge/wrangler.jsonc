@@ -60,6 +60,13 @@
 			"bucket_name": "comet-native-releases"
 		}
 	],
+	"kv_namespaces": [
+		{
+			// Expo push tokens keyed by `push:{userId}`.
+			"binding": "PUSH_TOKENS",
+			"id": "a5551bf850b241f3a0c03709fe3cc77c"
+		}
+	],
 	"vars": {
 		// WorkOS AuthKit client id — JWTs verified against its JWKS. Placeholder;
 		// set the real client id before deploying. Set AUTH_MODE=dev locally to

@@ -1,7 +1,7 @@
 // New session — RN port of NewSessionView.swift. A composer page with picker
 // chips for harness/model, permission mode, workflow, checkout, and ref.
 
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   KeyboardAvoidingView,
   Platform,
@@ -12,6 +12,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import { LegendList } from '@legendapp/list/react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Haptics from 'expo-haptics';
@@ -34,8 +35,10 @@ import {
   PERMISSION_MODES,
   RepoRef,
   Space,
+  InstalledAcpAgent,
 } from '../models/Entities';
 import { HarnessCatalog, ModelInfo } from '../models/HarnessCatalog';
+import type { HarnessInfo } from '../models/HarnessCatalog';
 import { WorkflowCatalog, WorkflowDefinition } from '../models/WorkflowCatalog';
 
 interface Props {
@@ -57,6 +60,7 @@ export function NewSessionView({ model, spaceId, onOpenChat, onBack }: Props) {
   const [workflowId, setWorkflowId] = useState('');
   const [prRef, setPrRef] = useState('');
   const [catalogs, setCatalogs] = useState<Record<string, ModelInfo[]>>({});
+  const [acpAgents, setAcpAgents] = useState<InstalledAcpAgent[]>([]);
   const [refs, setRefs] = useState<RepoRef[]>([]);
   const [selectedRef, setSelectedRef] = useState<string | undefined>();
   const [checkoutKind, setCheckoutKind] = useState<CheckoutKind>('local');
@@ -86,9 +90,41 @@ export function NewSessionView({ model, spaceId, onOpenChat, onBack }: Props) {
   useEffect(() => {
     if (!space) return;
     void (async () => {
-      const cat = await model.listModels(space, harness);
+      const [cat, acp] = await Promise.all([
+        model.listModels(space, harness),
+        model.acpAgents(space.deviceId),
+      ]);
       setCatalogs((prev) => ({ ...prev, [harness]: cat }));
-      if (storedModel.length === 0 && cat.length > 0) {
+      if (acp) {
+        setAcpAgents(acp.installed);
+        // Migrate old harness state: "acp" (no agent id) → synthetic
+        // "acp:<agentId>" using the stored/active/first agent.
+        if (harness === HarnessCatalog.ACP_WIRE) {
+          const storedAgent = await AsyncStorage.getItem('newSessionAcpAgentId');
+          const match = acp.installed.find((a) => a.id === storedAgent);
+          const active = acp.installed.find((a) => a.id === acp.activeAgentId) ?? null;
+          const pick = match?.id ?? active?.id ?? acp.installed[0]?.id ?? null;
+          const migrated = pick ? HarnessCatalog.acpAgentHarnessId(pick) : 'claude-code';
+          setHarness(migrated);
+          await AsyncStorage.setItem('newSessionHarness', migrated);
+        } else if (HarnessCatalog.isAcpAgentHarness(harness)) {
+          // If the current harness references an agent that is no longer
+          // installed, fall back to the active/first agent or claude-code.
+          const currentId = HarnessCatalog.acpAgentIdFromHarness(harness);
+          if (!currentId || !acp.installed.some((a) => a.id === currentId)) {
+            const active = acp.installed.find((a) => a.id === acp.activeAgentId) ?? null;
+            const fallback = (active?.id ?? acp.installed[0]?.id);
+            const fallbackHarness = fallback
+              ? HarnessCatalog.acpAgentHarnessId(fallback)
+              : 'claude-code';
+            setHarness(fallbackHarness);
+            await AsyncStorage.setItem('newSessionHarness', fallbackHarness);
+          }
+        }
+      } else {
+        setAcpAgents([]);
+      }
+      if (cat.length > 0 && !cat.some((m) => m.id === storedModel)) {
         setStoredModel(cat[0].id);
         await AsyncStorage.setItem('newSessionModel', cat[0].id);
       }
@@ -110,6 +146,12 @@ export function NewSessionView({ model, spaceId, onOpenChat, onBack }: Props) {
 
   const models = catalogs[harness] ?? HarnessCatalog.modelsFor(harness);
   const selectedModel = models.find((m) => m.id === storedModel) ?? models[0];
+  // Resolve the ACP agent from the harness state (acp:<agentId>).
+  const selectedAcpAgent = (() => {
+    const agentId = HarnessCatalog.acpAgentIdFromHarness(harness);
+    if (!agentId) return null;
+    return acpAgents.find((a) => a.id === agentId) ?? null;
+  })();
   const reasoning = (() => {
     if (selectedModel.reasoningLevels.length === 0) return undefined;
     if (selectedModel.reasoningLevels.includes(storedReasoning)) return storedReasoning;
@@ -145,10 +187,24 @@ export function NewSessionView({ model, spaceId, onOpenChat, onBack }: Props) {
       : promptText;
     setBusy(true);
     const mode = permissionModeMeta(storedPermissionMode);
+    // Translate the picker harness state to the wire format. ACP agents
+    // use synthetic IDs "acp:<agentId>" in the UI but serialize as
+    // harness="acp" + acpAgentId on the wire.
+    const wireHarness = HarnessCatalog.isAcpAgentHarness(harness)
+      ? HarnessCatalog.ACP_WIRE
+      : harness;
+    const wireAcpAgentId = HarnessCatalog.acpAgentIdFromHarness(harness);
     const cfg: ChatConfig = {
-      harness, model: selectedModel.id, reasoning,
-      sandbox: mode.sandbox, permissionMode: mode.value,
+      harness: wireHarness,
+      model: selectedModel.id,
+      reasoning,
+      sandbox: mode.sandbox,
+      permissionMode: mode.value,
+      ...(wireHarness === HarnessCatalog.ACP_WIRE && wireAcpAgentId
+        ? { acpAgentId: wireAcpAgentId }
+        : {}),
     };
+    console.log('[NewSessionView] send — harness state:', harness, '| cfg:', JSON.stringify(cfg));
     let cwd: string | undefined;
     let branch = selectedRef;
     if (checkoutKind === 'newWorktree' && selectedRef) {
@@ -163,11 +219,13 @@ export function NewSessionView({ model, spaceId, onOpenChat, onBack }: Props) {
       cwd = selectedRefRow.worktreePath;
     }
     const chatId = model.createChat(space, cfg, branch, cwd);
+    console.log('[NewSessionView] createChat returned:', chatId);
     if (!chatId) {
       setBusy(false);
       return;
     }
     const chat = model.chat(chatId);
+    console.log('[NewSessionView] chat config from model.chat:', JSON.stringify(chat?.config));
     const store = chat ? model.sessionStoreFor(chat) : undefined;
     if (chat && store) store.sendRun(prompt, chat);
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -225,8 +283,10 @@ export function NewSessionView({ model, spaceId, onOpenChat, onBack }: Props) {
               <>
                 <ChipButton
                   onPress={() => setShowPicker(true)}
-                  leading={<BrandMark harness={harness} size={15} color={Theme.text} />}
-                  label={selectedModel.label}
+                  leading={<BrandMark harness={HarnessCatalog.isAcpAgentHarness(harness) ? HarnessCatalog.ACP_WIRE : harness} size={15} color={Theme.text} />}
+                  label={HarnessCatalog.isAcpAgentHarness(harness) && selectedAcpAgent
+                    ? `${selectedAcpAgent.name} · ${selectedModel.label}`
+                    : selectedModel.label}
                   trailing={reasoning ? HarnessCatalog.reasoningLabel(reasoning) : undefined}
                 />
                 <ChipButton
@@ -267,6 +327,7 @@ export function NewSessionView({ model, spaceId, onOpenChat, onBack }: Props) {
           permissionMode={storedPermissionMode}
           lockedHarness={false}
           catalogs={catalogs}
+          acpAgents={acpAgents}
           onClose={() => setShowPicker(false)}
           onHarnessChange={(h) => void persistHarness(h)}
           onModelChange={(m) => void persistModel(m)}
@@ -434,6 +495,7 @@ interface ModelPickerProps {
   permissionMode: PermissionModeValue;
   lockedHarness: boolean;
   catalogs: Record<string, ModelInfo[]>;
+  acpAgents: InstalledAcpAgent[];
   onClose: () => void;
   onHarnessChange: (h: string) => void;
   onModelChange: (m: string) => void;
@@ -444,13 +506,56 @@ interface ModelPickerProps {
 function ModelPickerSheet(props: ModelPickerProps) {
   const models = props.catalogs[props.harness] ?? HarnessCatalog.modelsFor(props.harness);
   const selected = models.find((m) => m.id === props.modelId) ?? models[0];
+  const [activeTab, setActiveTab] = useState<'Models' | 'Reasoning' | 'Permission'>('Models');
+  const [search, setSearch] = useState('');
+  const filteredModels = models.filter((m) => {
+    const query = search.trim().toLowerCase();
+    return query.length === 0 || `${m.label} ${m.id} ${m.description ?? ''}`.toLowerCase().includes(query);
+  });
+
+  // Build the dynamic harness list: built-in harnesses + one entry per
+  // installed ACP agent.
+  const allHarnesses: HarnessInfo[] = [
+    ...HarnessCatalog.harnesses,
+    ...props.acpAgents.map((agent) => ({
+      id: HarnessCatalog.acpAgentHarnessId(agent.id),
+      label: agent.name,
+    })),
+  ];
+
+  const renderModelItem = useCallback(({ item: m }: { item: ModelInfo }) => {
+    const sel = m.id === props.modelId;
+    return (
+      <Pressable
+        onPress={() => {
+          void Haptics.selectionAsync();
+          props.onModelChange(m.id);
+          if (!m.reasoningLevels.includes(props.reasoning ?? '')) {
+            props.onReasoningChange(HarnessCatalog.defaultReasoningFor(m) ?? undefined);
+          }
+        }}
+        style={({ pressed }) => [sheetStyles.option, { backgroundColor: pressed ? whiteAlpha(0.06) : 'transparent' }]}
+      >
+        <View style={{ flex: 1 }}>
+          <Text style={sheetStyles.optionTitle}>{m.label}</Text>
+          {m.description ? <Text style={sheetStyles.optionDescription}>{m.description}</Text> : null}
+        </View>
+        <Text style={[sheetStyles.checkmark, { opacity: sel ? 1 : 0 }]}>✓</Text>
+      </Pressable>
+    );
+  }, [props]);
+
+  const ModelSeparator = useCallback(() => <View style={sheetStyles.separator} />, []);
 
   return (
     <SheetShell title="Select model" onClose={props.onClose}>
       {!props.lockedHarness ? (
-        <View style={{ flexDirection: 'row', gap: 8, marginBottom: 16 }}>
-          {HarnessCatalog.harnesses.map((h) => {
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={sheetStyles.harnesses}>
+          {allHarnesses.map((h) => {
             const sel = h.id === props.harness;
+            const wireHarness = HarnessCatalog.isAcpAgentHarness(h.id)
+              ? HarnessCatalog.ACP_WIRE
+              : h.id;
             return (
               <Pressable
                 key={h.id}
@@ -462,130 +567,96 @@ function ModelPickerSheet(props: ModelPickerProps) {
                   props.onModelChange(fallback.id);
                   props.onReasoningChange(HarnessCatalog.defaultReasoningFor(fallback) ?? undefined);
                 }}
-                style={{
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  gap: 7,
-                  paddingHorizontal: 14,
-                  height: 36,
-                  borderRadius: 18,
-                  backgroundColor: sel ? whiteAlpha(0.15) : whiteAlpha(0.05),
-                }}
+                style={[sheetStyles.harness, { backgroundColor: sel ? whiteAlpha(0.15) : whiteAlpha(0.05) }]}
               >
-                <BrandMark harness={h.id} size={15} color={Theme.text} dimmed={!sel} />
-                <Text style={{
-                  fontFamily: Fonts.sansMedium,
-                  fontSize: 13,
-                  color: sel ? Theme.text : Theme.textMuted,
-                }}>
-                  {h.label}
-                </Text>
+                <BrandMark harness={wireHarness} size={15} color={Theme.text} dimmed={!sel} />
+                <Text style={[sheetStyles.harnessText, { color: sel ? Theme.text : Theme.textMuted }]}>{h.label}</Text>
               </Pressable>
             );
           })}
-        </View>
+        </ScrollView>
       ) : null}
 
-      <Text style={sheetStyles.label}>Model</Text>
-      <View style={sheetStyles.card}>
-        {models.map((m, ix) => {
-          const sel = m.id === props.modelId;
+      <View style={sheetStyles.tabs}>
+        {(['Models', 'Reasoning', 'Permission'] as const).map((tab) => {
+          const active = activeTab === tab;
           return (
-            <React.Fragment key={m.id}>
-              <Pressable
-                onPress={() => {
-                  void Haptics.selectionAsync();
-                  props.onModelChange(m.id);
-                  if (m.reasoningLevels.includes(props.reasoning ?? '')) return;
-                  props.onReasoningChange(HarnessCatalog.defaultReasoningFor(m) ?? undefined);
-                }}
-                style={({ pressed }) => ({
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  gap: 12,
-                  paddingHorizontal: 16,
-                  paddingVertical: 11,
-                  backgroundColor: pressed ? whiteAlpha(0.06) : 'transparent',
-                })}
-              >
-                <View style={{ flex: 1 }}>
-                  <Text style={{ fontFamily: Fonts.sans, fontSize: 15, color: Theme.text }}>{m.label}</Text>
-                  {m.description ? (
-                    <Text style={{ fontFamily: Fonts.sans, fontSize: 12.5, color: Theme.textMuted, marginTop: 2 }}>
-                      {m.description}
-                    </Text>
-                  ) : null}
-                </View>
-                <Text style={{
-                  fontFamily: Fonts.sansSemiBold,
-                  fontSize: 14,
-                  color: Theme.text,
-                  opacity: sel ? 1 : 0,
-                }}>✓</Text>
-              </Pressable>
-              {ix < models.length - 1 ? <View style={sheetStyles.separator} /> : null}
-            </React.Fragment>
+            <Pressable key={tab} onPress={() => setActiveTab(tab)} style={sheetStyles.tab}>
+              <Text style={[sheetStyles.tabText, active && sheetStyles.tabTextActive]}>{tab}</Text>
+              {active ? <View style={sheetStyles.tabIndicator} /> : null}
+            </Pressable>
           );
         })}
       </View>
 
-      {selected && selected.reasoningLevels.length > 0 ? (
+      {activeTab === 'Models' ? (
         <>
-          <Text style={[sheetStyles.label, { marginTop: 16 }]}>Reasoning</Text>
+          <Text style={sheetStyles.label}>Model</Text>
+          <View style={sheetStyles.searchBox}>
+            <Text style={sheetStyles.searchIcon}>⌕</Text>
+            <TextInput
+              value={search}
+              onChangeText={setSearch}
+              placeholder="Search models"
+              placeholderTextColor={Theme.textFaint}
+              autoCapitalize="none"
+              autoCorrect={false}
+              style={sheetStyles.searchInput}
+            />
+          </View>
+          <View style={sheetStyles.modelList}>
+            <LegendList
+              data={filteredModels}
+              renderItem={renderModelItem}
+              keyExtractor={(m) => m.id}
+              ItemSeparatorComponent={ModelSeparator}
+              ListEmptyComponent={<Text style={sheetStyles.emptyText}>No models found.</Text>}
+              keyboardShouldPersistTaps="handled"
+              recycleItems
+              contentContainerStyle={{ paddingVertical: 4 }}
+            />
+          </View>
+        </>
+      ) : activeTab === 'Reasoning' ? (
+        <>
+          <Text style={sheetStyles.label}>Reasoning</Text>
           <View style={sheetStyles.card}>
-            {selected.reasoningLevels.map((level: string, ix: number) => {
-              const sel = props.reasoning === level;
+            {selected?.reasoningLevels.length ? selected.reasoningLevels.map((level, ix) => (
+              <React.Fragment key={level}>
+                <Pressable onPress={() => props.onReasoningChange(level)} style={({ pressed }) => [sheetStyles.option, { backgroundColor: pressed ? whiteAlpha(0.06) : 'transparent' }]}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={sheetStyles.optionTitle}>{HarnessCatalog.reasoningLabel(level)}</Text>
+                    {HarnessCatalog.effortHint(level) ? <Text style={sheetStyles.optionDescription}>{HarnessCatalog.effortHint(level)}</Text> : null}
+                  </View>
+                  <Text style={[sheetStyles.checkmark, { opacity: props.reasoning === level ? 1 : 0 }]}>✓</Text>
+                </Pressable>
+                {ix < selected.reasoningLevels.length - 1 ? <View style={sheetStyles.separator} /> : null}
+              </React.Fragment>
+            )) : <Text style={sheetStyles.emptyText}>No reasoning options for this model.</Text>}
+          </View>
+        </>
+      ) : (
+        <>
+          <Text style={sheetStyles.label}>Permission mode</Text>
+          <View style={sheetStyles.card}>
+            {PERMISSION_MODES.map((mode, ix) => {
+              const sel = mode.value === props.permissionMode;
               return (
-                <React.Fragment key={level}>
-                  <Pressable
-                    onPress={() => props.onReasoningChange(level)}
-                    style={({ pressed }) => ({
-                      paddingHorizontal: 16,
-                      paddingVertical: 11,
-                      backgroundColor: pressed ? whiteAlpha(0.06) : 'transparent',
-                    })}
-                  >
-                    <Text style={{ fontFamily: Fonts.sans, fontSize: 15, color: Theme.text }}>
-                      {HarnessCatalog.reasoningLabel(level)}
-                    </Text>
-                    {HarnessCatalog.effortHint(level) ? (
-                      <Text style={{ fontFamily: Fonts.sans, fontSize: 12.5, color: Theme.textMuted }}>
-                        {HarnessCatalog.effortHint(level)}
-                      </Text>
-                    ) : null}
+                <React.Fragment key={mode.value}>
+                  <Pressable onPress={() => props.onPermissionModeChange(mode.value)} style={({ pressed }) => [sheetStyles.option, { backgroundColor: pressed ? whiteAlpha(0.06) : 'transparent' }]}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={sheetStyles.optionTitle}>{mode.label}</Text>
+                      <Text style={sheetStyles.optionDescription}>{mode.description}</Text>
+                    </View>
+                    <Text style={[sheetStyles.checkmark, { opacity: sel ? 1 : 0 }]}>✓</Text>
                   </Pressable>
-                  {ix < selected.reasoningLevels.length - 1 ? <View style={sheetStyles.separator} /> : null}
+                  {ix < PERMISSION_MODES.length - 1 ? <View style={sheetStyles.separator} /> : null}
                 </React.Fragment>
               );
             })}
           </View>
         </>
-      ) : null}
-
-      <Text style={[sheetStyles.label, { marginTop: 16 }]}>Permission mode</Text>
-      <View style={sheetStyles.card}>
-        {PERMISSION_MODES.map((mode, ix) => {
-          const sel = mode.value === props.permissionMode;
-          return (
-            <React.Fragment key={mode.value}>
-              <Pressable
-                onPress={() => props.onPermissionModeChange(mode.value)}
-                style={({ pressed }) => ({
-                  paddingHorizontal: 16,
-                  paddingVertical: 11,
-                  backgroundColor: pressed ? whiteAlpha(0.06) : 'transparent',
-                })}
-              >
-                <Text style={{ fontFamily: Fonts.sans, fontSize: 15, color: Theme.text }}>{mode.label}</Text>
-                <Text style={{ fontFamily: Fonts.sans, fontSize: 12.5, color: Theme.textMuted }}>
-                  {mode.description}
-                </Text>
-              </Pressable>
-              {ix < PERMISSION_MODES.length - 1 ? <View style={sheetStyles.separator} /> : null}
-            </React.Fragment>
-          );
-        })}
-      </View>
+      )}
     </SheetShell>
   );
 }
@@ -805,6 +876,111 @@ const sheetStyles = StyleSheet.create({
     fontFamily: Fonts.sansMedium,
     fontSize: 14,
     color: Theme.text,
+  },
+  tabs: {
+    flexDirection: 'row',
+    borderBottomWidth: 1,
+    borderBottomColor: Theme.border,
+    marginBottom: 20,
+  },
+  tab: {
+    flex: 1,
+    alignItems: 'center',
+    paddingVertical: 12,
+  },
+  tabText: {
+    fontFamily: Fonts.sansMedium,
+    fontSize: 13,
+    color: Theme.textMuted,
+  },
+  tabTextActive: {
+    color: Theme.text,
+  },
+  tabIndicator: {
+    position: 'absolute',
+    bottom: -1,
+    left: 16,
+    right: 16,
+    height: 2,
+    borderRadius: 1,
+    backgroundColor: Theme.text,
+  },
+  harnesses: {
+    gap: 8,
+    paddingBottom: 16,
+  },
+  harness: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+    paddingHorizontal: 14,
+    height: 36,
+    borderRadius: 18,
+  },
+  harnessText: {
+    fontFamily: Fonts.sansMedium,
+    fontSize: 13,
+  },
+  searchBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    height: 42,
+    paddingHorizontal: 12,
+    marginBottom: 10,
+    borderRadius: 12,
+    backgroundColor: whiteAlpha(0.06),
+    borderWidth: 1,
+    borderColor: Theme.border,
+  },
+  searchIcon: {
+    color: Theme.textMuted,
+    fontSize: 22,
+    marginRight: 8,
+  },
+  searchInput: {
+    flex: 1,
+    padding: 0,
+    fontFamily: Fonts.sans,
+    fontSize: 14,
+    color: Theme.text,
+  },
+  modelList: {
+    height: 280,
+    borderRadius: 20,
+    backgroundColor: whiteAlpha(0.045),
+    borderColor: whiteAlpha(0.06),
+    borderWidth: 1,
+    overflow: 'hidden',
+  },
+  option: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 11,
+  },
+  optionTitle: {
+    fontFamily: Fonts.sans,
+    fontSize: 15,
+    color: Theme.text,
+  },
+  optionDescription: {
+    fontFamily: Fonts.sans,
+    fontSize: 12.5,
+    color: Theme.textMuted,
+    marginTop: 2,
+  },
+  checkmark: {
+    fontFamily: Fonts.sansSemiBold,
+    fontSize: 14,
+    color: Theme.text,
+  },
+  emptyText: {
+    fontFamily: Fonts.sans,
+    fontSize: 13,
+    color: Theme.textFaint,
+    padding: 20,
+    textAlign: 'center',
   },
   label: {
     fontFamily: Fonts.sansMedium,
