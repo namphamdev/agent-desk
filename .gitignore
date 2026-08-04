@@ -12,3 +12,4 @@ edge/dist/
 apps/ios/Comet/Generated/
 /apps/rn/Comet/android
 /apps/rn/Comet/ios
+/apps/rn/Comet/dist
