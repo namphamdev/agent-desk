@@ -26,12 +26,12 @@ if (!edgeURL || !workosClientId) {
 
 export default {
   expo: {
-    name: 'Comet',
-    slug: 'comet',
+    name: 'AgentDeski',
+    slug: 'agentdeski',
     version: '0.0.2',
     orientation: 'default',
     icon: './assets/icon.png',
-    scheme: 'comet',
+    scheme: 'agentdeski',
     userInterfaceStyle: 'dark',
     splash: {
       backgroundColor: '#060606',
@@ -40,8 +40,9 @@ export default {
     },
     ios: {
       supportsTablet: true,
-      bundleIdentifier: 'dev.cometnative.Comet',
+      bundleIdentifier: 'com.npdev.agentdeski',
       infoPlist: {
+        ITSAppUsesNonExemptEncryption: false,
         UISupportedInterfaceOrientations: [
           'UIInterfaceOrientationPortrait',
           'UIInterfaceOrientationLandscapeLeft',
@@ -55,7 +56,7 @@ export default {
         foregroundImage: './assets/adaptive-icon.png',
         backgroundColor: '#060606',
       },
-      package: 'dev.cometnative.Comet',
+      package: 'com.npdev.agentdeski',
     },
     plugins: ['expo-font', 'expo-notifications'],
     extra: {

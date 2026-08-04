@@ -10,7 +10,7 @@ import { AppModel } from '../app/AppModel';
 import { useForceUpdateOnNotify } from '../lib/hooks';
 import { Fonts, Theme } from '../theme/Theme';
 import { withAlpha, whiteAlpha } from '../theme/color';
-import { CometMark } from '../theme/CometMark';
+import { AgentDeskiMark } from '../theme/AgentDeskiMark';
 
 interface Props {
   model: AppModel;
@@ -35,9 +35,9 @@ export function MenuView({ model, onBack, onNotifications }: Props) {
       </View>
       <ScrollView contentContainerStyle={{ padding: 16, gap: 16 }}>
         <View style={styles.aboutRow}>
-          <CometMark size={36} color={Theme.text} />
+          <AgentDeskiMark size={36} color={Theme.text} />
           <View style={{ flex: 1 }}>
-            <Text style={{ fontFamily: Fonts.sansSemiBold, fontSize: 16, color: Theme.text }}>Comet</Text>
+            <Text style={{ fontFamily: Fonts.sansSemiBold, fontSize: 16, color: Theme.text }}>AgentDeski</Text>
             <Text style={{ fontFamily: Fonts.sans, fontSize: 12, color: Theme.textMuted }}>
               v{version} {connected ? '· Connected' : '· Connecting…'}
             </Text>

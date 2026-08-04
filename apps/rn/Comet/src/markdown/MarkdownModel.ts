@@ -52,7 +52,7 @@ export interface TopBlock {
 
 // MARK: - Parser
 
-const LINK_DEF_PATTERN = /(?m)^\s{0,3}\[[^\]]+\]:/;
+const LINK_DEF_PATTERN = /^\s{0,3}\[[^\]]+\]:/m;
 
 export const MarkdownParser = {
   parse(source: string): TopBlock[] {

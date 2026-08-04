@@ -4,7 +4,7 @@
 // seen marks. RN is a viewport, not an engine device, so it deliberately owns
 // neither a device row nor a presence heartbeat.
 
-import { LoroDoc, LoroMap } from 'loro-crdt';
+import { LoroDoc, LoroMap } from 'loro-react-native';
 import { Platform } from 'react-native';
 
 import { AppConfig } from '../app/AppConfig';
@@ -88,8 +88,8 @@ export class WorkspaceStore {
     );
     this.room = client;
     // Local commits → room.
-    this.doc.subscribeLocalUpdates((bytes: Uint8Array) => {
-      void client.sendLocalUpdate(bytes);
+    this.doc.subscribeLocalUpdate((bytes: ArrayBuffer) => {
+      void client.sendLocalUpdate(new Uint8Array(bytes));
       this.saver?.poke();
     });
     client.start();
@@ -431,7 +431,7 @@ export class WorkspaceStore {
       row.set('spaceId', space.id);
       row.set('createdAt', nowMs());
       if (branch) row.set('branch', branch);
-      row.set('config', chatConfigToLoro(cfg));
+      row.set('config', chatConfigToLoro(cfg) as never);
       this.doc.commit();
       this.project();
     } catch (err) {
@@ -480,7 +480,7 @@ export class WorkspaceStore {
   setSettled(chatId: string, settled: boolean): void {
     this.updateChat(chatId, (row) => {
       if (settled) row.set('settledAt', nowMs());
-      else row.delete('settledAt');
+      else row.delete_('settledAt');
     });
   }
 
@@ -490,7 +490,7 @@ export class WorkspaceStore {
 
   setChatConfig(chatId: string, cfg: ChatConfig): void {
     this.updateChat(chatId, (row) => {
-      row.set('config', chatConfigToLoro(cfg));
+      row.set('config', chatConfigToLoro(cfg) as never);
     });
   }
 

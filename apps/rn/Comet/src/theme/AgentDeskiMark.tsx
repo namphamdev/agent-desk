@@ -19,12 +19,12 @@ const CELLS: Array<{ x: number; y: number }> = [
   { x: 360, y: 480 }, { x: 120, y: 720 },
 ];
 
-interface CometMarkProps {
+interface AgentDeskiMarkProps {
   size?: number;
   color?: string;
 }
 
-export function CometMark({ size = 72, color = Theme.text }: CometMarkProps) {
+export function AgentDeskiMark({ size = 72, color = Theme.text }: AgentDeskiMarkProps) {
   const aspect = 820 / 940;
   const w = size;
   const h = size / aspect;

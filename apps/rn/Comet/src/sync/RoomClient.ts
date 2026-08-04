@@ -5,11 +5,10 @@
 // local oplog VV, imports the server's backfill, resubmits anything the
 // server lacks, relays local commits as DocUpdate batches until acked.
 //
-// Loro's TS API exposes `LoroDoc`, `LoroEventBatch` via the loro-crdt npm
-// package. Subscribe via doc.subscribe(method, cb); import via
-// doc.import(bytes).
+// Loro's native React Native binding exposes the same document model without
+// requiring a browser WebAssembly loader.
 
-import { LoroDoc, LoroEventBatch, VersionVector } from 'loro-crdt';
+import { LoroDoc, VersionVector } from 'loro-react-native';
 
 import { AppConfig } from '../app/AppConfig';
 import {
@@ -326,13 +325,18 @@ export class RoomClient {
       if (this.invalidRejoins < MAX_INVALID_REJOINS) {
         const localVv = this.doc.oplogVersion();
         if (!isVvEmpty(localVv)) {
-          const serverVv = version.length === 0
-            ? new Map<string, number>()
-            : decodeVV(version);
-          if (!vvIncludes(serverVv, localVv)) {
+          const serverVersion = version.length === 0
+            ? new VersionVector()
+            : VersionVector.decode(
+                version.buffer.slice(
+                  version.byteOffset,
+                  version.byteOffset + version.byteLength,
+                ) as ArrayBuffer,
+              ) as VersionVector;
+          if (!serverVersion.includesVv(localVv)) {
             try {
-              const missing = this.doc.export({ mode: "update", from: new VersionVector(serverVv as unknown as Map<`${number}`, number>) });
-              if (missing && missing.length > 0) {
+              const missing = this.doc.export({ mode: "updates", from: serverVersion });
+              if (missing.byteLength > 0) {
                 await this.sendLoroUpdates([new Uint8Array(missing)]);
               }
             } catch (err) {
@@ -365,7 +369,7 @@ export class RoomClient {
       for (const update of updates) {
         if (update.length === 0) continue;
         try {
-          this.doc.import(new Uint8Array(update));
+          this.doc.import_(update.buffer.slice(update.byteOffset, update.byteOffset + update.byteLength) as ArrayBuffer);
           imported = true;
         } catch (err) {
           if (!this.fullResyncRequested) {
@@ -534,8 +538,8 @@ export class RoomClient {
     try {
       // Export a snapshot of the current version vector for join requests.
       // The server uses this to determine what updates to send back.
-      const encoded = (vv as unknown as { encode?: () => Uint8Array }).encode?.();
-      return encoded ?? new Uint8Array();
+      const encoded = (vv as unknown as { encode?: () => ArrayBuffer }).encode?.();
+      return encoded ? new Uint8Array(encoded) : new Uint8Array();
     } catch {
       return new Uint8Array();
     }
@@ -552,45 +556,14 @@ function batchKey(id: Uint8Array): string {
   return s;
 }
 
-// ---- Version vector helpers ----
-// loro-crdt returns oplogVv() as a Record<string, number> in the JS bindings;
-// we treat it as a Map for parity with the Swift port.
-
-type VV = Map<string, number>;
-
 function isVvEmpty(vv: unknown): boolean {
   if (!vv) return true;
+  if (typeof (vv as { toHashmap?: () => Map<unknown, unknown> }).toHashmap === 'function') {
+    return (vv as { toHashmap: () => Map<unknown, unknown> }).toHashmap().size === 0;
+  }
   if (vv instanceof Map) return vv.size === 0;
   if (typeof vv === 'object') return Object.keys(vv as Record<string, unknown>).length === 0;
   return true;
-}
-
-function decodeVV(_bytes: Uint8Array): VV {
-  // The TS loro bindings don't expose a public VV decoder. Sending an empty
-  // map means "I have nothing" → the server will reply with everything, which
-  // is the safe superset; the resubmit path then catches the gap.
-  return new Map();
-}
-
-function vvIncludes(server: VV, local: unknown): boolean {
-  if (isVvEmpty(local)) return true;
-  const localMap = toMap(local);
-  for (const [k, v] of localMap) {
-    const s = server.get(k);
-    if (s === undefined || s < v) return false;
-  }
-  return true;
-}
-
-function toMap(vv: unknown): VV {
-  if (vv instanceof Map) return vv;
-  const out = new Map<string, number>();
-  if (vv && typeof vv === 'object') {
-    for (const [k, v] of Object.entries(vv as Record<string, number>)) {
-      out.set(k, v);
-    }
-  }
-  return out;
 }
 
 // Unused export kept for parity / future re-export path.

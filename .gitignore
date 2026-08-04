@@ -5,7 +5,10 @@
 .env
 .env.local
 node_modules
+.expo/
 .wrangler
 build/
 edge/dist/
 apps/ios/Comet/Generated/
+/apps/rn/Comet/android
+/apps/rn/Comet/ios

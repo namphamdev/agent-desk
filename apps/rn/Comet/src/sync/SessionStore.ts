@@ -4,7 +4,7 @@
 // host drain them. Optimistic echo: pending sends render locally under their
 // client-minted message id until the host writes the real entry.
 
-import { LoroDoc, LoroMap } from 'loro-crdt';
+import { LoroDoc, LoroMap } from 'loro-react-native';
 
 import { AppConfig } from '../app/AppConfig';
 import {
@@ -97,8 +97,8 @@ export class SessionStore {
       (event) => this.handle(event),
     );
     this.room = client;
-    this.doc.subscribeLocalUpdates((bytes: Uint8Array) => {
-      void client.sendLocalUpdate(bytes);
+    this.doc.subscribeLocalUpdate((bytes: ArrayBuffer) => {
+      void client.sendLocalUpdate(new Uint8Array(bytes));
       this.saver?.poke();
     });
     client.start();
@@ -260,12 +260,12 @@ export class SessionStore {
     try {
       const commands = this.doc.getList('commands');
       const map = commands.insert(0, {}) as unknown as LoroMap;
-      // NB: loro-crdt's container push API varies across versions; the
+      // NB: the native Loro container push API varies across versions; the
       // schema-shape writes are what matter for cross-device parity. If the
       // exact container push fails, the host will still drain from VV backfill.
       map.set('id', makeUuid());
       map.set('kind', kind);
-      map.set('payload', payload);
+      map.set('payload', payload as never);
       map.set('issuedBy', this.config.deviceId);
       map.set('issuedAt', nowMs());
       const turnId = this.lastEntryId;

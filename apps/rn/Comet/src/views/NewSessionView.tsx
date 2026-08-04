@@ -20,7 +20,7 @@ import { AppModel } from '../app/AppModel';
 import { useForceUpdateOnNotify } from '../lib/hooks';
 import { ComposerShell } from '../components/ComposerView';
 import { BrandMark } from '../theme/BrandMark';
-import { CometMark } from '../theme/CometMark';
+import { AgentDeskiMark } from '../theme/AgentDeskiMark';
 import { LineIcon } from '../theme/LineIcon';
 import { Fonts, Theme } from '../theme/Theme';
 import { withAlpha, whiteAlpha } from '../theme/color';
@@ -198,7 +198,7 @@ export function NewSessionView({ model, spaceId, onOpenChat, onBack }: Props) {
         </View>
 
         <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
-          <CometMark size={84} color={withAlpha(Theme.text, 0.22)} />
+          <AgentDeskiMark size={84} color={withAlpha(Theme.text, 0.22)} />
           <Text style={{ marginTop: 24, fontFamily: Fonts.sans, fontSize: 15, color: Theme.textFaint }}>
             What are we building?
           </Text>

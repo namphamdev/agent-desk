@@ -7,7 +7,7 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 import * as WebBrowser from 'expo-web-browser';
 import { makeRedirectUri } from 'expo-auth-session';
 
-import { CometMark } from '../theme/CometMark';
+import { AgentDeskiMark } from '../theme/AgentDeskiMark';
 import { Fonts, Theme } from '../theme/Theme';
 import { AppModel } from '../app/AppModel';
 import { AuthOrg, AuthTokens } from '../auth/AuthClient';
@@ -18,7 +18,7 @@ const EDGE_URL =
 const WORKOS_CLIENT_ID =
   process.env.EXPO_PUBLIC_WORKOS_CLIENT_ID ?? 'client_01KYYC6CE7KXR50DMVMV47JTYD';
 const WORKOS_API_BASE = 'https://api.workos.com';
-const CALLBACK_SCHEME = 'comet';
+const CALLBACK_SCHEME = 'agentdeski';
 
 function authorizeURL(state: string): string {
   const params = new URLSearchParams({
@@ -72,9 +72,9 @@ export function SignInView({ model }: SignInProps) {
     <View style={styles.container}>
       <View style={{ flex: 1 }} />
       <View style={{ alignItems: 'center', gap: 24 }}>
-        <CometMark size={72} color={Theme.text} />
+        <AgentDeskiMark size={72} color={Theme.text} />
         <View style={{ alignItems: 'center', gap: 6 }}>
-          <Text style={styles.title}>Comet</Text>
+          <Text style={styles.title}>AgentDeski</Text>
           <Text style={styles.subtitle}>Your coding agents, from anywhere</Text>
         </View>
       </View>
@@ -92,7 +92,7 @@ export function SignInView({ model }: SignInProps) {
             justifyContent: 'center',
           })}
         >
-          <Text style={styles.buttonText}>{busy ? 'Signing in…' : 'Log in to Comet'}</Text>
+          <Text style={styles.buttonText}>{busy ? 'Signing in…' : 'Log in to AgentDeski'}</Text>
         </Pressable>
         {error ? <Text style={styles.error}>{error}</Text> : null}
       </View>

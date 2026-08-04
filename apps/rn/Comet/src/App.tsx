@@ -1,6 +1,6 @@
 // App root — wires the AppModel state machine to the navigation graph, runs
 // restore on mount, and selects between SignInView, OrgPickerView, and the
-// main Home stack. Deep-link handler routes comet://callback back to signIn.
+// main Home stack. Deep-link handler routes agentdeski://callback back to signIn.
 
 import React, { useEffect, useMemo, useState } from 'react';
 import { Linking, Pressable, StatusBar, Text, View } from 'react-native';
@@ -58,7 +58,7 @@ const navTheme = {
 };
 
 const linking: LinkingOptions<RootStackParamList> = {
-  prefixes: ['comet://'],
+  prefixes: ['agentdeski://'],
   config: {
     screens: {
       Home: '',
@@ -235,7 +235,7 @@ function NewSpaceView({ model, onDone }: { model: AppModel; onDone: () => void }
       <View style={{ flex: 1 }} />
       <View style={{ alignItems: 'center', gap: 12 }}>
         <Text style={{ fontFamily: 'Geist', fontSize: 15, color: Theme.textFaint }}>
-          To add a space, pair a desktop device running Comet.
+          To add a space, pair a desktop device running AgentDeski.
         </Text>
       </View>
       <View style={{ flex: 1 }} />

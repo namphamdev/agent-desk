@@ -3,10 +3,10 @@
 // the UI renders instantly from local state (offline included) and the join's
 // version vector turns the backfill incremental.
 
-import * as FileSystem from 'expo-file-system';
-import { LoroDoc } from 'loro-crdt';
+import * as FileSystem from 'expo-file-system/legacy';
+import { LoroDoc } from 'loro-react-native';
 
-const DIRECTORY = `${FileSystem.documentDirectory}CometDocs/`;
+const DIRECTORY = `${FileSystem.documentDirectory}AgentDeskiDocs/`;
 
 function safeId(id: string): string {
   return id.replaceAll('/', '_');
@@ -36,7 +36,7 @@ export const DocDisk = {
       });
       const bytes = base64ToUint8(base64);
       if (bytes.length === 0) return false;
-      into.import(bytes);
+      into.import_(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer);
       return true;
     } catch (err) {
       console.warn(`[docdisk] load ${id} failed`, err);
@@ -49,7 +49,7 @@ export const DocDisk = {
       await this.ensureDirectory();
       const snapshot = doc.export({ mode: "snapshot" });
       const url = docPath(id);
-      const base64 = uint8ToBase64(snapshot);
+      const base64 = uint8ToBase64(new Uint8Array(snapshot));
       await FileSystem.writeAsStringAsync(url, base64, {
         encoding: FileSystem.EncodingType.Base64,
       });
