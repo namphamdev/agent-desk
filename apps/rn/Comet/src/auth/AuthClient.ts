@@ -106,18 +106,19 @@ export const Keychain = {
 };
 
 // JWT helpers — decode the payload's `exp` (60s early-refresh margin).
+// On any parse failure the token is treated as expired so the app refreshes
+// rather than trusting an unreadable JWT.
 export function isJwtExpired(jwt: string): boolean {
   const segments = jwt.split('.');
-  if (segments.length !== 3) return false;
-  // RN lacks atob base64url; hand-roll it.
+  if (segments.length !== 3) return true;
   const payload = base64UrlDecode(segments[1]);
-  if (!payload) return false;
+  if (!payload) return true;
   try {
     const obj = JSON.parse(payload) as { exp?: number };
-    if (typeof obj.exp !== 'number') return false;
+    if (typeof obj.exp !== 'number') return true;
     return Date.now() / 1000 > obj.exp - 60;
   } catch {
-    return false;
+    return true;
   }
 }
 

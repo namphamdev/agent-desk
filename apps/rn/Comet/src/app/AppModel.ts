@@ -209,6 +209,9 @@ export class AppModel {
       tokens, devBearer,
     });
     this.config = config;
+    // When the refresh token is permanently invalid (expired/rotated), sign
+    // the user out so they see the login screen instead of a dead app.
+    config.onAuthFailed = () => { void this.signOut(); };
     const store = new WorkspaceStore(config);
     this.workspace = store;
     store.subscribe(() => {

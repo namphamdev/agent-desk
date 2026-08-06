@@ -2,7 +2,7 @@
 // room sockets (WS auth rides the URL query — sockets can't set headers), and
 // the durable-nudge POST.
 
-import { AuthClient, AuthTokens, isJwtExpired, Keychain } from '../auth/AuthClient';
+import { AuthClient, AuthError, AuthTokens, isJwtExpired, Keychain } from '../auth/AuthClient';
 
 export type AppConfigMode = 'workos' | 'dev';
 
@@ -20,6 +20,10 @@ export interface AppConfigInit {
 /**
  * Plain class — methods are async (no actor isolation in JS). The token cache
  * is mutable; refresh mutates it and persists to Keychain.
+ *
+ * `onAuthFailed` is invoked when the refresh token is permanently rejected
+ * (HTTP 400/401 from WorkOS), so the app can return the user to the sign-in
+ * screen instead of looping forever against an expired session.
  */
 export class AppConfig {
   readonly edgeURL: string;
@@ -29,8 +33,15 @@ export class AppConfig {
   readonly deviceId: string;
   readonly deviceName: string;
 
+  /** Set by AppModel; fired exactly once when refresh is permanently invalid. */
+  onAuthFailed?: () => void;
+
   private tokens: AuthTokens | undefined;
   private devBearer: string | undefined;
+  /** In-flight refresh promise — concurrent callers share the same request so
+   * refresh-token rotation doesn't collide. */
+  private refreshInFlight: Promise<string | null> | null = null;
+  private authFailedFired = false;
 
   constructor(init: AppConfigInit) {
     this.edgeURL = init.edgeURL;
@@ -45,9 +56,14 @@ export class AppConfig {
 
   updateTokens(next: AuthTokens): void {
     this.tokens = next;
+    // New tokens received — clear any stale auth-failed flag so a future
+    // expiry can re-trigger the callback.
+    this.authFailedFired = false;
   }
 
-  /** Current bearer, refreshing the WorkOS access token when needed. */
+  /** Current bearer, refreshing the WorkOS access token when needed.
+   * Concurrent calls share a single in-flight refresh to avoid racing
+   * WorkOS refresh-token rotation (each call invalidates the prior token). */
   async currentToken(): Promise<string | null> {
     switch (this.mode) {
       case 'dev':
@@ -56,21 +72,43 @@ export class AppConfig {
         const current = this.tokens;
         if (!current) return null;
         if (!isJwtExpired(current.accessToken)) return current.accessToken;
-        const client = new AuthClient(this.edgeURL);
+        // Dedupe: if a refresh is already in flight, await it instead of
+        // starting a second concurrent one that would use the same (stale)
+        // refresh token and collide with rotation.
+        if (this.refreshInFlight) return this.refreshInFlight;
+        this.refreshInFlight = this.doRefresh(current);
         try {
-          const refreshed = await client.refresh(
-            current.refreshToken,
-            this.orgId,
-          );
-          this.updateTokens(refreshed);
-          await Keychain.saveAccessToken(refreshed.accessToken);
-          await Keychain.saveRefreshToken(refreshed.refreshToken);
-          return refreshed.accessToken;
-        } catch (err) {
-          console.warn('[appconfig] token refresh failed; using expired token', err);
-          return current.accessToken; // let the server reject; backoff redials
+          return await this.refreshInFlight;
+        } finally {
+          this.refreshInFlight = null;
         }
       }
+    }
+  }
+
+  private async doRefresh(current: AuthTokens): Promise<string | null> {
+    const client = new AuthClient(this.edgeURL);
+    try {
+      const refreshed = await client.refresh(current.refreshToken, this.orgId);
+      // Persist BEFORE updating in-memory state so a crash between the two
+      // never leaves Keychain holding an already-rotated refresh token.
+      await Keychain.saveAccessToken(refreshed.accessToken);
+      await Keychain.saveRefreshToken(refreshed.refreshToken);
+      this.tokens = refreshed;
+      return refreshed.accessToken;
+    } catch (err) {
+      // Distinguish permanent (auth) failures from transient (network) ones.
+      // WorkOS rejects an expired/rotated refresh token with 400 or 401.
+      if (err instanceof AuthError && (err.code === 400 || err.code === 401)) {
+        console.warn('[appconfig] refresh token rejected; signing out', err.code);
+        if (!this.authFailedFired) {
+          this.authFailedFired = true;
+          this.onAuthFailed?.();
+        }
+        return null;
+      }
+      console.warn('[appconfig] token refresh failed (transient); using expired token', err);
+      return current.accessToken; // let the server reject; backoff redials
     }
   }
 
