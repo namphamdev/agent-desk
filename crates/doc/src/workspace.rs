@@ -121,6 +121,41 @@ impl WorkspaceDoc {
         Ok(true)
     }
 
+    /// Hard-delete a device row and cascade: spaces, chats, and session-status
+    /// rows owned by the device are also removed (they are orphaned without
+    /// their host device). Returns `false` when no such device row exists.
+    pub fn delete_device(&self, device_id: &str) -> Result<bool, DocError> {
+        if self.existing_row("devices", device_id).is_none() {
+            return Ok(false);
+        }
+        for container in ["spaces", "chats", "sessions"] {
+            let parent = self.doc.get_map(container);
+            let keys: Vec<String> = parent
+                .get_deep_value()
+                .to_json_value()
+                .as_object()
+                .map(|rows| rows.keys().cloned().collect())
+                .unwrap_or_default();
+            for key in keys {
+                let belongs_to_device = self
+                    .existing_row(container, &key)
+                    .is_some_and(|row| {
+                        matches!(
+                            row.get("deviceId"),
+                            Some(loro::ValueOrContainer::Value(LoroValue::String(id)))
+                                if id.as_ref() == device_id
+                        )
+                    });
+                if belongs_to_device {
+                    let _ = self.doc.get_map(container).delete(&key);
+                }
+            }
+        }
+        self.doc.get_map("devices").delete(device_id)?;
+        self.doc.commit();
+        Ok(true)
+    }
+
     /// Stamp `lastSeenAt` on an existing device row (boot/shutdown only — periodic
     /// liveness rides ephemeral presence, never the oplog). `false` when no such row.
     pub fn set_device_last_seen(

@@ -51,9 +51,15 @@ struct RenameDialog {
     _events: Subscription,
 }
 
+struct DeleteDialog {
+    device_id: String,
+    device_name: String,
+}
+
 pub struct DevicesPage {
     state: Entity<AppState>,
     rename: Option<RenameDialog>,
+    delete: Option<DeleteDialog>,
     /// Device id whose id-chip shows "Copied" right now.
     copied: Option<String>,
     error: Option<SharedString>,
@@ -68,6 +74,7 @@ impl DevicesPage {
         Self {
             state,
             rename: None,
+            delete: None,
             copied: None,
             error: None,
             task: None,
@@ -114,6 +121,38 @@ impl DevicesPage {
             this.update(cx, |page, cx| {
                 if let Err(err) = result {
                     page.error = Some(format!("Rename failed: {err}").into());
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+        cx.notify();
+    }
+
+    fn open_delete(&mut self, device_id: String, device_name: String, cx: &mut Context<Self>) {
+        self.delete = Some(DeleteDialog {
+            device_id,
+            device_name,
+        });
+        cx.notify();
+    }
+
+    fn confirm_delete(&mut self, cx: &mut Context<Self>) {
+        let Some(dialog) = self.delete.take() else {
+            return;
+        };
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            return;
+        };
+        let params = serde_json::json!({
+            "op": "removeDevice",
+            "deviceId": dialog.device_id,
+        });
+        self.task = Some(cx.spawn(async move |this, cx| {
+            let result = engine.client().call(methods::MUTATE, params).await;
+            this.update(cx, |page, cx| {
+                if let Err(err) = result {
+                    page.error = Some(format!("Delete failed: {err}").into());
                 }
                 cx.notify();
             })
@@ -176,6 +215,48 @@ impl DevicesPage {
             )
             .into_any_element();
         Some(popover::modal("rename-device-dialog", viewport, card))
+    }
+
+    fn render_delete_dialog(
+        &mut self,
+        viewport: gpui::Size<gpui::Pixels>,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let theme = Theme::of(cx).clone();
+        let dialog = self.delete.as_ref()?;
+        let name = dialog.device_name.clone();
+        let card = popover::dialog_card(&theme)
+            .child(popover::dialog_title(&theme, "Remove device"))
+            .child(
+                div().mt(px(8.0)).text_size(px(13.0)).text_color(theme.text_muted).child(
+                    SharedString::from(format!(
+                        "Remove \"{name}\" from the workspace? Its spaces, chats, and sessions will also be removed."
+                    )),
+                ),
+            )
+            .child(
+                div()
+                    .mt(px(16.0))
+                    .flex()
+                    .flex_row()
+                    .justify_end()
+                    .gap(px(8.0))
+                    .child(
+                        popover::btn_ghost(&theme, "Cancel", "delete-cancel")
+                            .id("delete-cancel")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.delete = None;
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        popover::btn_primary(&theme, "Remove")
+                            .id("delete-confirm")
+                            .on_click(cx.listener(|this, _, _, cx| this.confirm_delete(cx))),
+                    ),
+            )
+            .into_any_element();
+        Some(popover::modal("delete-device-dialog", viewport, card))
     }
 }
 
@@ -274,6 +355,7 @@ impl Render for DevicesPage {
         let devices = devices_for_display(devices, local_id.as_deref());
         let copied = self.copied.clone();
         let dialog = self.render_rename_dialog(window.viewport_size(), cx);
+        let delete_dialog = self.render_delete_dialog(window.viewport_size(), cx);
         let emerald = theme.success; // emerald-400
         let count = devices.len();
 
@@ -287,6 +369,8 @@ impl Render for DevicesPage {
                 let copy_id = device.id.clone();
                 let rename_id = device.id.clone();
                 let rename_name = device.name.clone();
+                let delete_id = device.id.clone();
+                let delete_name = device.name.clone();
                 let platform_icon = match device.platform.as_str() {
                     "macos" | "darwin" => crate::icons::LAPTOP,
                     "web" => crate::icons::GLOBAL,
@@ -414,6 +498,31 @@ impl Render for DevicesPage {
                             )
                             .child(SharedString::from("Rename")),
                     )
+                    .when(!is_local, |el| {
+                        el.child(
+                            widgets::ghost_action(&theme)
+                                .id(("device-delete", ix))
+                                .opacity(0.7)
+                                .hover(|s| {
+                                    s.opacity(1.0)
+                                        .bg(crate::theme::ink(0.06))
+                                        .text_color(theme.danger)
+                                })
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.open_delete(
+                                        delete_id.clone(),
+                                        delete_name.clone(),
+                                        cx,
+                                    );
+                                }))
+                                .child(
+                                    crate::icons::icon(crate::icons::TRASH_BIN_MINIMALISTIC)
+                                        .size(px(14.0))
+                                        .text_color(theme.text_muted),
+                                )
+                                .child(SharedString::from("Remove")),
+                        )
+                    })
                     .into_any_element()
             })
             .collect();
@@ -462,6 +571,7 @@ impl Render for DevicesPage {
                     .child(card),
             )
             .when_some(dialog, |el, dialog| el.child(dialog))
+            .when_some(delete_dialog, |el, dialog| el.child(dialog))
     }
 }
 

@@ -428,6 +428,10 @@ enum MutateParams {
     DeleteChat { chat_id: String },
     #[serde(rename_all = "camelCase")]
     RenameDevice { device_id: String, name: String },
+    /// Hard-delete a device row and cascade-remove its spaces/chats/sessions.
+    /// The running device is rejected by the engine (defense-in-depth).
+    #[serde(rename_all = "camelCase")]
+    RemoveDevice { device_id: String },
     /// Synced seen marker (LWW + monotonic guard): clears the "completed"
     /// badge on every device. `at` is epoch ms; default = now.
     #[serde(rename_all = "camelCase")]
@@ -811,6 +815,11 @@ impl EngineRpc {
             MutateParams::RenameDevice { device_id, name } => self
                 .workspace
                 .rename_device(&device_id, &name)
+                .map_err(failed)
+                .map(drop),
+            MutateParams::RemoveDevice { device_id } => self
+                .workspace
+                .delete_device(&device_id)
                 .map_err(failed)
                 .map(drop),
             MutateParams::MarkChatSeen { chat_id, at } => {

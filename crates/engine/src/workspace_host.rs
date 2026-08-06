@@ -678,6 +678,18 @@ impl WorkspaceHost {
         Ok(self.inner.doc.rename_device(device_id, name)?)
     }
 
+    /// Hard-delete a device and cascade-remove its spaces/chats/sessions.
+    /// Guards against deleting the running device (callers should also check,
+    /// but defense-in-depth: the engine must never orphan itself).
+    pub fn delete_device(&self, device_id: &str) -> Result<bool, EngineError> {
+        if device_id == self.inner.config.device_id {
+            return Err(EngineError::Other(
+                "cannot delete the current device".to_string(),
+            ));
+        }
+        Ok(self.inner.doc.delete_device(device_id)?)
+    }
+
     // ── git metadata (diff-sync host writes) ────────────────────────────────
 
     /// HEAD-watcher reconciliation: the branch checked out at the chat's cwd.
