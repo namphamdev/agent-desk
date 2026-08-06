@@ -241,7 +241,7 @@ impl Harness for AcpHarness {
 
         tokio::spawn(async move {
             let (agent, pid_file) = instrument_agent_for_memory(agent);
-            let agent = TokioAcpAgent::new(agent);
+            let agent = TokioAcpAgent::new(agent).with_pid_file(pid_file.clone());
             let memory_stop = crate::CancellationToken::new();
             let memory_reporter: Arc<dyn Fn(Option<u64>) + Send + Sync> = report_memory.into();
             let memory_task = pid_file.clone().map(|path| {
@@ -330,6 +330,11 @@ type DebugCallback = Arc<dyn Fn(&str, LineDirection) + Send + Sync + 'static>;
 struct TokioAcpAgent {
     config: AcpAgentConfig,
     debug: DebugCallback,
+    /// Where to record the spawned agent's PID so the memory-poll task can find
+    /// it. On Unix the `/bin/sh` shim writes its own (pre-`exec`) PID, so this
+    /// stays `None`. On Windows there is no exec-replace shim: the child PID is
+    /// captured at spawn and written here instead.
+    pid_file: Option<PathBuf>,
 }
 
 impl TokioAcpAgent {
@@ -337,7 +342,13 @@ impl TokioAcpAgent {
         Self {
             config: agent.into_config(),
             debug: Arc::new(log_acp_line),
+            pid_file: None,
         }
+    }
+
+    fn with_pid_file(mut self, pid_file: Option<PathBuf>) -> Self {
+        self.pid_file = pid_file;
+        self
     }
 }
 
@@ -357,6 +368,17 @@ impl ConnectTo<agent_client_protocol::Client> for TokioAcpAgent {
         }
 
         let mut child = command.spawn().map_err(acp_io_error)?;
+
+        // Windows has no `/bin/sh` exec-replace shim, so capture the spawned
+        // child's PID directly — it is the root of the agent's process tree.
+        #[cfg(not(unix))]
+        if let (Some(pid_file), Some(pid)) = (self.pid_file.as_ref(), child.id()) {
+            let pid_file = pid_file.to_path_buf();
+            // Best-effort: the poll task tolerates a missing/unreadable file.
+            let _ = tokio::task::spawn_blocking(move || std::fs::write(&pid_file, pid.to_string()))
+                .await;
+        }
+
         let stdin = child.stdin.take().ok_or_else(|| {
             acp_internal_error("failed to open stdin for the ACP agent subprocess")
         })?;
@@ -482,7 +504,12 @@ fn instrument_agent_for_memory(agent: AcpAgent) -> (AcpAgent, Option<PathBuf>) {
 
 #[cfg(not(unix))]
 fn instrument_agent_for_memory(agent: AcpAgent) -> (AcpAgent, Option<PathBuf>) {
-    (agent, None)
+    // No exec-replace shim on Windows: the spawned child's PID is captured in
+    // `TokioAcpAgent::connect_to` (see `with_pid_file`). Return the agent
+    // unwrapped alongside a fresh pid file so the poll task has somewhere to
+    // read from.
+    let pid_file = std::env::temp_dir().join(format!("comet-acp-{}.pid", uuid::Uuid::new_v4()));
+    (agent, Some(pid_file))
 }
 
 fn mcp_servers(url: Option<&str>) -> Vec<McpServer> {
@@ -552,8 +579,110 @@ pub async fn sample_process_tree_rss_bytes(root_pid: u32) -> Option<u64> {
 }
 
 #[cfg(not(unix))]
-pub async fn sample_process_tree_rss_bytes(_root_pid: u32) -> Option<u64> {
-    None
+pub async fn sample_process_tree_rss_bytes(root_pid: u32) -> Option<u64> {
+    // ToolHelp32 + GetProcessMemoryInfo are blocking Win32 calls; run them off
+    // the async runtime. Mirrors the Unix variant's contract: returns the
+    // resident memory (working set, in bytes) of the agent's process tree.
+    tokio::task::spawn_blocking(move || sample_process_tree_rss_blocking(root_pid))
+        .await
+        .ok()
+        .flatten()
+}
+
+#[cfg(not(unix))]
+fn sample_process_tree_rss_blocking(root_pid: u32) -> Option<u64> {
+    use std::mem::{size_of, zeroed};
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
+        TH32CS_SNAPPROCESS,
+    };
+
+    // SAFETY: snapshot the process list. The returned handle is closed below.
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+    if snapshot == INVALID_HANDLE_VALUE {
+        return None;
+    }
+    // Scope the handle so CloseHandle always runs.
+    let rows = (|| {
+        // SAFETY: PROCESSENTRY32W is a plain POD struct; zeroed memory is a
+        // valid initial state (dwSize is set immediately after).
+        let mut entry: PROCESSENTRY32W = unsafe { zeroed() };
+        entry.dwSize = size_of::<PROCESSENTRY32W>() as u32;
+        let mut rows: Vec<(u32, u32)> = Vec::new();
+        // SAFETY: snapshot is a valid handle; entry is initialized with the
+        // correct dwSize per the API contract.
+        if unsafe { Process32FirstW(snapshot, &mut entry) } != 0 {
+            loop {
+                rows.push((entry.th32ProcessID, entry.th32ParentProcessID));
+                // SAFETY: same preconditions as Process32FirstW; entry retains a
+                // valid dwSize.
+                if unsafe { Process32NextW(snapshot, &mut entry) } == 0 {
+                    break;
+                }
+            }
+        }
+        rows
+    })();
+    // SAFETY: snapshot is a snapshot handle from CreateToolhelp32Snapshot.
+    unsafe { CloseHandle(snapshot) };
+
+    // BFS the process tree exactly like the Unix variant, summing RSS.
+    let mut queue = VecDeque::from([root_pid]);
+    let mut seen = HashSet::from([root_pid]);
+    let mut total_bytes = 0_u64;
+    while let Some(parent) = queue.pop_front() {
+        for &(pid, ppid) in &rows {
+            if pid == parent {
+                if let Some(bytes) = working_set_bytes(pid) {
+                    total_bytes = total_bytes.saturating_add(bytes);
+                }
+            }
+            if ppid == parent && seen.len() < 64 && seen.insert(pid) {
+                queue.push_back(pid);
+            }
+        }
+    }
+    (total_bytes > 0).then_some(total_bytes)
+}
+
+#[cfg(not(unix))]
+fn working_set_bytes(pid: u32) -> Option<u64> {
+    use std::mem::{size_of, zeroed};
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::ProcessStatus::{
+        GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS,
+    };
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+
+    // SAFETY: query-only access right; no handle is inherited. The handle is
+    // closed before returning.
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if handle.is_null() {
+        return None;
+    }
+    let result = (|| {
+        // SAFETY: PROCESS_MEMORY_COUNTERS is a POD; zeroed is a valid init and
+        // cb is set before the call as the API requires.
+        let mut counters: PROCESS_MEMORY_COUNTERS = unsafe { zeroed() };
+        counters.cb = size_of::<PROCESS_MEMORY_COUNTERS>() as u32;
+        // SAFETY: handle comes from OpenProcess above; counters has the right cb.
+        if unsafe {
+            GetProcessMemoryInfo(
+                handle,
+                &mut counters,
+                size_of::<PROCESS_MEMORY_COUNTERS>() as u32,
+            )
+        } != 0
+        {
+            Some(counters.WorkingSetSize as u64)
+        } else {
+            None
+        }
+    })();
+    // SAFETY: handle is from OpenProcess above.
+    unsafe { CloseHandle(handle) };
+    result
 }
 
 async fn run_connection(
@@ -1382,6 +1511,43 @@ mod tests {
                 .arguments()
                 .iter()
                 .any(|arg| arg == "/tmp/acp-agent")
+        );
+        assert_eq!(
+            wrapped
+                .config()
+                .environment()
+                .get("ACP_TEST")
+                .map(String::as_str),
+            Some("yes")
+        );
+        assert!(pid_file.is_some());
+    }
+
+    #[cfg(not(unix))]
+    #[tokio::test]
+    async fn samples_current_process_tree_memory() {
+        // The Comet test process itself is always present, so its tree must
+        // report a non-zero working set.
+        let bytes = sample_process_tree_rss_bytes(std::process::id()).await;
+        assert!(bytes.is_some_and(|bytes| bytes > 0));
+    }
+
+    #[cfg(not(unix))]
+    #[test]
+    fn memory_wrapper_preserves_agent_command_and_environment() {
+        let agent = AcpAgent::new(
+            AcpAgentConfig::new("C:\\acp-agent.exe")
+                .arg("--stdio")
+                .env("ACP_TEST", "yes"),
+        );
+        // On Windows the agent runs unwrapped (no shell shim); the spawned
+        // child's PID is captured directly in TokioAcpAgent::connect_to.
+        let (wrapped, pid_file) = instrument_agent_for_memory(agent);
+        assert_eq!(wrapped.config().command(), Path::new("C:\\acp-agent.exe"));
+        assert_eq!(
+            wrapped.config().arguments(),
+            &["--stdio".to_string()],
+            "agent arguments are preserved unmodified"
         );
         assert_eq!(
             wrapped

@@ -59,6 +59,7 @@ gpui_tokio = { git = "https://github.com/wingleeio/zed", rev = "ac135eb227c0784e
 tokio = { version = "1", features = ["full"] }
 tokio-util = { version = "0.7", features = ["compat"] }
 libc = "0.2"
+windows-sys = "0.59"
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 futures = "0.3"
 async-trait = "0.1"

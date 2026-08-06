@@ -36,6 +36,133 @@ export interface MDListItem {
   children: MDBlock[];
 }
 
+// MARK: - Rich visualization JSON blocks
+
+// Agents emit single-line JSON in <json-render> tags (or as raw JSON objects)
+// to render structured visualizations. The schema is:
+//   { root: "id", elements: { id: { type, props, children: [...] } } }
+// Each element is one of the component types below.
+
+export type VizDirection = 'row' | 'column';
+
+export interface VizBoxProps {
+  flexDirection?: VizDirection;
+  padding?: number;
+  gap?: number;
+  borderStyle?: string;
+}
+
+export interface VizTextProps {
+  text: string;
+  color?: string;
+  bold?: boolean;
+}
+
+export interface VizHeadingProps {
+  text: string;
+  level?: number;
+}
+
+export interface VizCardProps {
+  title?: string;
+  padding?: number;
+}
+
+export interface VizBarChartDataItem {
+  label: string;
+  value: number;
+  color?: string;
+}
+
+export interface VizBarChartProps {
+  data: VizBarChartDataItem[];
+  showPercentage?: boolean;
+}
+
+export interface VizSparklineProps {
+  data: number[];
+  color?: string;
+}
+
+export interface VizTableColumn {
+  header: string;
+  key: string;
+  width?: number;
+}
+
+export interface VizTableProps {
+  columns: VizTableColumn[];
+  rows: Record<string, string | number>[];
+  headerColor?: string;
+}
+
+export interface VizDividerProps {
+  title?: string;
+}
+
+export interface VizListProps {
+  items: string[];
+  ordered?: boolean;
+}
+
+export interface VizStatusLineProps {
+  text: string;
+  status?: 'success' | 'error' | 'warning' | 'info';
+}
+
+export interface VizKeyValueProps {
+  label: string;
+  value: string;
+}
+
+export interface VizBadgeProps {
+  label: string;
+  variant?: string;
+}
+
+export interface VizProgressBarProps {
+  progress: number;
+  width?: number;
+  label?: string;
+}
+
+export interface VizMetricProps {
+  label: string;
+  value: string;
+  trend?: 'up' | 'down';
+}
+
+export interface VizCalloutProps {
+  type?: string;
+  title?: string;
+  content?: string;
+}
+
+export interface VizTimelineItem {
+  title: string;
+  description?: string;
+  status?: string;
+}
+
+export interface VizTimelineProps {
+  items: VizTimelineItem[];
+}
+
+export interface VizNewlineProps {}
+
+export interface VizSpacerProps {}
+
+export type VizElement = {
+  type: string;
+  props: Record<string, unknown>;
+  children: string[];
+};
+
+export interface VizDocument {
+  root: string;
+  elements: Record<string, VizElement>;
+}
+
 export type MDBlock =
   | { kind: 'paragraph'; runs: InlineRun[] }
   | { kind: 'heading'; level: number; runs: InlineRun[] }
@@ -43,7 +170,8 @@ export type MDBlock =
   | { kind: 'blockquote'; children: MDBlock[] }
   | { kind: 'list'; orderedStart?: number; items: MDListItem[] }
   | { kind: 'table'; header: InlineRun[][]; rows: InlineRun[][][]; align: MDAlign[] }
-  | { kind: 'rule' };
+  | { kind: 'rule' }
+  | { kind: 'visualization'; doc: VizDocument };
 
 export interface TopBlock {
   startLine: number;
@@ -195,6 +323,15 @@ export function parseDocument(source: string): TopBlock[] {
       continue;
     }
 
+    // Rich visualization JSON: <json-render>{...}</json-render> or a raw
+    // single-line {"root":...} object emitted by the agent.
+    const viz = matchVisualization(raw, lines, i);
+    if (viz) {
+      blocks.push({ startLine, block: { kind: 'visualization', doc: viz.doc } });
+      i = viz.nextIndex;
+      continue;
+    }
+
     // ATX heading: 1–6 `#`.
     const atx = matchAtx(trimmed);
     if (atx) {
@@ -308,7 +445,11 @@ export function parseDocument(source: string): TopBlock[] {
         matchFence(nextTrim) ||
         /^>\s?/.test(next) ||
         matchListMarker(nextTrim) ||
-        /^([-*_])(\s*\1){2,}\s*$/.test(nextTrim)
+        /^([-*_])(\s*\1){2,}\s*$/.test(nextTrim) ||
+        // Stop paragraph gathering if a visualization JSON block starts.
+        nextTrim.startsWith('{"root"') ||
+        nextTrim.startsWith('{ "root"') ||
+        /^<json-render>/i.test(nextTrim)
       ) break;
       paraLines.push(next);
       i++;
@@ -320,6 +461,120 @@ export function parseDocument(source: string): TopBlock[] {
   }
 
   return blocks;
+}
+
+// MARK: - Visualization JSON detection
+
+// Matches rich visualization JSON blocks. Two forms are supported:
+//   1. <json-render>{"root":...}</json-render> — fenced tag form
+//   2. {"root":...}  — raw single-line JSON object (may span multiple lines)
+//
+// In both cases the inner JSON must have a "root" string and an "elements"
+// object to qualify as a visualization; otherwise we return null and let the
+// normal paragraph/code-block path handle it.
+function matchVisualization(
+  firstLine: string,
+  lines: string[],
+  start: number,
+): { doc: VizDocument; nextIndex: number } | null {
+  const trimmed = firstLine.trim();
+
+  // Form 1: <json-render>...</json-render> on a single line.
+  const TAG_RE = /^<json-render>\s*(\{[\s\S]*\})\s*<\/json-render>$/i;
+  const tagMatch = TAG_RE.exec(trimmed);
+  if (tagMatch) {
+    const doc = tryParseViz(tagMatch[1]);
+    if (doc) return { doc, nextIndex: start + 1 };
+    return null;
+  }
+
+  // Form 1b: <json-render> opening tag — gather until closing tag.
+  const OPEN_RE = /^<json-render>\s*$/i;
+  const CLOSE_RE = /^<\/json-render>\s*$/i;
+  if (OPEN_RE.test(trimmed)) {
+    const jsonLines: string[] = [];
+    let j = start + 1;
+    while (j < lines.length) {
+      if (CLOSE_RE.test(lines[j].trim())) {
+        const doc = tryParseViz(jsonLines.join('\n'));
+        if (doc) return { doc, nextIndex: j + 1 };
+        return null;
+      }
+      jsonLines.push(lines[j]);
+      j++;
+    }
+    return null; // unterminated tag — let markdown handle it
+  }
+
+  // Form 2: raw JSON object starting with {"root"
+  if (trimmed.startsWith('{"root"') || trimmed.startsWith('{ "root"')) {
+    // Gather lines until braces balance.
+    const collected = gatherJsonObject(firstLine, lines, start);
+    if (collected) {
+      const doc = tryParseViz(collected.text);
+      if (doc) return { doc, nextIndex: collected.nextIndex };
+    }
+  }
+
+  return null;
+}
+
+// Gather a multi-line JSON object starting at `start`, tracking brace depth.
+function gatherJsonObject(
+  firstLine: string,
+  lines: string[],
+  start: number,
+): { text: string; nextIndex: number } | null {
+  let depth = 0;
+  const collected: string[] = [];
+  let inString = false;
+  let escape = false;
+
+  for (let i = start; i < lines.length; i++) {
+    const line = lines[i];
+    collected.push(line);
+    for (let k = 0; k < line.length; k++) {
+      const ch = line[k];
+      if (escape) {
+        escape = false;
+        continue;
+      }
+      if (ch === '\\' && inString) {
+        escape = true;
+        continue;
+      }
+      if (ch === '"') {
+        inString = !inString;
+        continue;
+      }
+      if (inString) continue;
+      if (ch === '{') depth++;
+      else if (ch === '}') {
+        depth--;
+        if (depth === 0) {
+          return { text: collected.join('\n'), nextIndex: i + 1 };
+        }
+      }
+    }
+  }
+  return null;
+}
+
+// Parse and validate that the JSON has the viz-document shape.
+function tryParseViz(text: string): VizDocument | null {
+  try {
+    const obj = JSON.parse(text);
+    if (
+      typeof obj === 'object' && obj !== null &&
+      typeof obj.root === 'string' &&
+      typeof obj.elements === 'object' && obj.elements !== null
+    ) {
+      return obj as VizDocument;
+    }
+  } catch {
+    // Not valid JSON — fall through.
+  }
+  return null;
 }
 
 function matchAtx(line: string): { level: number; text: string } | null {

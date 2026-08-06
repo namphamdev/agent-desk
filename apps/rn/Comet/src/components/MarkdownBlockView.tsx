@@ -14,6 +14,7 @@ import {
 import { MarkdownParser } from '../markdown/MarkdownModel';
 import { MD } from '../markdown/Metrics';
 import { Fonts, FontWeight, sansFont, Theme } from '../theme/Theme';
+import { VisualizationBlockView } from './VisualizationBlockView';
 
 interface InlineProps {
   runs: InlineRun[];
@@ -100,6 +101,8 @@ export const MarkdownBlockView = memo(function MarkdownBlockView({ block, cacheK
       return <TableBlock header={block.header} rows={block.rows} align={block.align} />;
     case 'rule':
       return <View style={{ height: 1, backgroundColor: Theme.border }} />;
+    case 'visualization':
+      return <VisualizationBlockView doc={block.doc} />;
   }
 });
 
