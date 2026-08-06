@@ -718,7 +718,7 @@ async fn run_connection(
         }
     } else {
         let response = connection
-            .send_request(NewSessionRequest::new(cwd.clone()))
+            .send_request(NewSessionRequest::new(cwd.clone()).mcp_servers(mcp_servers))
             .block_task()
             .await?;
         (response.session_id, response.config_options)

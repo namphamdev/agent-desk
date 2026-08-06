@@ -213,6 +213,7 @@ export class SessionStore {
       sandbox: mode.sandbox,
       autoApprove: mode.autoApprove,
       permissionMode: mode.value,
+      acpAgentId: chat.config?.acpAgentId,
     };
     console.log('[SessionStore] sendRun — request:', JSON.stringify(request));
     this.queueCommand('run', {

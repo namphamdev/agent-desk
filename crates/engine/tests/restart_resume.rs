@@ -26,7 +26,7 @@ use comet_engine::{EngineCore, HarnessRegistry, RunJournal};
 use comet_harness::{Harness, HarnessError, RunControls};
 use comet_proto::{
     AgentEvent, DoneStatus, HarnessId, Model, ReasoningLevel, RunRequest, SandboxLevel,
-    SteeringMode,
+    SteeringMode, ChatConfig, PermissionMode,
 };
 use comet_sync::DocsStore;
 
@@ -920,5 +920,79 @@ async fn steer_after_restart_dispatches_new_turn_with_resume() {
             "steer-turned-run must resume the stored harness session"
         );
     }
+    core.shutdown().await;
+}
+
+/// ACP agent id injection: when a client omits `acp_agent_id` (as the RN app
+/// does after an app restart), the engine backfills it from the chat's
+/// workspace-row config. Without this, the ACP harness would use the device's
+/// *active* agent, which may differ from the one that created the session, so
+/// `session/load` would target the wrong agent and silently start a fresh
+/// conversation with no history.
+#[tokio::test]
+async fn acp_agent_id_injected_from_chat_config_when_missing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("data");
+    let requests: RequestLog = Arc::new(Mutex::new(Vec::new()));
+
+    let core = assemble(
+        &dir,
+        RecordingHarness {
+            requests: requests.clone(),
+            session_id: "hs-acp-1".into(),
+            fail_on_resume: false,
+        },
+    );
+    // Create the chat with a config that pins a specific ACP agent id.
+    core.workspace
+        .create_space("space-acp", &core.device_id, "/tmp", None, false)
+        .expect("create space");
+    core.workspace
+        .create_chat(
+            CHAT,
+            "space-acp",
+            Some(ChatConfig {
+                harness: HarnessId::Mock,
+                model: None,
+                reasoning: None,
+                model_options: Default::default(),
+                sandbox: SandboxLevel::WorkspaceWrite,
+                permission_mode: PermissionMode::default(),
+                acp_agent_id: Some("agent-factory-droid".into()),
+            }),
+            None,
+        )
+        .expect("create chat");
+    core.workspace
+        .rename_chat(CHAT, "ACP Chat")
+        .expect("rename");
+
+    // Send a run request with NO acp_agent_id (simulating the RN client).
+    let mut req = run_request("hello acp", "/tmp");
+    req.acp_agent_id = None; // client omits it
+    core.doc_host
+        .queue_command(
+            CHAT,
+            SessionCommandPayload::Run {
+                request: req,
+                message_id: "msg-user-1".into(),
+            },
+        )
+        .expect("queue run");
+
+    wait_for(
+        || complete_assistant_count(&core) == 1,
+        "acp turn to complete",
+    )
+    .await;
+
+    // The harness received the request with acp_agent_id backfilled from the
+    // chat config.
+    let received = &requests.lock().unwrap()[0];
+    assert_eq!(
+        received.acp_agent_id.as_deref(),
+        Some("agent-factory-droid"),
+        "engine must inject acp_agent_id from chat config when client omits it"
+    );
     core.shutdown().await;
 }

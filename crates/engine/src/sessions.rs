@@ -363,6 +363,20 @@ impl SessionsEngine {
             request.resume = self.inner.resume_for(chat_id, &request.cwd);
             resume_injected = request.resume.is_some();
         }
+        // Engine-owned ACP agent injection: clients (especially after an app
+        // restart) may omit `acp_agent_id`, but the ACP harness needs it to
+        // resolve the correct agent command for `session/load`. Without this,
+        // the harness falls back to the device's *active* agent, which may
+        // differ from the one that created the session — so `LoadSessionRequest`
+        // targets the wrong agent, fails, and a fresh session with no history
+        // is silently started. Backfill from the chat's workspace-row config.
+        if request.acp_agent_id.is_none() {
+            request.acp_agent_id = self
+                .inner
+                .workspace()
+                .and_then(|ws| ws.chat_config(chat_id))
+                .and_then(|c| c.acp_agent_id);
+        }
         lock(&self.inner.last_requests).insert(chat_id.to_string(), request.clone());
 
         let run_id = new_id();
