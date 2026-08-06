@@ -58,11 +58,13 @@ enum DaemonCommand {
 /// `COMET_EDGE_URL` overrides (local dev / self-hosting).
 const DEFAULT_EDGE_URL: &str = "https://edge.comet.zeron.sh";
 
-/// Production WorkOS AuthKit client id — public knowledge (it appears in every
-/// authorize URL), so baking it in is safe. Overridden by `COMET_WORKOS_CLIENT_ID`;
-/// set it to the empty string — or set a dev bearer via `COMET_EDGE_TOKEN` — to
-/// force dev-mode auth instead.
-const DEFAULT_WORKOS_CLIENT_ID: &str = "client_01KWD0EAKZKD50YCQJNYSRE4BY";
+/// WorkOS AuthKit client id baked in at build time from the
+/// `COMET_WORKOS_CLIENT_ID` env var (the GitHub Actions secret in release
+/// builds — see `.github/workflows/release.yml`). A build made without the var
+/// has no baked id (`None` → dev-mode auth). Overridden at runtime by the same
+/// env var; set it to the empty string — or set a dev bearer via
+/// `COMET_EDGE_TOKEN` — to force dev-mode auth instead.
+const BUILTIN_WORKOS_CLIENT_ID: Option<&str> = option_env!("COMET_WORKOS_CLIENT_ID");
 
 fn edge_url_from_env() -> String {
     std::env::var("COMET_EDGE_URL")
@@ -73,14 +75,15 @@ fn edge_url_from_env() -> String {
 
 /// WorkOS client id resolution: explicit env wins (empty string = dev mode);
 /// otherwise a `COMET_EDGE_TOKEN` dev bearer keeps dev mode (smoke tests,
-/// local wrangler); otherwise the baked production client id — so a bare
-/// `comet headless` signs in against production with zero configuration.
+/// local wrangler); otherwise the client id baked in at build time — so a bare
+/// `comet headless` built in CI signs in against production with zero
+/// configuration. No baked id (local builds without the env var) → dev mode.
 fn workos_client_id_from_env(edge_token: &Option<String>) -> Option<String> {
     match std::env::var("COMET_WORKOS_CLIENT_ID") {
         Ok(v) if v.trim().is_empty() => None,
         Ok(v) => Some(v),
         Err(_) if edge_token.is_some() => None,
-        Err(_) => Some(DEFAULT_WORKOS_CLIENT_ID.into()),
+        Err(_) => BUILTIN_WORKOS_CLIENT_ID.map(str::to_owned),
     }
 }
 
