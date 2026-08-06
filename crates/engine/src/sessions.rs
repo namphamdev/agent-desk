@@ -824,11 +824,17 @@ impl Inner {
             return;
         }
         if let Some(Some(notifier)) = self.push_notifier.get() {
+            let chat_title = self
+                .workspace()
+                .and_then(|ws| ws.doc().chat(chat_id).ok().flatten())
+                .and_then(|chat| {
+                    chat.title.filter(|t| !t.trim().is_empty())
+                });
             notifier.notify(StatusTransition {
                 chat_id: chat_id.to_string(),
                 from,
                 to,
-                chat_title: None, // title lookup is async; the edge can enrich
+                chat_title,
             });
         }
     }

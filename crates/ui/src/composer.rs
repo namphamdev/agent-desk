@@ -137,6 +137,44 @@ pub fn composer_total_height(content_height: f32) -> f32 {
         + PILL_BORDER_V
 }
 
+/// Byte range of the word containing `offset` for double-click selection.
+/// Uses the same word-boundary notion as the cursor-motion helpers
+/// (alphanumeric / underscore runs). If the offset lands on whitespace the
+/// adjacent word is NOT crossed — the range collapses to the offset, matching
+/// standard editor behavior where double-clicking between words selects
+/// nothing until the pointer is over a word character.
+fn word_range_for_offset(text: &str, offset: usize) -> Range<usize> {
+    let mut ix = offset.min(text.len());
+    while ix > 0 && !text.is_char_boundary(ix) {
+        ix -= 1;
+    }
+    let is_word = |c: char| c.is_alphanumeric() || c == '_';
+    let before = text[..ix].chars().next_back();
+    let at = text[ix..].chars().next();
+    // Off a word boundary entirely: select the single non-whitespace char
+    // (e.g. `=`, `(`) under the cursor, or nothing at whitespace.
+    if !at.is_some_and(is_word) && !before.is_some_and(is_word) {
+        return match at {
+            Some(c) if !c.is_whitespace() => ix..ix + c.len_utf8(),
+            _ => ix..ix,
+        };
+    }
+    let start = text[..ix]
+        .char_indices()
+        .rev()
+        .take_while(|(_, c)| is_word(*c))
+        .last()
+        .map(|(i, _)| i)
+        .unwrap_or(ix);
+    let end = text[ix..]
+        .char_indices()
+        .take_while(|(_, c)| is_word(*c))
+        .last()
+        .map(|(i, c)| ix + i + c.len_utf8())
+        .unwrap_or(ix);
+    start..end
+}
+
 fn input_max_scroll(content_height: f32, viewport_height: f32) -> f32 {
     (content_height - viewport_height).max(0.0)
 }
@@ -1736,6 +1774,18 @@ impl ComposerInput {
         cx.notify();
     }
 
+    /// Set an explicit selection span (double-click word, triple-click line).
+    /// Mention ranges are normalized so file chips are selected as a unit.
+    fn select_range(&mut self, range: Range<usize>, cx: &mut Context<Self>) {
+        let range = self.projection.normalize_range(range);
+        self.selected_range = range;
+        self.selection_reversed = false;
+        self.follow_cursor = true;
+        self.reset_blink();
+        cx.emit(ComposerInputEvent::CursorMoved);
+        cx.notify();
+    }
+
     fn previous_boundary(&self, offset: usize) -> usize {
         if let Some(boundary) = self.projection.previous_boundary(offset) {
             return boundary;
@@ -1792,6 +1842,16 @@ impl ComposerInput {
             .map(|i| offset + i)
             .unwrap_or(self.content.len());
         start..end
+    }
+
+    /// Byte range of the word containing `offset` for double-click selection.
+    /// Uses the same word-boundary notion as the cursor-motion helpers
+    /// (alphanumeric / underscore runs). If the click lands on whitespace the
+    /// adjacent word is NOT crossed — the selection collapses to the caret,
+    /// matching standard editor behavior where double-clicking between words
+    /// selects nothing until the pointer is over a word character.
+    fn word_range_at(&self, offset: usize) -> Range<usize> {
+        word_range_for_offset(&self.content, offset)
     }
 
     fn backspace(&mut self, _: &Backspace, window: &mut Window, cx: &mut Context<Self>) {
@@ -2224,7 +2284,20 @@ impl ComposerInput {
         if event.modifiers.shift {
             self.select_to(index, cx);
         } else {
-            self.move_to(index, cx);
+            match event.click_count {
+                // Double-click selects the word under the cursor; triple-click
+                // selects the whole line. Standard text-input behavior that the
+                // hand-rolled input was missing (single-click places the caret).
+                2 => {
+                    let range = self.word_range_at(index);
+                    self.select_range(range, cx);
+                }
+                n if n >= 3 => {
+                    let range = self.line_range_at(index);
+                    self.select_range(range, cx);
+                }
+                _ => self.move_to(index, cx),
+            }
         }
     }
 
@@ -6050,6 +6123,49 @@ mod tests {
         let t = vec![entry(Some(MessageStatus::Streaming), vec![resolved])];
         assert!(input_request_resolved(&t, "r1"));
         assert!(!input_request_resolved(&t, "other"));
+    }
+
+    #[test]
+    fn word_range_for_double_click_selection() {
+        let t = "fix the parser bug";
+        //         0123456789012345678
+        //                  1111111111
+        assert_eq!(word_range_for_offset(t, 0), 0..3);    // "fix"
+        assert_eq!(word_range_for_offset(t, 1), 0..3);    // middle of "fix"
+        assert_eq!(word_range_for_offset(t, 2), 0..3);    // end of "fix"
+        assert_eq!(word_range_for_offset(t, 3), 0..3);    // boundary after "fix"
+        assert_eq!(word_range_for_offset(t, 4), 4..7);    // "the"
+        assert_eq!(word_range_for_offset(t, 8), 8..14);   // "parser"
+        assert_eq!(word_range_for_offset(t, 11), 8..14);  // middle of "parser"
+        assert_eq!(word_range_for_offset(t, 15), 15..18); // "bug"
+    }
+
+    #[test]
+    fn word_range_selects_word_in_spaces() {
+        // Double-clicking in the middle of whitespace selects nothing.
+        let t = "a    b";
+        assert_eq!(word_range_for_offset(t, 2), 2..2); // middle of spaces
+    }
+
+    #[test]
+    fn word_range_handles_underscores_and_unicode() {
+        // Byte offsets: é is 2 bytes, so "héllo" spans bytes 14..20.
+        let t = "let foo_bar = héllo;";
+        assert_eq!(word_range_for_offset(t, 4), 4..11);  // "foo_bar"
+        assert_eq!(word_range_for_offset(t, 5), 4..11);  // inside "foo_bar"
+        assert_eq!(word_range_for_offset(t, 10), 4..11); // end of "foo_bar"
+        assert_eq!(word_range_for_offset(t, 14), 14..20); // "héllo"
+        assert_eq!(word_range_for_offset(t, 16), 14..20); // mid-multibyte word
+        assert_eq!(&t[word_range_for_offset(t, 12)], "="); // lone symbol
+    }
+
+    #[test]
+    fn word_range_at_string_edges() {
+        assert_eq!(word_range_for_offset("word", 0), 0..4);
+        assert_eq!(word_range_for_offset("word", 3), 0..4); // last char
+        assert_eq!(word_range_for_offset("word", 4), 0..4); // past end → word
+        assert_eq!(word_range_for_offset("", 0), 0..0);
+        assert_eq!(word_range_for_offset("  ", 1), 1..1);   // whitespace only
     }
 }
 
