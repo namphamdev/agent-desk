@@ -16,6 +16,34 @@ use std::ops::Range;
 use pulldown_cmark::{Alignment, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag};
 
 // ---------------------------------------------------------------------------
+// Rich visualization JSON documents
+// ---------------------------------------------------------------------------
+
+/// A parsed `<json-render>` document: an element graph resolved from `root`.
+///
+/// Agents emit single-line JSON in `<json-render>` tags to render structured
+/// visualizations (tables, charts, cards, etc.). Each element is one of the
+/// component types defined in [`crate::markdown::render`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct VizDocument {
+    /// The id of the root element in `elements`.
+    pub root: String,
+    /// All elements keyed by id.
+    pub elements: std::collections::BTreeMap<String, VizElement>,
+}
+
+/// One element in a visualization document.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VizElement {
+    /// Component type (Box, Text, Heading, Card, Table, …).
+    pub ty: String,
+    /// Raw property values (text, data, columns, etc.).
+    pub props: serde_json::Map<String, serde_json::Value>,
+    /// Child element ids.
+    pub children: Vec<String>,
+}
+
+// ---------------------------------------------------------------------------
 // Tree model
 // ---------------------------------------------------------------------------
 
@@ -69,6 +97,12 @@ pub enum Block {
         align: Vec<TableAlign>,
     },
     Rule,
+    /// A rich visualization document emitted by an agent inside
+    /// `<json-render>` tags. Parsed from JSON and rendered by native GPUI
+    /// components (see `crate::markdown::render`).
+    Visualization {
+        doc: VizDocument,
+    },
 }
 
 /// GFM column alignment for a table (mdast `align`; `None` renders as Left).
@@ -114,6 +148,57 @@ fn options() -> Options {
 
 /// Parse a whole source into a [`BlockTree`].
 pub fn parse_full(source: &str) -> BlockTree {
+    // Pre-scan for <json-render>...</json-render> tags. pulldown-cmark treats
+    // these as raw HTML blocks (they surface as paragraphs containing the tag
+    // text), so we extract the JSON up front and splice visualization blocks
+    // into the tree at the positions the tags occupied, discarding the HTML
+    // wrapper pulldown-cmark produced.
+    let viz_spans = scan_viz_tags(source);
+    if viz_spans.is_empty() {
+        return parse_full_cmark(source);
+    }
+
+    // Mask the tag regions so pulldown-cmark doesn't surface them as content.
+    // We replace each tag with whitespace of the same length (preserving byte
+    // offsets for incremental-parses), which produces blank lines that
+    // separate surrounding blocks cleanly.
+    let masked = mask_regions(source, &viz_spans);
+    let tree = parse_full_cmark(&masked);
+
+    // Splice visualization blocks at the byte positions of their tags. The
+    // masked regions are blank, so pulldown-cmark emits no blocks there — we
+    // insert each viz block after the last cmark block whose range ends before
+    // the tag, preserving document order.
+    let mut result = BlockTree { blocks: Vec::new() };
+    let mut next_viz = 0usize;
+    for top in tree.blocks {
+        // Insert any visualization blocks that should precede this cmark block.
+        while next_viz < viz_spans.len() && viz_spans[next_viz].byte_end <= top.range.start {
+            result.blocks.push(TopBlock {
+                range: viz_spans[next_viz].byte_start..viz_spans[next_viz].byte_end,
+                block: Block::Visualization {
+                    doc: viz_spans[next_viz].doc.clone(),
+                },
+            });
+            next_viz += 1;
+        }
+        result.blocks.push(top);
+    }
+    // Trailing visualization blocks (after all cmark blocks).
+    while next_viz < viz_spans.len() {
+        result.blocks.push(TopBlock {
+            range: viz_spans[next_viz].byte_start..viz_spans[next_viz].byte_end,
+            block: Block::Visualization {
+                doc: viz_spans[next_viz].doc.clone(),
+            },
+        });
+        next_viz += 1;
+    }
+    result
+}
+
+/// Internal: parse with pulldown-cmark only (no visualization handling).
+fn parse_full_cmark(source: &str) -> BlockTree {
     let events: Vec<(Event, Range<usize>)> = Parser::new_ext(source, options())
         .into_offset_iter()
         .collect();
@@ -145,6 +230,132 @@ pub fn parse_full(source: &str) -> BlockTree {
         }
     }
     BlockTree { blocks }
+}
+
+/// A parsed `<json-render>` tag with its byte span in the source.
+struct VizSpan {
+    byte_start: usize,
+    byte_end: usize,
+    doc: VizDocument,
+}
+
+/// Scan `source` for `<json-render>...</json-render>` tags (case-insensitive
+/// opening tag) and parse each inner JSON as a [`VizDocument`]. Tags that don't
+/// contain valid visualization JSON are silently ignored (they render as plain
+/// text via the normal markdown path).
+fn scan_viz_tags(source: &str) -> Vec<VizSpan> {
+    let mut spans = Vec::new();
+    let bytes = source.as_bytes();
+    let mut search_from = 0usize;
+    while let Some(open) = find_subseq_ci(bytes, b"<json-render>", search_from) {
+        let content_start = open + b"<json-render>".len();
+        // Allow optional whitespace between the tag and the JSON.
+        let content_start = skip_ws(bytes, content_start);
+        // Find the closing tag. The JSON itself never contains `</json-render>`,
+        // so a plain search is safe.
+        let Some(close_rel) = find_subseq_ci(bytes, b"</json-render>", content_start) else {
+            break;
+        };
+        let json_bytes = &bytes[content_start..close_rel];
+        let trailing = close_rel + b"</json-render>".len();
+        if let Some(doc) = parse_viz_json(json_bytes) {
+            spans.push(VizSpan {
+                byte_start: open,
+                byte_end: trailing,
+                doc,
+            });
+        }
+        search_from = trailing;
+    }
+    spans
+}
+
+/// Skip ASCII whitespace from `start`, returning the new index.
+fn skip_ws(bytes: &[u8], mut i: usize) -> usize {
+    while i < bytes.len() && matches!(bytes[i], b' ' | b'\t' | b'\r' | b'\n') {
+        i += 1;
+    }
+    i
+}
+
+/// Case-insensitive substring search from `from`.
+fn find_subseq_ci(haystack: &[u8], needle: &[u8], from: usize) -> Option<usize> {
+    if needle.is_empty() || from >= haystack.len() {
+        return None;
+    }
+    let needle_len = needle.len();
+    let end = haystack.len().saturating_sub(needle_len) + 1;
+    let lower_needle: Vec<u8> = needle.iter().map(|b| b.to_ascii_lowercase()).collect();
+    let mut i = from;
+    while i < end {
+        if i + needle_len <= haystack.len() {
+            let lower_slice: Vec<u8> =
+                haystack[i..i + needle_len].iter().map(|b| b.to_ascii_lowercase()).collect();
+            if lower_slice == lower_needle {
+                return Some(i);
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Parse raw JSON bytes into a [`VizDocument`], validating the `root` +
+/// `elements` shape. Returns `None` for malformed JSON or a wrong shape.
+fn parse_viz_json(json: &[u8]) -> Option<VizDocument> {
+    let value: serde_json::Value = serde_json::from_slice(json).ok()?;
+    let obj = value.as_object()?;
+    let root = obj.get("root")?.as_str()?.to_string();
+    let elements_val = obj.get("elements")?;
+    let elements_obj = elements_val.as_object()?;
+    let mut elements = std::collections::BTreeMap::new();
+    for (id, el_val) in elements_obj {
+        let el_obj = el_val.as_object()?;
+        let ty = el_obj.get("type")?.as_str()?.to_string();
+        let props = el_obj
+            .get("props")
+            .and_then(|v| v.as_object())
+            .cloned()
+            .unwrap_or_default();
+        let children: Vec<String> = el_obj
+            .get("children")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|c| c.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        elements.insert(
+            id.clone(),
+            VizElement {
+                ty,
+                props,
+                children,
+            },
+        );
+    }
+    if !elements.contains_key(&root) {
+        return None;
+    }
+    Some(VizDocument { root, elements })
+}
+
+/// Replace each span with spaces (same length) so byte offsets are preserved.
+fn mask_regions(source: &str, spans: &[VizSpan]) -> String {
+    let bytes = source.as_bytes();
+    let mut out: Vec<u8> = bytes.to_vec();
+    for span in spans {
+        for i in span.byte_start..span.byte_end.min(out.len()) {
+            // Preserve newlines so block structure around the tag is intact.
+            if out[i] == b'\n' {
+                continue;
+            }
+            out[i] = b' ';
+        }
+    }
+    // SAFE: we only replaced bytes with ASCII spaces/newlines, preserving UTF-8.
+    String::from_utf8(out).unwrap_or_else(|_| source.to_string())
 }
 
 struct Cursor<'a, 'e> {
@@ -611,10 +822,15 @@ impl IncrementalParser {
             return;
         };
         // Code blocks render an unclosed fence verbatim (already stable);
-        // rules and tables have no inline tail to mend.
+        // rules and tables have no inline tail to mend. Visualization blocks
+        // are self-contained JSON and have no inline markers.
         if matches!(
             last.block,
-            Block::CodeBlock { .. } | Block::Mermaid { .. } | Block::Rule | Block::Table { .. }
+            Block::CodeBlock { .. }
+                | Block::Mermaid { .. }
+                | Block::Rule
+                | Block::Table { .. }
+                | Block::Visualization { .. }
         ) {
             return;
         }
@@ -1051,5 +1267,83 @@ mod closing_quote_blocks {
         for (a, b) in p.tree().blocks.iter().zip(full.blocks.iter()) {
             assert_eq!(a.range, b.range);
         }
+    }
+}
+
+#[cfg(test)]
+mod viz_tests {
+    use super::*;
+
+    #[test]
+    fn parses_json_render_tag_as_visualization() {
+        let src = "Hello\n\n<json-render>{\"root\":\"r\",\"elements\":{\"r\":{\"type\":\"Text\",\"props\":{\"text\":\"hi\"},\"children\":[]}}}</json-render>\n\nWorld\n";
+        let tree = parse_full(src);
+        // Three blocks: paragraph, visualization, paragraph.
+        assert_eq!(tree.len(), 3, "expected 3 blocks, got {}: {:#?}", tree.len(), tree);
+        assert!(matches!(tree.blocks[0].block, Block::Paragraph { .. }));
+        assert!(matches!(tree.blocks[1].block, Block::Visualization { .. }));
+        assert!(matches!(tree.blocks[2].block, Block::Paragraph { .. }));
+    }
+
+    #[test]
+    fn visualization_doc_has_root_and_elements() {
+        let src = "<json-render>{\"root\":\"root\",\"elements\":{\"root\":{\"type\":\"Box\",\"props\":{\"flexDirection\":\"column\"},\"children\":[\"t1\"]},\"t1\":{\"type\":\"Text\",\"props\":{\"text\":\"hello\"},\"children\":[]}}}</json-render>";
+        let tree = parse_full(src);
+        assert_eq!(tree.len(), 1);
+        match &tree.blocks[0].block {
+            Block::Visualization { doc } => {
+                assert_eq!(doc.root, "root");
+                assert_eq!(doc.elements.len(), 2);
+                let root = doc.elements.get("root").unwrap();
+                assert_eq!(root.ty, "Box");
+                assert_eq!(root.children, vec!["t1".to_string()]);
+                let t1 = doc.elements.get("t1").unwrap();
+                assert_eq!(t1.ty, "Text");
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn streaming_preserves_visualization_blocks() {
+        let full = "<json-render>{\"root\":\"r\",\"elements\":{\"r\":{\"type\":\"Text\",\"props\":{\"text\":\"x\"},\"children\":[]}}}</json-render>";
+        let mut p = IncrementalParser::new();
+        for i in 1..=full.len() {
+            if !full.is_char_boundary(i) {
+                continue;
+            }
+            p.set_text(&full[..i]);
+        }
+        p.set_text(full);
+        let tree = p.tree();
+        assert_eq!(
+            tree.len(),
+            1,
+            "streamed viz should be 1 block, got {}: {:#?}",
+            tree.len(),
+            tree
+        );
+        assert!(matches!(tree.blocks[0].block, Block::Visualization { .. }));
+    }
+
+    #[test]
+    fn invalid_json_in_tag_is_ignored_silently() {
+        let src = "Before\n\n<json-render>not valid json</json-render>\n\nAfter\n";
+        let tree = parse_full(src);
+        // Should NOT produce a visualization block; the tag content surfaces as
+        // plain text (paragraph). Two paragraphs.
+        assert!(
+            tree.blocks.iter().all(|b| !matches!(b.block, Block::Visualization { .. })),
+            "invalid JSON should not produce a viz block: {:#?}",
+            tree
+        );
+    }
+
+    #[test]
+    fn multiline_json_render_tag_is_supported() {
+        let src = "<json-render>\n{\"root\":\"r\",\"elements\":{\"r\":{\"type\":\"Text\",\"props\":{\"text\":\"hi\"},\"children\":[]}}}\n</json-render>";
+        let tree = parse_full(src);
+        assert_eq!(tree.len(), 1);
+        assert!(matches!(tree.blocks[0].block, Block::Visualization { .. }));
     }
 }
