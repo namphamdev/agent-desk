@@ -14,13 +14,14 @@ use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
     CancelNotification, ClientCapabilities, ClientSessionCapabilities, ContentBlock,
     Implementation, InitializeRequest, LoadSessionRequest, McpServer, McpServerHttp,
-    NewSessionRequest, PermissionOption, PermissionOptionKind, PromptRequest,
-    RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
+    NewSessionRequest, PermissionOption, PermissionOptionKind, Plan, PlanEntryStatus,
+    PromptRequest, RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
     SelectedPermissionOutcome, SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory,
-    SessionConfigOptionsCapabilities, SessionConfigSelectOptions, SessionId, SessionNotification,
-    SessionUpdate, SetSessionConfigOptionRequest, StopReason, TextContent, ToolCall,
-    ToolCallStatus, ToolKind,
+    SessionConfigOptionsCapabilities, SessionConfigSelectOptions, SessionId, SessionInfoUpdate,
+    SessionNotification, SessionUpdate, SetSessionConfigOptionRequest, StopReason, TextContent,
+    ToolCall, ToolCallStatus, ToolKind, UsageUpdate,
 };
+use agent_client_protocol::schema::MaybeUndefined;
 use agent_client_protocol::{
     AcpAgent, AcpAgentConfig, Agent, ConnectTo, ConnectionTo, LineDirection, Lines,
 };
@@ -1230,8 +1231,59 @@ fn normalize_update(
                 is_error: status == ToolCallStatus::Failed,
             }]
         }
+        SessionUpdate::UsageUpdate(usage) => vec![normalize_usage(&usage)],
+        SessionUpdate::SessionInfoUpdate(info) => normalize_session_info(&info),
+        SessionUpdate::Plan(plan) => normalize_plan(&plan),
+        // Echo of the user's own message — the engine already persists the
+        // prompt; re-streaming it would duplicate the user turn.
+        SessionUpdate::UserMessageChunk(_) => vec![],
+        // Config/mode/command updates are session-internal metadata with no
+        // corresponding transcript rendering.
+        SessionUpdate::ConfigOptionUpdate(_)
+        | SessionUpdate::CurrentModeUpdate(_)
+        | SessionUpdate::AvailableCommandsUpdate(_) => vec![],
         _ => vec![],
     }
+}
+
+fn normalize_usage(usage: &UsageUpdate) -> AgentEvent {
+    // ACP reports cumulative context tokens (`used`) and the total window
+    // size (`size`), not an input/output split. Map `used` to input_tokens
+    // (the dominant component) and leave output_tokens at zero since the
+    // protocol does not break it out.
+    AgentEvent::Usage {
+        input_tokens: usage.used,
+        output_tokens: 0,
+    }
+}
+
+fn normalize_session_info(info: &SessionInfoUpdate) -> Vec<AgentEvent> {
+    match &info.title {
+        MaybeUndefined::Value(title) if !title.trim().is_empty() => {
+            vec![AgentEvent::SessionTitle {
+                title: title.clone(),
+            }]
+        }
+        _ => vec![],
+    }
+}
+
+fn normalize_plan(plan: &Plan) -> Vec<AgentEvent> {
+    let items: Vec<comet_proto::TodoItem> = plan
+        .entries
+        .iter()
+        .map(|entry| comet_proto::TodoItem {
+            text: entry.content.clone(),
+            done: entry.status == PlanEntryStatus::Completed,
+        })
+        .collect();
+    if items.is_empty() {
+        return vec![];
+    }
+    vec![AgentEvent::ToolCall {
+        id: "acp-plan".to_string(),
+        call: CometToolCall::Todo { items },
+    }]
 }
 
 fn normalize_tool_call(tool: &ToolCall) -> CometToolCall {
@@ -1558,5 +1610,95 @@ mod tests {
             Some("yes")
         );
         assert!(pid_file.is_some());
+    }
+
+    #[test]
+    fn usage_update_maps_to_usage_event() {
+        let completed = Mutex::new(HashSet::new());
+        let update = SessionUpdate::UsageUpdate(UsageUpdate::new(53_000, 200_000));
+        let events = normalize_update(update, &completed);
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0],
+            AgentEvent::Usage {
+                input_tokens: 53_000,
+                output_tokens: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn session_info_title_emits_session_title_event() {
+        let completed = Mutex::new(HashSet::new());
+        let update = SessionUpdate::SessionInfoUpdate(
+            SessionInfoUpdate::new().title("Fix Login Bug"),
+        );
+        let events = normalize_update(update, &completed);
+        assert_eq!(
+            events,
+            vec![AgentEvent::SessionTitle {
+                title: "Fix Login Bug".into()
+            }]
+        );
+    }
+
+    #[test]
+    fn session_info_without_title_is_ignored() {
+        let completed = Mutex::new(HashSet::new());
+        let update = SessionUpdate::SessionInfoUpdate(SessionInfoUpdate::new());
+        let events = normalize_update(update, &completed);
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn plan_maps_to_todo_tool_call() {
+        let completed = Mutex::new(HashSet::new());
+        let plan = Plan::new(vec![
+            agent_client_protocol::schema::v1::PlanEntry::new(
+                "Write tests",
+                agent_client_protocol::schema::v1::PlanEntryPriority::High,
+                PlanEntryStatus::Completed,
+            ),
+            agent_client_protocol::schema::v1::PlanEntry::new(
+                "Deploy",
+                agent_client_protocol::schema::v1::PlanEntryPriority::Medium,
+                PlanEntryStatus::Pending,
+            ),
+        ]);
+        let events = normalize_update(SessionUpdate::Plan(plan), &completed);
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            AgentEvent::ToolCall {
+                call: CometToolCall::Todo { items },
+                ..
+            } => {
+                assert_eq!(items.len(), 2);
+                assert_eq!(items[0].text, "Write tests");
+                assert!(items[0].done);
+                assert_eq!(items[1].text, "Deploy");
+                assert!(!items[1].done);
+            }
+            other => panic!("expected Todo tool call, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn empty_plan_is_ignored() {
+        let completed = Mutex::new(HashSet::new());
+        let update = SessionUpdate::Plan(Plan::new(vec![]));
+        let events = normalize_update(update, &completed);
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn user_message_chunk_is_ignored() {
+        let completed = Mutex::new(HashSet::new());
+        let update = SessionUpdate::UserMessageChunk(
+            agent_client_protocol::schema::v1::ContentChunk::new(ContentBlock::Text(
+                TextContent::new("echo"),
+            )),
+        );
+        let events = normalize_update(update, &completed);
+        assert!(events.is_empty());
     }
 }

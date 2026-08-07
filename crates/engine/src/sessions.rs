@@ -1129,6 +1129,7 @@ async fn drive_run(
     let mut interrupt_deadline: Option<tokio::time::Instant> = None;
     let mut interrupted = false;
     let mut saw_session_started = false;
+    let mut agent_titled = false;
     // Liveness heartbeat: this loop RUNNING is proof the harness stream is
     // open, so freshness must not depend on events arriving. Silent stretches
     // are normal and UNBOUNDED — a long tool call, redacted thinking, an
@@ -1361,6 +1362,20 @@ async fn drive_run(
             AgentEvent::InputResolved { .. } => {
                 inner.set_status(&chat_id, SessionStatus::Working, false);
             }
+            AgentEvent::SessionTitle { title } => {
+                if !title.trim().is_empty() {
+                    agent_titled = true;
+                    if let Some(ws) = inner.workspace() {
+                        if let Err(err) = ws.rename_chat(&chat_id, title) {
+                            tracing::warn!(
+                                chat = %chat_id,
+                                error = %err,
+                                "agent-provided session title rename failed"
+                            );
+                        }
+                    }
+                }
+            }
             _ => {}
         }
 
@@ -1413,6 +1428,7 @@ async fn drive_run(
             // Exchange completed on an untitled chat → name it (fire-and-forget;
             // interrupted/errored turns never trigger naming).
             if *status == DoneStatus::Completed
+                && !agent_titled
                 && let Some(titles) = inner.titles.get()
             {
                 titles.maybe_generate(&chat_id, harness_id, &user_prompt, &run_cwd);

@@ -318,6 +318,13 @@ pub enum AgentEvent {
         error: Option<String>,
         session_id: Option<String>,
     },
+    /// The agent published a human-readable title for the session (ACP
+    /// `SessionInfoUpdate`). The engine applies it directly and skips
+    /// auto-titling when present.
+    #[serde(rename_all = "camelCase")]
+    SessionTitle {
+        title: String,
+    },
 }
 
 #[cfg(test)]
@@ -331,6 +338,15 @@ mod tests {
             call: ToolCall::Exec {
                 command: "cargo test".into(),
             },
+        };
+        let json = serde_json::to_string(&ev).unwrap();
+        assert_eq!(serde_json::from_str::<AgentEvent>(&json).unwrap(), ev);
+    }
+
+    #[test]
+    fn session_title_event_round_trips() {
+        let ev = AgentEvent::SessionTitle {
+            title: "Fix Login".into(),
         };
         let json = serde_json::to_string(&ev).unwrap();
         assert_eq!(serde_json::from_str::<AgentEvent>(&json).unwrap(), ev);

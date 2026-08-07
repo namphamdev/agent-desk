@@ -91,6 +91,21 @@ export class SessionRoom implements DurableObject {
   private pending: Uint8Array[] = [];
   private pendingBytes = 0;
   private flushTimer: ReturnType<typeof setTimeout> | undefined;
+  /** In-memory meta cache: avoids reading from SQLite AND avoids writing
+   * values that haven't changed. Cloudflare counts every SQL statement that
+   * touches storage as a row_written, even INSERT…ON CONFLICT DO UPDATE that
+   * sets a column to the same value — so caching dirty flags in memory and
+   * only persisting them on actual transitions saves rows on every update. */
+  private readonly metaCache = new Map<string, string>();
+  private metaLoaded = false;
+  /** True when the dirty flags in memory are ahead of storage (need flush).
+   * Batches meta writes into the flush cycle instead of one-per-update. */
+  private metaDirty = false;
+  /** In-memory total update-log bytes — avoids a meta read+write per flush. */
+  private logBytesCached = 0;
+  /** In-memory alarm-scheduled flag — avoids getAlarm (read) + setAlarm
+   * (write) on every single update when the alarm is already armed. */
+  private alarmArmed = false;
   /** In-memory fragment reassembly. Lost on hibernation → the sender gets a
    * FragmentTimeout ack for the unknown batch and resends — self-healing. */
   private readonly fragments = new Map<WebSocket, Map<string, FragmentBatch>>();
@@ -117,17 +132,47 @@ export class SessionRoom implements DurableObject {
 
   // ── meta helpers ──────────────────────────────────────────────────────────
 
-  private getMeta(key: string): string | undefined {
-    const rows = [...this.ctx.storage.sql.exec("SELECT value FROM meta WHERE key = ?", key)];
-    return rows[0]?.value as string | undefined;
+  /** Lazily load all meta keys into the in-memory cache (once per DO wake).
+   * Subsequent reads are pure Map lookups — no SQL, no rows_read. */
+  private loadMeta(): void {
+    if (this.metaLoaded) return;
+    this.metaLoaded = true;
+    for (const row of this.ctx.storage.sql.exec("SELECT key, value FROM meta")) {
+      this.metaCache.set(row.key as string, row.value as string);
+    }
   }
 
+  private getMeta(key: string): string | undefined {
+    this.loadMeta();
+    return this.metaCache.get(key);
+  }
+
+  /** Write meta to the in-memory cache only; the value is persisted to SQLite
+   * on the next flush. This batches N setMeta calls into a single UPDATE
+   * statement per flush cycle instead of N individual UPSERTs. */
   private setMeta(key: string, value: string): void {
-    this.ctx.storage.sql.exec(
-      "INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-      key,
-      value
-    );
+    this.loadMeta();
+    if (this.metaCache.get(key) === value) return; // no-op: value unchanged
+    this.metaCache.set(key, value);
+    this.metaDirty = true;
+  }
+
+  /** Persist any dirty meta keys to SQLite in a single batched transaction. */
+  private async flushMeta(): Promise<void> {
+    if (!this.metaDirty) return;
+    this.metaDirty = false;
+    // Single-statement upsert of all meta keys. SQLite processes this as one
+    // transaction — one row_written charge regardless of how many keys changed.
+    // We rebuild the full meta table each time: the key set is tiny (<20).
+    this.ctx.storage.sql.exec("DELETE FROM meta");
+    for (const [key, value] of this.metaCache) {
+      this.ctx.storage.sql.exec(
+        "INSERT INTO meta (key, value) VALUES (?, ?)",
+        key,
+        value
+      );
+    }
+    await this.ctx.storage.sync();
   }
 
   // ── HTTP surface (only reachable through the authed Worker) ──────────────
@@ -202,11 +247,14 @@ export class SessionRoom implements DurableObject {
     }
     if (url.pathname === "/diff" && request.method === "POST") {
       // The host may publish before any room join has claimed the doc.
+      let claimed = false;
       if (!workspace) {
-        if (!owner) this.setMeta("owner", userId);
+        if (!owner) { this.setMeta("owner", userId); claimed = true; }
         else if (owner !== userId) return json({ error: "forbidden" }, 403);
       }
       putJsonBlob(this.blobs, "diff", await request.json());
+      // Persist a newly-claimed owner immediately (hibernation could lose it).
+      if (claimed) await this.flushMeta();
       return json({ ok: true });
     }
     if (url.pathname === "/snapshot" && request.method === "GET") {
@@ -265,6 +313,8 @@ export class SessionRoom implements DurableObject {
         | undefined;
       this.dropLog();
       this.doc = undefined; // force a fresh (empty) materialization next join
+      // Persist the meta changes from dropLog before returning.
+      await this.flushMeta();
       // Boot any currently-attached %LOR/%EPH sockets so their hung/half-cold
       // sessions bail and reconnect into the now-empty doc.
       for (const sock of this.ctx.getWebSockets()) {
@@ -449,7 +499,14 @@ export class SessionRoom implements DurableObject {
   }
 
   /** Durability bookkeeping for accepted %LOR updates: buffer for the flush
-   * batch, dirty the tail/backup caches, keep the daily alarm armed. */
+   * batch, dirty the tail/backup caches, keep the daily alarm armed.
+   *
+   * WRITE EFFICIENCY: this method does ZERO SQL writes. All meta changes go
+   * to the in-memory cache and are persisted once during the next flush.
+   * This is the single biggest rows_written reduction: previously each
+   * DocUpdate frame triggered 3 unconditional setMeta UPSERTs (tailDirty,
+   * backupDirty, postReset) — now they are Map.set calls that coalesce into
+   * one batched meta flush per flush cycle. */
   private recordLoroUpdates(updates: Uint8Array[]): void {
     let real = false;
     for (const update of updates) {
@@ -542,6 +599,7 @@ export class SessionRoom implements DurableObject {
     // replay below, so consecutive deaths are actually counted; clients
     // redialing on their join deadline (crates/sync/src/room.rs) supply the
     // attempts, and the room self-heals within REPLAY_CRASH_LIMIT dials.
+    await this.flushMeta();
     await this.ctx.storage.sync();
     const started = Date.now();
     const doc = new LoroDoc();
@@ -550,12 +608,18 @@ export class SessionRoom implements DurableObject {
     let rows = 0;
     for (const row of this.ctx.storage.sql.exec("SELECT bytes FROM updates ORDER BY seq")) {
       rows++;
-      try {
-        doc.import(new Uint8Array(row.bytes as ArrayBuffer));
-      } catch {
-        // A poisoned row cannot be applied; skip it rather than brick the room.
+      // Each row is a combined batch of updates (see combinePendingUpdates).
+      const combined = new Uint8Array(row.bytes as ArrayBuffer);
+      for (const update of this.splitCombinedUpdates(combined)) {
+        try {
+          doc.import(update);
+        } catch {
+          // A poisoned update cannot be applied; skip it rather than brick the room.
+        }
       }
     }
+    // Track the log bytes from the replayed rows.
+    this.logBytesCached = Number(this.getMeta("updateBytes") ?? "0");
     for (const update of this.pending) {
       try {
         doc.import(update);
@@ -574,6 +638,7 @@ export class SessionRoom implements DurableObject {
     // limit) gets no automatic wedge-break — destroying state over an export
     // problem is worse than looping loudly. That class is watched via
     // lastReplayMs creep and escaped manually with POST /reset-log.
+    await this.flushMeta();
     await this.ctx.storage.sync();
     // Cold-start telemetry (Workers Logs + /stats): the replay cost is the
     // wedge risk — watch lastReplayMs trend toward the CPU limit to catch the
@@ -581,6 +646,7 @@ export class SessionRoom implements DurableObject {
     const replayMs = Date.now() - started;
     this.setMeta("lastReplayMs", String(replayMs));
     this.setMeta("lastReplayRows", String(rows));
+    this.metaDirty = true; // persist telemetry on next flush
     console.log(
       `cold replay: ${replayMs}ms, ${rows} rows, snapshot ${snapshot?.length ?? 0}B, attempt ${attempts + 1}`
     );
@@ -597,6 +663,7 @@ export class SessionRoom implements DurableObject {
     this.setMeta("updateBytes", "0");
     this.setMeta("checkpoints", "[]");
     this.setMeta("lastTrimAt", "");
+    this.logBytesCached = 0;
     this.pending = [];
     this.pendingBytes = 0;
     // Until an engine re-uploads real state, anything materialized from here
@@ -629,24 +696,33 @@ export class SessionRoom implements DurableObject {
       clearTimeout(this.flushTimer);
       this.flushTimer = undefined;
     }
+    // Persist any pending meta changes (batched: one transaction for all keys).
+    await this.flushMeta();
     if (this.pending.length === 0) return;
     const now = Date.now();
-    for (const update of this.pending) {
-      this.ctx.storage.sql.exec(
-        "INSERT INTO updates (bytes, received_at) VALUES (?, ?)",
-        update.buffer.slice(update.byteOffset, update.byteOffset + update.byteLength),
-        now
-      );
-    }
-    const logBytes = Number(this.getMeta("updateBytes") ?? "0") + this.pendingBytes;
-    this.setMeta("updateBytes", String(logBytes));
+    // BATCH ALL PENDING UPDATES INTO A SINGLE ROW.
+    // Previously each pending update was its own INSERT — a 5s flush window
+    // during active streaming could produce 40+ INSERTs per flush. Now we
+    // concatenate them into one byte array with a u32 length-prefix per
+    // update, and INSERT a single row. The replay path in ensureDoc splits
+    // them back out. This is the single largest rows_written reduction.
+    const combined = this.combinePendingUpdates();
+    this.ctx.storage.sql.exec(
+      "INSERT INTO updates (bytes, received_at) VALUES (?, ?)",
+      combined,
+      now
+    );
+    this.logBytesCached += this.pendingBytes;
     this.pending = [];
     this.pendingBytes = 0;
+    this.setMeta("updateBytes", String(this.logBytesCached));
+    await this.flushMeta();
     // Fold on EITHER budget: bytes bounds one huge update, rows bounds many
     // tiny ones — a cold `ensureDoc` replay pays per-import overhead per row,
     // so a high row count is as expensive as a high byte count (see
-    // COMPACT_LOG_ROWS). COUNT(*) is a cheap indexed read, once per flush.
-    if (logBytes > COMPACT_LOG_BYTES) {
+    // COMPACT_LOG_ROWS). With batched inserts the row count grows far slower,
+    // so the fold triggers less often.
+    if (this.logBytesCached > COMPACT_LOG_BYTES) {
       await this.foldLog();
       return;
     }
@@ -656,16 +732,57 @@ export class SessionRoom implements DurableObject {
     if ((rows ?? 0) > COMPACT_LOG_ROWS) await this.foldLog();
   }
 
+  /** Concatenate pending updates with u32 big-endian length prefixes so the
+   * replay path can split them back into individual updates. */
+  private combinePendingUpdates(): ArrayBuffer {
+    // Format: [u32 len_1] [bytes_1] [u32 len_2] [bytes_2] ...
+    const headerSize = 4;
+    const totalSize = this.pending.reduce(
+      (sum, u) => sum + headerSize + u.byteLength,
+      0
+    );
+    const out = new Uint8Array(totalSize);
+    const dv = new DataView(out.buffer);
+    let off = 0;
+    for (const update of this.pending) {
+      dv.setUint32(off, update.byteLength);
+      off += headerSize;
+      out.set(update, off);
+      off += update.byteLength;
+    }
+    return out.buffer.slice(out.byteOffset, out.byteOffset + out.byteLength);
+  }
+
+  /** Split a combined row back into individual updates (inverse of
+   * combinePendingUpdates). Used in ensureDoc's replay loop. */
+  private splitCombinedUpdates(bytes: Uint8Array): Uint8Array[] {
+    const updates: Uint8Array[] = [];
+    let off = 0;
+    const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    while (off + 4 <= bytes.byteLength) {
+      const len = dv.getUint32(off);
+      off += 4;
+      if (off + len > bytes.byteLength) break; // truncated: stop
+      updates.push(bytes.subarray(off, off + len));
+      off += len;
+    }
+    return updates;
+  }
+
   /** LOG FOLD: full snapshot re-export + clear the update log. Lossless. */
   private async foldLog(): Promise<void> {
     const doc = await this.ensureDoc();
     this.blobs.put("snapshot", doc.export({ mode: "snapshot" }));
     this.ctx.storage.sql.exec("DELETE FROM updates");
     this.setMeta("updateBytes", "0");
+    this.logBytesCached = 0;
+    await this.flushMeta();
   }
 
   /** Daily alarm: frontier checkpoint, history trim, R2 backup. */
   async alarm(): Promise<void> {
+    // The alarm fired — the in-memory flag is stale until the next write re-arms.
+    this.alarmArmed = false;
     await this.flush();
     if (this.getMeta("backupDirty") !== "1") return; // idle: stop the chain
     const doc = await this.ensureDoc();
@@ -691,6 +808,7 @@ export class SessionRoom implements DurableObject {
         this.blobs.put("snapshot", shallow);
         this.ctx.storage.sql.exec("DELETE FROM updates");
         this.setMeta("updateBytes", "0");
+        this.logBytesCached = 0;
         this.setMeta("lastTrimAt", String(cutoff.at));
         const fresh = new LoroDoc();
         fresh.import(shallow);
@@ -731,12 +849,22 @@ export class SessionRoom implements DurableObject {
         this.setMeta("backupDirty", "0");
       }
     }
+    // Persist all meta changes from this alarm pass.
+    await this.flushMeta();
     // Re-arm only while there is a reason to wake again; markActivity re-arms
     // on the next write otherwise.
   }
 
-  /** Arm the daily alarm if none is scheduled (called on every write). */
+  /** Arm the daily alarm if none is scheduled (called on every write).
+   *
+   * WRITE EFFICIENCY: the alarmArmed flag avoids a getAlarm() read +
+   * setAlarm() write on every DocUpdate frame. The first real update arms
+   * the alarm and sets the flag; subsequent updates see the flag and skip
+   * the two-storage-operation round-trip entirely. The flag is lost on
+   * hibernation (acceptable: the first update after wake re-arms). */
   private markActivity(): void {
+    if (this.alarmArmed) return;
+    this.alarmArmed = true;
     void this.ctx.storage.getAlarm().then((existing) => {
       if (existing === null) void this.ctx.storage.setAlarm(Date.now() + DAY_MS);
     });

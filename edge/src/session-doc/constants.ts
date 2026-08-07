@@ -51,8 +51,14 @@ export const STREAM_COMMIT_MS = 120;
 
 /** DO durability batching during active streams: buffered updates are flushed
  * to SQLite on this cadence. A crash losing the buffer is healed by normal
- * CRDT resync from the host on reconnect. */
-export const DO_FLUSH_MS = 5_000;
+ * CRDT resync from the host on reconnect.
+ *
+ * 15s: each flush is at least one SQLite row write (the batched update INSERT)
+ * plus meta writes. On the Cloudflare free tier (100k rows_written/day) the
+ * old 5s cadence could exhaust the daily budget in a single active hour;
+ * 15s triples the headroom at the cost of losing at most 15s of buffered ops
+ * on a crash (healed by CRDT resync from the host). */
+export const DO_FLUSH_MS = 15_000;
 
 /** Mobile doc LRU budget — bytes of resident doc *state*, not doc count.
  * Eviction drops the Mirror + doc; state stays on disk. */

@@ -220,6 +220,33 @@ impl Shell {
         cx.notify();
     }
 
+    /// Select the tab `delta` positions away from the currently selected one
+    /// (Zed-style arrow navigation). Wraps around. The selection-change logic
+    /// in [`render_session_tab_strip`] scrolls the newly focused tab into view
+    /// via `scroll_to_item`.
+    fn select_adjacent_tab(&mut self, delta: i32, cx: &mut Context<Self>) {
+        let Some(space) = self.state.read(cx).selected_space.clone() else {
+            return;
+        };
+        let order = self.tab_ids(&space, cx);
+        if order.is_empty() {
+            return;
+        }
+        let selected = self.state.read(cx).selected_chat.clone();
+        let target = match selected.as_deref() {
+            Some(sel) => {
+                let ix = order.iter().position(|id| id == sel).unwrap_or(0);
+                let len = order.len() as i32;
+                let next = ((ix as i32 + delta).rem_euclid(len)) as usize;
+                order[next].clone()
+            }
+            None => order[0].clone(),
+        };
+        // Clear tabs_scrolled_to so scroll-to-item fires for the new selection.
+        self.tabs_scrolled_to = None;
+        self.state.update(cx, |s, cx| s.select_chat(Some(target), cx));
+    }
+
     /// The tab strip: [scrollable tabs (edge fades)][+][drag spacer][toggle-changes].
     pub(super) fn render_session_tab_strip(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = Theme::of(cx).clone();
@@ -280,15 +307,33 @@ impl Shell {
             })
         };
         // Keep the selected tab visible: on selection change, scroll it into
-        // view (minimal movement — a new session's tab materializes at the far
-        // right of an overflowing strip and would otherwise be stranded
-        // off-screen).
+        // view. A new session's tab materializes at the far right of an
+        // overflowing strip and would otherwise be stranded off-screen.
+        //
+        // We call `scroll_to_item` every frame until the offset actually
+        // reaches the target — on the first frame after a new chat is
+        // created, the ScrollHandle's `max_offset` hasn't been updated by
+        // layout yet, so a single call scrolls short. By comparing the
+        // desired index against a *confirmed* scrolled-to id (reset when the
+        // selection changes and only set once the scroll offset stabilizes),
+        // we retry on subsequent frames.
         match selected.as_deref() {
             Some(sel) if self.tabs_scrolled_to.as_deref() != Some(sel) => {
                 if let Some(ix) = order.iter().position(|id| id == sel) {
                     self.tabs_scroll.scroll_to_item(ix);
+                    // Check if scroll has actually reached the target — if
+                    // max_offset is still too small (tab not laid out yet),
+                    // don't confirm so we retry next frame.
+                    let max_x = f32::from(self.tabs_scroll.max_offset().x);
+                    let slot = SESSION_TAB_WIDTH + TAB_GAP;
+                    let needed = ix as f32 * slot;
+                    if max_x + 1.0 >= needed {
+                        self.tabs_scrolled_to = Some(sel.to_string());
+                    }
+                } else {
+                    // Tab not in order yet — retry next frame.
                 }
-                self.tabs_scrolled_to = Some(sel.to_string());
+                cx.notify();
             }
             Some(_) => {}
             None => self.tabs_scrolled_to = None,
@@ -609,6 +654,37 @@ impl Shell {
                     .min_w_0()
                     .overflow_x_scroll()
                     .track_scroll(&self.tabs_scroll)
+                    .on_scroll_wheel(cx.listener(
+                        move |this, event: &gpui::ScrollWheelEvent, window, cx| {
+                            // Convert vertical wheel into horizontal scroll so
+                            // the tab strip responds to a standard mouse wheel
+                            // (GPUI's overflow_x_scroll only scrolls on
+                            // horizontal trackpad input by default).
+                            let dy = match event.delta {
+                                gpui::ScrollDelta::Lines(delta) => {
+                                    f32::from(delta.y) * SESSION_TAB_WIDTH
+                                }
+                                gpui::ScrollDelta::Pixels(delta) => f32::from(delta.y),
+                            };
+                            let dx = match event.delta {
+                                gpui::ScrollDelta::Lines(delta) => {
+                                    f32::from(delta.x) * SESSION_TAB_WIDTH
+                                }
+                                gpui::ScrollDelta::Pixels(delta) => f32::from(delta.x),
+                            };
+                            let total = dx - dy;
+                            if total.abs() > 0.0 {
+                                let offset = this.tabs_scroll.offset();
+                                let max = this.tabs_scroll.max_offset();
+                                let new_x =
+                                    (f32::from(offset.x) - total).clamp(-f32::from(max.x), 0.0);
+                                this.tabs_scroll
+                                    .set_offset(gpui::point(px(new_x), offset.y));
+                                window.refresh();
+                                cx.notify();
+                            }
+                        },
+                    ))
                     .on_drag_move::<TabDragPayload>(cx.listener(
                         move |this, event: &gpui::DragMoveEvent<TabDragPayload>, _, cx| {
                             let payload = event.drag(cx);
@@ -688,6 +764,46 @@ impl Shell {
         // cluster.
         let sidebar_now = self.eval_tween(self.sidebar_tween, self.sidebar_target());
         let tabs_left = (sidebar_now + Theme::SPACE_LG).max(self.title_bar_content_start());
+
+        // Zed-style arrow navigation: prev/next buttons flanking the tab strip.
+        // Only show when there is more than one tab to navigate.
+        let show_arrows = has_space && has_tabs && count > 1;
+        let muted = theme.text_muted;
+        let prev_arrow = div()
+            .id("session-tab-prev")
+            .size(px(20.0))
+            .flex_none()
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(px(6.0))
+            .cursor_pointer()
+            .occlude()
+            .hover(|s| s.bg(crate::theme::wash(0.11)))
+            .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
+            .on_click(cx.listener(|this, _, _, cx| {
+                cx.stop_propagation();
+                this.select_adjacent_tab(-1, cx);
+            }))
+            .child(icon(icons::ARROW_LEFT).size(px(14.0)).text_color(muted));
+        let next_arrow = div()
+            .id("session-tab-next")
+            .size(px(20.0))
+            .flex_none()
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(px(6.0))
+            .cursor_pointer()
+            .occlude()
+            .hover(|s| s.bg(crate::theme::wash(0.11)))
+            .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
+            .on_click(cx.listener(|this, _, _, cx| {
+                cx.stop_propagation();
+                this.select_adjacent_tab(1, cx);
+            }))
+            .child(icon(icons::ARROW_RIGHT).size(px(14.0)).text_color(muted));
+
         let inner = div()
             .size_full()
             .flex()
@@ -696,8 +812,10 @@ impl Shell {
             .gap(px(6.0))
             .pl(px(tabs_left))
             .pr(px(Theme::SPACE_LG))
+            .when(show_arrows, |el| el.child(prev_arrow))
             .child(tab_region)
             .when(has_space && has_tabs, |el| el.child(new_tab))
+            .when(show_arrows, |el| el.child(next_arrow))
             .child(div().flex_1())
             .when(can_review, |el| {
                 el.child(
