@@ -1300,6 +1300,16 @@ pub struct ComposerInput {
     content_height: f32,
     max_line_width: f32,
     last_width: f32,
+    /// Cache key for the last shape_text pass. Shaping (glyph shaping +
+    /// soft-wrapping) is the single most expensive thing the input does, and
+    /// the caret blink loop + per-keystroke notifies drive repeated layout
+    /// passes even when nothing changed, so a long draft (tens of thousands
+    /// of characters) was re-shaped over and over, freezing the input.
+    shaped_display: String,
+    shaped_width: f32,
+    shaped_font_size: Pixels,
+    shaped_is_placeholder: bool,
+    shaped_marked: Option<Range<usize>>,
     /// Raw Markdown → chip display projection from the last layout pass.
     projection: TextProjection,
     /// File mentions are a composer feature, not a behavior of generic inputs
@@ -1371,6 +1381,11 @@ impl ComposerInput {
             content_height: INPUT_LINE_HEIGHT,
             max_line_width: 0.0,
             last_width: 0.0,
+            shaped_display: String::new(),
+            shaped_width: 0.0,
+            shaped_font_size: px(0.0),
+            shaped_is_placeholder: true,
+            shaped_marked: None,
             projection: TextProjection::default(),
             mentions_enabled: false,
             layout_epoch: 0,
@@ -2456,6 +2471,30 @@ impl ComposerInput {
 
     /// Shape the text at a width; store measured layout; return content height.
     /// Called from the element's measured-layout closure.
+    /// Returns true when every input that feeds shape_text is identical to
+    /// the previous pass, so the stored layout can be reused and the expensive
+    /// reshape skipped.
+    fn shape_inputs_unchanged(
+        prev_display: &str,
+        prev_width: f32,
+        prev_font_size: Pixels,
+        prev_placeholder: bool,
+        prev_marked: &Option<Range<usize>>,
+        new_display: &str,
+        new_width: f32,
+        new_font_size: Pixels,
+        new_placeholder: bool,
+        new_marked: &Option<Range<usize>>,
+    ) -> bool {
+        prev_display == new_display
+            && prev_width == new_width
+            && prev_font_size == new_font_size
+            && prev_placeholder == new_placeholder
+            && prev_marked == new_marked
+    }
+
+    /// Shape the text at a width; store measured layout; return content height.
+    /// Called from the element's measured-layout closure.
     fn layout_text(
         &mut self,
         width: Pixels,
@@ -2473,8 +2512,32 @@ impl ComposerInput {
         } else {
             (SharedString::from(self.projection.display.clone()), false)
         };
-        let font_size = style.font_size.to_pixels(window.rem_size());
-        self.line_height = px(INPUT_LINE_HEIGHT);
+       let font_size = style.font_size.to_pixels(window.rem_size());
+       self.line_height = px(INPUT_LINE_HEIGHT);
+
+        // Shaping (glyph shaping + soft-wrapping the whole document) is the
+        // single most expensive thing this input does, yet the caret blink
+        // loop and per-keystroke notifies drive a layout pass even when the
+        // text, width and font have not changed. On a long draft this means
+        // tens of thousands of characters were re-shaped on every blink and
+        // every redundant notify, freezing the field. Skip the reshape when
+        // every input to shape_text is identical to the previous pass.
+        if Self::shape_inputs_unchanged(
+            &self.shaped_display,
+            self.shaped_width,
+            self.shaped_font_size,
+            self.shaped_is_placeholder,
+            &self.shaped_marked,
+            display.as_ref(),
+            f32::from(width),
+            font_size,
+            is_placeholder,
+            &self.marked_range,
+            )
+        {
+            self.last_width = f32::from(width);
+            return self.content_height;
+        }
 
         // Chips read as inline code: the markdown renderer's recipe (mono font
         // + `code_text` violet) over the rounded `code_wash` painted beneath.
@@ -2531,11 +2594,11 @@ impl ComposerInput {
             }
         };
 
-        let lines = window
-            .text_system()
-            .shape_text(display, font_size, &runs, Some(width), None)
-            .map(|small| small.into_vec())
-            .unwrap_or_default();
+       let lines = window
+           .text_system()
+            .shape_text(display.clone(), font_size, &runs, Some(width), None)
+           .map(|small| small.into_vec())
+           .unwrap_or_default();
 
         // Logical line byte offsets (each shaped line covers one \n-split line).
         let mut line_starts = Vec::with_capacity(lines.len());
@@ -2564,6 +2627,11 @@ impl ComposerInput {
         self.max_line_width = if is_placeholder { 0.0 } else { max_line_width };
         self.last_width = f32::from(width);
         self.layout_epoch += 1;
+        self.shaped_display = display.to_string();
+        self.shaped_width = f32::from(width);
+        self.shaped_font_size = font_size;
+        self.shaped_is_placeholder = is_placeholder;
+        self.shaped_marked = self.marked_range.clone();
         self.content_height
     }
 
@@ -6166,6 +6234,42 @@ mod tests {
         assert_eq!(word_range_for_offset("word", 4), 0..4); // past end → word
         assert_eq!(word_range_for_offset("", 0), 0..0);
         assert_eq!(word_range_for_offset("  ", 1), 1..1);   // whitespace only
+    }
+
+    #[test]
+    fn shape_cache_skips_reshape_only_when_every_input_is_unchanged() {
+        let px = |v| Pixels::from(v as f32);
+        let display = "x".repeat(65_000);
+        let marked = Some(0usize..4);
+
+        // Same inputs => reuse the stored layout (the idle blink /
+        // redundant-notify case that previously re-shaped the whole draft).
+        assert!(ComposerInput::shape_inputs_unchanged(
+            &display, 300.0, px(14.0), false, &marked,
+            &display, 300.0, px(14.0), false, &marked,
+        ));
+
+        // Any single change invalidates the cache.
+        assert!(!ComposerInput::shape_inputs_unchanged(
+            &display, 300.0, px(14.0), false, &marked,
+            &display, 300.0, px(14.0), false, &None,
+        )); // marked text changed (IME)
+        assert!(!ComposerInput::shape_inputs_unchanged(
+            &display, 300.0, px(14.0), false, &marked,
+            &format!("{}y", display), 300.0, px(14.0), false, &marked,
+        )); // a keystroke changed the text
+        assert!(!ComposerInput::shape_inputs_unchanged(
+            &display, 300.0, px(14.0), false, &marked,
+            &display, 640.0, px(14.0), false, &marked,
+        )); // a compact to expanded flip changed the width
+        assert!(!ComposerInput::shape_inputs_unchanged(
+            &display, 300.0, px(14.0), false, &marked,
+            &display, 300.0, px(16.0), false, &marked,
+        )); // font size changed
+        assert!(!ComposerInput::shape_inputs_unchanged(
+            &display, 300.0, px(14.0), false, &marked,
+            "Do anything", 300.0, px(14.0), true, &marked,
+        )); // placeholder mode toggled
     }
 }
 
