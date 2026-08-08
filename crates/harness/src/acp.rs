@@ -1337,10 +1337,18 @@ fn thought_level_config_option(options: &[SessionConfigOption]) -> Option<&Sessi
             Some(SessionConfigOptionCategory::ThoughtLevel)
         ) || matches!(
             normalize_config_name(&option.id.to_string()).as_str(),
-            "thoughtlevel" | "reasoning" | "reasoninglevel"
+            "thoughtlevel"
+                | "reasoning"
+                | "reasoninglevel"
+                | "thinking"
+                | "thinkinglevel"
         ) || matches!(
             normalize_config_name(&option.name).as_str(),
-            "thoughtlevel" | "reasoning" | "reasoninglevel"
+            "thoughtlevel"
+                | "reasoning"
+                | "reasoninglevel"
+                | "thinking"
+                | "thinkinglevel"
         )
     })
 }
@@ -1436,7 +1444,7 @@ fn reasoning_level_from_acp(value: &str) -> Option<ReasoningLevel> {
     match normalize_config_name(value).as_str() {
         "minimal" | "none" | "off" => Some(ReasoningLevel::Minimal),
         "low" => Some(ReasoningLevel::Low),
-        "medium" | "med" => Some(ReasoningLevel::Medium),
+        "medium" | "med" | "auto" => Some(ReasoningLevel::Medium),
         "high" => Some(ReasoningLevel::High),
         "xhigh" | "extrahigh" => Some(ReasoningLevel::XHigh),
         "max" | "maximum" => Some(ReasoningLevel::Max),
