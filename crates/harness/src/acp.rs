@@ -214,6 +214,102 @@ fn command_string_for_path(path: &Path) -> String {
     path.display().to_string()
 }
 
+/// Resolve a user-configured agent command string (from `acp-agents.json` or
+/// `COMET_ACP_AGENT`) into a form `AcpAgent::from_str` can spawn reliably.
+///
+/// The command may be:
+/// - JSON (`{"command":"...","args":[...]}`) — returned as-is (already
+///   structured; the SDK spawns the named program directly).
+/// - A bare executable name or path with optional args (`omp acp`,
+///   `pi-acp.cmd`, `/usr/local/bin/agent --acp`).
+///
+/// On Windows, a bare `.cmd`/`.bat` token or a bare name that resolves to a
+/// `.cmd`/`.bat` on PATH must be wrapped in JSON so the SDK spawns it through
+/// `cmd.exe /C`. A bare name like `omp` that resolves to `omp.exe` on PATH is
+/// expanded to the full path (so the SDK finds it even when the child's PATH
+/// differs from the daemon's). On Unix the command is returned unchanged.
+///
+/// Returns `Err(NotInstalled)` when the program cannot be found on PATH, so
+/// the caller can surface a clear error instead of letting the SDK fail at
+/// spawn time with an opaque "program not found" I/O error.
+fn resolve_agent_command_string(command: &str) -> Result<String, HarnessError> {
+    let trimmed = command.trim();
+    // JSON commands are already structured — leave them for the SDK.
+    if trimmed.starts_with('{') {
+        return Ok(command.to_string());
+    }
+    // Split into program + rest. The program is the first token.
+    let mut parts = trimmed.split_whitespace();
+    let Some(program) = parts.next() else {
+        return Ok(command.to_string());
+    };
+    let args: Vec<&str> = parts.collect();
+
+    // Compose a full PATH for the child: the resolved executable's directory
+    // first, then our own PATH, then the login-shell PATH snapshot. npm-shim
+    // CLIs are `#!/usr/bin/env node` scripts, and agents like OMP shell out to
+    // runtimes (bun) that a daemon/service launch's PATH may lack.
+    let composed_path = composed_child_path_string();
+
+    #[cfg(not(windows))]
+    {
+        let _ = (args, composed_path);
+        // On Unix the bare command works; the child inherits our env which
+        // already has a complete PATH.
+        Ok(command.to_string())
+    }
+    #[cfg(windows)]
+    {
+        // On Windows the program must be found so we can produce a JSON config
+        // with its full path. If it's not on PATH, fail early with a clear
+        // message rather than letting the SDK spawn a bare name that the OS
+        // can't resolve.
+        let resolved = find_on_paths(program).ok_or_else(|| {
+            HarnessError::NotInstalled(format!(
+                "ACP agent command program '{program}' was not found on PATH. \
+                 Update the agent command in Settings > ACP agents to point to \
+                 an installed executable."
+            ))
+        })?;
+
+        // Always wrap in JSON on Windows so we can inject PATH into the
+        // child environment. Without this, agents that shell out to bun,
+        // node, or other runtimes fail ("'bun' is not recognized") because
+        // the daemon's PATH may not include those install dirs.
+        let cmd_path = resolved.display().to_string();
+        let mut json = serde_json::json!({ "command": cmd_path, "env": { "PATH": composed_path } });
+        if !args.is_empty() {
+            json["args"] = serde_json::Value::Array(
+                args.iter().map(|a| serde_json::Value::String((*a).to_string())).collect(),
+            );
+        }
+        Ok(json.to_string())
+    }
+}
+
+/// Build the PATH string a child process should receive: the resolved
+/// executable's directory (if known), then our own PATH, then the login-shell
+/// PATH snapshot — deduped.
+fn composed_child_path_string() -> String {
+    let mut paths: Vec<std::path::PathBuf> = Vec::new();
+    // Our own PATH
+    if let Some(path) = std::env::var_os("PATH") {
+        paths.extend(std::env::split_paths(&path));
+    }
+    // Login shell PATH (npm globals, fnm/nvm/volta, homebrew, etc.)
+    if let Some(shell_path) = crate::shell_env::login_shell_path() {
+        paths.extend(std::env::split_paths(shell_path));
+    }
+    // Node version manager bins
+    paths.extend(crate::node_version_manager_bins());
+    // Dedupe (keep first occurrence)
+    let mut seen = std::collections::HashSet::new();
+    paths.retain(|p| !p.as_os_str().is_empty() && seen.insert(p.clone()));
+    std::env::join_paths(paths)
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
 /// An ACP-compatible CLI configured through `COMET_ACP_AGENT`, or one of the
 /// built-in specs (`claude()`, `codex()`).
 pub struct AcpHarness {
@@ -303,7 +399,8 @@ impl AcpHarness {
             }
             return resolve_spec_command(spec);
         }
-        self.command
+        let result = self
+            .command
             .clone()
             .or_else(|| std::env::var(ENV_AGENT).ok())
             .or_else(|| {
@@ -319,7 +416,8 @@ impl AcpHarness {
                     .into_iter()
                     .find(|agent| Some(agent.id.as_str()) == wanted)
                     .map(|agent| agent.command)
-            })
+            });
+        let command = result
             .map(normalize_acp_command)
             .filter(|command| !command.trim().is_empty())
             .ok_or_else(|| {
@@ -327,7 +425,8 @@ impl AcpHarness {
                     "ACP agent is not configured; add one in Settings > ACP agents or set \
                      {ENV_AGENT}"
                 ))
-            })
+            })?;
+        resolve_agent_command_string(&command)
     }
 }
 
@@ -426,8 +525,12 @@ impl Harness for AcpHarness {
             .await;
 
         let models = match discovery_result {
-            Ok(models) => models,
+            Ok(models) => {
+                eprintln!("[models] discovery Ok — {} models", models.len());
+                models
+            }
             Err(error) => {
+                eprintln!("[models] discovery Err: {error}");
                 if let Some(models) = discovered_models
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1861,14 +1964,18 @@ mod tests {
             r#"{
                 "activeAgentId": "second",
                 "agents": [
-                    {"id": "first", "command": "first-agent"},
-                    {"id": "second", "command": "second-agent --acp"}
+                    {"id": "first", "command": "{\"command\":\"first-agent\"}"},
+                    {"id": "second", "command": "{\"command\":\"second-agent\",\"args\":[\"--acp\"]}"}
                 ]
             }"#,
         )
         .unwrap();
         let harness = AcpHarness::new().with_config_file(config);
-        assert_eq!(harness.command_for(None).unwrap(), "second-agent --acp");
+        let command = harness.command_for(None).unwrap();
+        assert!(
+            command.contains("second-agent"),
+            "expected 'second-agent' in command, got: {command}"
+        );
     }
 
     #[test]
@@ -1880,25 +1987,28 @@ mod tests {
             r#"{
                 "activeAgentId": "second",
                 "agents": [
-                    {"id": "first", "command": "first-agent"},
-                    {"id": "second", "command": "second-agent --acp"}
+                    {"id": "first", "command": "{\"command\":\"first-agent\"}"},
+                    {"id": "second", "command": "{\"command\":\"second-agent\",\"args\":[\"--acp\"]}"}
                 ]
             }"#,
         )
         .unwrap();
         let harness = AcpHarness::new().with_config_file(config);
         // Requesting "first" overrides the default "second".
-        assert_eq!(
-            harness.command_for(Some("first")).unwrap(),
-            "first-agent"
+        assert!(
+            harness.command_for(Some("first")).unwrap().contains("first-agent"),
+            "expected 'first-agent'"
         );
         // Requesting an unknown id falls back to the active agent.
-        assert_eq!(
-            harness.command_for(Some("nonexistent")).unwrap(),
-            "second-agent --acp"
+        assert!(
+            harness.command_for(Some("nonexistent")).unwrap().contains("second-agent"),
+            "expected 'second-agent'"
         );
         // No override uses the active agent.
-        assert_eq!(harness.command_for(None).unwrap(), "second-agent --acp");
+        assert!(
+            harness.command_for(None).unwrap().contains("second-agent"),
+            "expected 'second-agent'"
+        );
     }
 
     #[test]
@@ -1910,6 +2020,53 @@ mod tests {
         };
         assert_eq!(server.name, CODE_CONTEXT_MCP_NAME);
         assert_eq!(server.url, "http://127.0.0.1:6699/mcp");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn command_for_returns_error_when_program_not_found() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = temp.path().join("acp-agents.json");
+        std::fs::write(
+            &config,
+            r#"{
+                "activeAgentId": "missing",
+                "agents": [
+                    {"id": "missing", "command": "this-program-does-not-exist-anywhere acp"}
+                ]
+            }"#,
+        )
+        .unwrap();
+        let harness = AcpHarness::new().with_config_file(config);
+        let error = harness.command_for(None).unwrap_err();
+        assert!(
+            matches!(error, HarnessError::NotInstalled(ref msg) if msg.contains("this-program-does-not-exist-anywhere")),
+            "expected NotInstalled error mentioning the program name, got: {error:?}"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn resolve_agent_command_string_returns_error_for_missing_program() {
+        let result = resolve_agent_command_string("nonexistent-omp-binary acp");
+        assert!(
+            result.is_err(),
+            "expected error for non-existent program"
+        );
+        let error = result.unwrap_err();
+        assert!(
+            matches!(error, HarnessError::NotInstalled(ref msg) if msg.contains("nonexistent-omp-binary")),
+            "expected NotInstalled error mentioning the program name, got: {error:?}"
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn resolve_agent_command_string_passes_through_on_unix() {
+        // On Unix the bare command is returned unchanged regardless of whether
+        // the program exists (the child inherits a PATH that may resolve it).
+        let result = resolve_agent_command_string("some-agent --acp").unwrap();
+        assert_eq!(result, "some-agent --acp");
     }
 
     #[cfg(unix)]
