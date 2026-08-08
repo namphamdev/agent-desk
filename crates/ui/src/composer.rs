@@ -1312,6 +1312,12 @@ pub struct ComposerInput {
     shaped_marked: Option<Range<usize>>,
     /// Raw Markdown → chip display projection from the last layout pass.
     projection: TextProjection,
+    /// Whether `content` changed since the last `refresh_projection` pass.
+    /// Every edit sets this; `refresh_projection` clears it, so the redundant
+    /// call at the top of `layout_text` (after `replace_text_in_range` already
+    /// rebuilt the projection) becomes an O(1) no-op instead of re-scanning
+    /// the whole draft for mention links on every keystroke.
+    projection_dirty: bool,
     /// File mentions are a composer feature, not a behavior of generic inputs
     /// (picker searches and rename fields also use this type).
     mentions_enabled: bool,
@@ -1387,6 +1393,7 @@ impl ComposerInput {
             shaped_is_placeholder: true,
             shaped_marked: None,
             projection: TextProjection::default(),
+            projection_dirty: true,
             mentions_enabled: false,
             layout_epoch: 0,
             display_is_placeholder: true,
@@ -1456,10 +1463,14 @@ impl ComposerInput {
 
     fn enable_mentions(&mut self) {
         self.mentions_enabled = true;
+        self.projection_dirty = true;
         self.refresh_projection();
     }
 
     fn refresh_projection(&mut self) {
+        if !self.projection_dirty {
+            return;
+        }
         self.projection = if self.mentions_enabled {
             TextProjection::new(&self.content)
         } else {
@@ -1468,6 +1479,7 @@ impl ComposerInput {
                 mentions: Vec::new(),
             }
         };
+        self.projection_dirty = false;
     }
 
     /// Replace a completed `@query` token as one non-coalescing undo step.
@@ -1490,6 +1502,7 @@ impl ComposerInput {
         self.record_edit(&range, &inserted);
         self.content =
             self.content[..range.start].to_owned() + &inserted + &self.content[range.end..];
+        self.projection_dirty = true;
         self.refresh_projection();
         let cursor =
             range.start + inserted.len() + existing_separator.map(char::len_utf8).unwrap_or(0);
@@ -1530,6 +1543,7 @@ impl ComposerInput {
     pub fn set_text(&mut self, text: impl Into<String>, cx: &mut Context<Self>) {
         self.invalidate_mention_tooltip();
         self.content = text.into();
+        self.projection_dirty = true;
         self.refresh_projection();
         let end = self.content.len();
         self.selected_range = end..end;
@@ -1725,6 +1739,7 @@ impl ComposerInput {
     fn restore(&mut self, snapshot: EditSnapshot, cx: &mut Context<Self>) {
         self.invalidate_mention_tooltip();
         self.content = snapshot.content;
+        self.projection_dirty = true;
         self.refresh_projection();
         self.selected_range = snapshot.selected_range;
         self.selection_reversed = snapshot.selection_reversed;
@@ -2724,6 +2739,7 @@ impl EntityInputHandler for ComposerInput {
         }
         self.content =
             self.content[0..range.start].to_owned() + new_text + &self.content[range.end..];
+        self.projection_dirty = true;
         self.refresh_projection();
         let cursor = range.start + new_text.len();
         self.selected_range = cursor..cursor;
@@ -2761,6 +2777,7 @@ impl EntityInputHandler for ComposerInput {
         }
         self.content =
             self.content[0..range.start].to_owned() + new_text + &self.content[range.end..];
+        self.projection_dirty = true;
         self.refresh_projection();
         if new_text.is_empty() {
             self.marked_range = None;
@@ -3647,19 +3664,24 @@ impl Composer {
             }
             return;
         }
-        let (text, cursor) = {
+        let (token, still_dismissed) = {
             let input = self.input.read(cx);
-            (input.text().to_string(), input.cursor_offset())
+            let text = input.text();
+            let cursor = input.cursor_offset();
+            let token = mention_token(text, cursor);
+            // The dismissed-range text comparison needs the live text; compute
+            // it here while we hold the borrow instead of cloning 65k+ chars
+            // on every keystroke.
+            let still_dismissed = token.as_ref().is_some_and(|token| {
+                self.mention
+                    .dismissed
+                    .as_ref()
+                    .is_some_and(|(range, value)| {
+                        token.range == *range && text.get(range.clone()) == Some(value.as_str())
+                    })
+            });
+            (token, still_dismissed)
         };
-        let token = mention_token(&text, cursor);
-        let still_dismissed = token.as_ref().is_some_and(|token| {
-            self.mention
-                .dismissed
-                .as_ref()
-                .is_some_and(|(range, value)| {
-                    token.range == *range && text.get(range.clone()) == Some(value.as_str())
-                })
-        });
         if still_dismissed {
             self.mention.token = None;
             self.mention_task = None;
