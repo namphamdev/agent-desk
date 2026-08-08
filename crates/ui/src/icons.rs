@@ -115,6 +115,10 @@ icon_assets![
     (STOP, "stop"),
     (CHECK, "check"),
     (COPY, "copy"),
+    // Hand-drawn fullscreen/expand glyph in the Solar Linear style — the
+    // embedded set has no expand icon. Used by the mermaid card's "Open full
+    // screen" affordance.
+    (EXPAND, "expand"),
     (COMET_LOGO, "comet-logo"),
     // Harness brand marks (icons.tsx).
     (CLAUDE_MARK, "claude-mark"),

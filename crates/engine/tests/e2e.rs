@@ -105,7 +105,7 @@ impl Harness for ScriptedHarness {
     fn reasoning_levels(&self) -> &[ReasoningLevel] {
         &[ReasoningLevel::Medium]
     }
-    async fn models(&self) -> Result<Vec<Model>, HarnessError> {
+    async fn models(&self, _acp_agent_id: Option<&str>) -> Result<Vec<Model>, HarnessError> {
         Ok(vec![])
     }
     async fn run(
@@ -837,7 +837,7 @@ async fn respond_input_resolves_pending_question() {
         fn reasoning_levels(&self) -> &[ReasoningLevel] {
             &[]
         }
-        async fn models(&self) -> Result<Vec<Model>, HarnessError> {
+        async fn models(&self, _acp_agent_id: Option<&str>) -> Result<Vec<Model>, HarnessError> {
             Ok(vec![])
         }
         async fn run(
@@ -990,7 +990,7 @@ async fn wrong_id_respond_is_rejected_and_correct_answer_still_resumes() {
         fn reasoning_levels(&self) -> &[ReasoningLevel] {
             &[]
         }
-        async fn models(&self) -> Result<Vec<Model>, HarnessError> {
+        async fn models(&self, _acp_agent_id: Option<&str>) -> Result<Vec<Model>, HarnessError> {
             Ok(vec![])
         }
         async fn run(
@@ -1166,7 +1166,7 @@ async fn interrupt_unblocks_a_run_awaiting_input() {
         fn reasoning_levels(&self) -> &[ReasoningLevel] {
             &[]
         }
-        async fn models(&self) -> Result<Vec<Model>, HarnessError> {
+        async fn models(&self, _acp_agent_id: Option<&str>) -> Result<Vec<Model>, HarnessError> {
             Ok(vec![])
         }
         async fn run(
@@ -1328,7 +1328,7 @@ async fn harness_emitted_input_twin_is_dropped_and_answer_resumes() {
         fn reasoning_levels(&self) -> &[ReasoningLevel] {
             &[]
         }
-        async fn models(&self) -> Result<Vec<Model>, HarnessError> {
+        async fn models(&self, _acp_agent_id: Option<&str>) -> Result<Vec<Model>, HarnessError> {
             Ok(vec![])
         }
         async fn run(
@@ -1513,7 +1513,7 @@ impl Harness for CapturingHarness {
     fn reasoning_levels(&self) -> &[ReasoningLevel] {
         &[ReasoningLevel::Medium]
     }
-    async fn models(&self) -> Result<Vec<Model>, HarnessError> {
+    async fn models(&self, _acp_agent_id: Option<&str>) -> Result<Vec<Model>, HarnessError> {
         Ok(vec![])
     }
     async fn run(

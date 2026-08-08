@@ -246,20 +246,22 @@ Status legend: ✅ shipped · 🟡 shipped with named gaps (see `docs/PARITY.md`
   two headless engines against a real edge — B queues a run into the chat doc, the durable
   nudge wakes host A, A executes (mock harness), transcript + session status sync back to B.
 - 🟡 **M5 Full surface** — terminals, diff pane, repo/branch/folder pickers + worktrees,
-  agent accounts UI, settings (devices/shortcuts/archived), Codex harness. Gaps: composer
-  attachment UI (engine upload RPCs exist), Cursor harness.
+  agent accounts UI, settings (devices/shortcuts/archived), Codex harness, Cursor harness,
+  composer attachment UI (staging strips, paste/drop/picker, chunked upload, lightbox preview).
 - 🟡 **M6 Polish** — wire reconciliation (proto AuthState on the wire, `LocalDevice`),
   two-device e2e smoke, keyboard map, clippy/fmt sweep, Linux packaging
   (`scripts/package-linux.sh` + release profile), macOS bundling config (`dist/macos/`,
-  not executed — needs a Mac). Gaps: prefers-reduced-motion, engine hardening
-  (instance lock, watchdogs), edge production deploy.
+  not executed — needs a Mac), instance lock (Unix flock), prefers-reduced-motion
+  (gpui flag honored throughout; macOS auto-detected by platform layer, Windows via
+  SystemParametersInfoW probe, `COMET_MOTION_SCALE=0` escape hatch). Gaps: edge production deploy.
 
 ## 9. Open questions (tracked, non-blocking)
 
 1. loro-protocol Rust client ⇄ TS edge interop — verify at M1; fallback is a ~300-line hand-rolled
    client (the frame protocol is small and we control both ends).
 2. `lorosurgeon` fit for the mirror write path vs hand-rolled reconcile.
-3. Cursor harness (comet has it; CLI surface for Rust TBD) — parity item, scheduled after Codex.
+3. Cursor harness — shipped: `cursor-agent` CLI stream-json adapter (turn-boundary
+   steering, SIGTERM/SIGKILL interrupt escalation, curated model catalog).
 4. Text shaping performance for analytic row heights: gpui measures shaped text natively (Rust ⇒
    cheap), so we start with gpui `list()` measurement + memoization rather than porting pretext's
    full analytic kernel; revisit only if cold-open of huge transcripts measures slow.

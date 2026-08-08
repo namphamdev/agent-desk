@@ -138,6 +138,12 @@ pub fn run_app(config: UiConfig) {
     app.run(move |cx: &mut App| {
         // NB: pinned-rev API — `gpui_tokio::init(cx)` free function (not `Tokio::init`).
         gpui_tokio::init(cx);
+        // Detect the OS "reduce motion" accessibility setting and propagate it
+        // to gpui's global flag. On macOS the platform layer already reads
+        // NSWorkspace.accessibilityDisplayShouldReduceMotion; on Windows we
+        // probe SystemParametersInfo(SPI_GETCLIENTAREAANIMATION). COMET_MOTION_SCALE=0
+        // forces it on for any platform/CI edge case.
+        detect_and_set_reduced_motion(cx);
         register_fonts(cx);
         // Appearance before anything paints: the theme global has to be the
         // final one on the very first frame, or the window flashes the wrong
@@ -258,4 +264,57 @@ fn open_main_window(state: gpui::Entity<state::AppState>, boot: EngineBootConfig
     // `WindowOptions` value is applied during creation, before the view is
     // attached; re-pushing it here means a window is never left opaque.
     appearance::reapply_window_background(cx);
+}
+
+/// Detect the OS "reduce motion" accessibility setting and propagate it to
+/// gpui's global `reduce_motion` flag so every `with_animation` element snaps
+/// instead of animating.
+///
+/// - **macOS**: gpui's platform layer already syncs
+///   `NSWorkspace.accessibilityDisplayShouldReduceMotion` into the flag during
+///   application init, so this is a no-op there (calling `set_reduce_motion`
+///   would fight the platform's own observation).
+/// - **Windows**: the platform layer does not auto-detect, so we probe
+///   `SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION)`. When the user has
+///   disabled animations (unchecked "Show animations in Windows" or enabled a
+///   screen-reader's "Turn off all unnecessary animations"), this returns
+///   `FALSE` and we set the flag.
+/// - **Linux/other**: no reliable detection without a WM-dependent D-Bus call;
+///   `COMET_MOTION_SCALE=0` remains the escape hatch.
+fn detect_and_set_reduced_motion(cx: &mut App) {
+    // Manual override: COMET_MOTION_SCALE=0 forces reduced motion everywhere.
+    if matches!(std::env::var("COMET_MOTION_SCALE").as_deref(), Ok("0")) {
+        motion::set_reduced_motion(cx, true);
+        return;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        if windows_prefers_reduced_motion() {
+            motion::set_reduced_motion(cx, true);
+        }
+    }
+    // macOS: the platform layer handles this. Linux: no reliable probe.
+}
+
+#[cfg(target_os = "windows")]
+fn windows_prefers_reduced_motion() -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SystemParametersInfoW, SYSTEM_PARAMETERS_INFO_ACTION,
+        SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
+    };
+
+    // SPI_GETCLIENTAREAANIMATION = 0x1042
+    const SPI_GETCLIENTAREAANIMATION: SYSTEM_PARAMETERS_INFO_ACTION =
+        SYSTEM_PARAMETERS_INFO_ACTION(0x1042);
+
+    let mut enabled: windows::core::BOOL = windows::core::BOOL::default();
+    let result = unsafe {
+        SystemParametersInfoW(
+            SPI_GETCLIENTAREAANIMATION,
+            0,
+            Some(&mut enabled as *mut _ as *mut _),
+            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+        )
+    };
+    result.is_ok() && !enabled.as_bool()
 }

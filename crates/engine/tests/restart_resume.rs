@@ -81,7 +81,7 @@ impl Harness for RecordingHarness {
     fn reasoning_levels(&self) -> &[ReasoningLevel] {
         &[ReasoningLevel::Medium]
     }
-    async fn models(&self) -> Result<Vec<Model>, HarnessError> {
+    async fn models(&self, _acp_agent_id: Option<&str>) -> Result<Vec<Model>, HarnessError> {
         Ok(vec![])
     }
     async fn run(
@@ -445,7 +445,7 @@ impl Harness for PersistentHarness {
     fn reasoning_levels(&self) -> &[ReasoningLevel] {
         &[ReasoningLevel::Medium]
     }
-    async fn models(&self) -> Result<Vec<Model>, HarnessError> {
+    async fn models(&self, _acp_agent_id: Option<&str>) -> Result<Vec<Model>, HarnessError> {
         Ok(vec![])
     }
     async fn run(

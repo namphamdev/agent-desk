@@ -145,7 +145,7 @@ impl Harness for InstantHarness {
     fn reasoning_levels(&self) -> &[ReasoningLevel] {
         &[]
     }
-    async fn models(&self) -> Result<Vec<Model>, HarnessError> {
+    async fn models(&self, _acp_agent_id: Option<&str>) -> Result<Vec<Model>, HarnessError> {
         Ok(vec![])
     }
     async fn run(

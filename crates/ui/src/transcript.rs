@@ -998,6 +998,13 @@ pub struct Transcript {
     /// Error chip showing transient copied feedback.
     copied_error: Option<SharedString>,
     copied_error_clear: Option<Task<()>>,
+    /// Mermaid card showing "Copied" feedback: `(row id, block ix)`, cleared
+    /// by the companion task after ~1.2s (mirrors `copied_code`).
+    copied_mermaid: Option<(SharedString, usize)>,
+    copied_mermaid_clear: Option<Task<()>>,
+    /// Mermaid diagram open in the full-screen modal: `(row id, source)`.
+    /// `None` renders no modal.
+    mermaid_fullscreen: Option<(SharedString, String)>,
     /// Transcript attachment being viewed full-size (click a user thumbnail).
     attachment_preview: Option<crate::attachments::PreviewImage>,
     /// In-flight ReadAttachmentChunk loads, keyed `(deviceId, path)` — one per
@@ -1058,6 +1065,9 @@ impl Transcript {
             copied_message_clear: None,
             copied_error: None,
             copied_error_clear: None,
+            copied_mermaid: None,
+            copied_mermaid_clear: None,
+            mermaid_fullscreen: None,
             attachment_preview: None,
             attachment_loads: HashMap::new(),
             attachment_retries: HashMap::new(),
@@ -1706,6 +1716,7 @@ impl Transcript {
                     cache: (!render_cache_disabled()).then(|| self.render_cache.clone()),
                     now: Instant::now(),
                     copy: Some(self.copy_ui_for(&row.id, cx)),
+                    mermaid: Some(self.mermaid_ui_for(&row.id, cx)),
                 };
                 let highlight = self.code_highlight_for(&row.id, tree, Some(*block_ix), cx);
                 let Some(top) = tree.blocks.get(*block_ix) else {
@@ -1748,6 +1759,7 @@ impl Transcript {
                     cache: (!render_cache_disabled()).then(|| self.render_cache.clone()),
                     now: Instant::now(),
                     copy: Some(self.copy_ui_for(&row.id, cx)),
+                    mermaid: Some(self.mermaid_ui_for(&row.id, cx)),
                 };
                 let highlight = self.code_highlight_for(&row.id, tree, Some(*block_ix), cx);
                 let Some(top) = tree.blocks.get(*block_ix) else {
@@ -2007,6 +2019,85 @@ impl Transcript {
                     .ok();
             });
         render::CopyUi { handler, copied_ix }
+    }
+
+    /// Mermaid-card Copy + Open-full-screen wiring (mirrors [`copy_ui_for`]):
+    /// copy writes the diagram source and flashes "Copied" on that block for
+    /// ~1.2s; fullscreen opens the modal (see [`mermaid_fullscreen`]).
+    fn mermaid_ui_for(&self, row_id: &SharedString, cx: &mut Context<Self>) -> render::MermaidUi {
+        let copied_ix = self
+            .copied_mermaid
+            .as_ref()
+            .filter(|(id, _)| id == row_id)
+            .map(|(_, ix)| *ix);
+        let copy_row_key = row_id.clone();
+        let copy_entity = cx.weak_entity();
+        let copy: Rc<dyn Fn(usize, SharedString, &mut Window, &mut gpui::App)> =
+            Rc::new(move |ix, source, _window, cx| {
+                cx.write_to_clipboard(ClipboardItem::new_string(source.to_string()));
+                let row_key = copy_row_key.clone();
+                copy_entity
+                    .update(cx, |this, cx| {
+                        this.copied_mermaid = Some((row_key, ix));
+                        this.copied_mermaid_clear = Some(cx.spawn(async move |this, cx| {
+                            cx.background_executor()
+                                .timer(Duration::from_millis(1200))
+                                .await;
+                            this.update(cx, |this, cx| {
+                                this.copied_mermaid = None;
+                                this.copied_mermaid_clear = None;
+                                cx.notify();
+                            })
+                            .ok();
+                        }));
+                        cx.notify();
+                    })
+                    .ok();
+            });
+        let fs_row_key = row_id.clone();
+        let fs_entity = cx.weak_entity();
+        let fullscreen: Rc<dyn Fn(usize, &mut Window, &mut gpui::App)> =
+            Rc::new(move |_ix, _window, cx| {
+                let row_key = fs_row_key.clone();
+                fs_entity
+                    .update(cx, |this, cx| {
+                        // Resolve the source from the row's tree on open —
+                        // the modal reads it back from `mermaid_fullscreen`.
+                        this.mermaid_fullscreen_open(&row_key);
+                        cx.notify();
+                    })
+                    .ok();
+            });
+        render::MermaidUi {
+            copy,
+            fullscreen,
+            copied_ix,
+        }
+    }
+
+    /// Look up the mermaid source for `row_id`'s currently-rendered block and
+    /// stash it on `mermaid_fullscreen` so the modal can render it. The
+    /// inline card's click only carries the block index, so we resolve from
+    /// the row's parsed tree here.
+    fn mermaid_fullscreen_open(&mut self, row_id: &SharedString) {
+        let Some(row) = self
+            .rows
+            .iter()
+            .find(|r| &r.id == row_id)
+            .cloned()
+        else {
+            return;
+        };
+        let tree = match &row.kind {
+            RowKind::Markdown { tree, .. } | RowKind::LiveMarkdown { tree, .. } => tree,
+            _ => return,
+        };
+        for top in tree.blocks.iter() {
+            if let Block::Mermaid { code } = &top.block {
+                self.mermaid_fullscreen = Some((row_id.clone(), code.clone()));
+                return;
+            }
+        }
     }
 
     /// Request highlights for the code blocks of a tree. `only` limits to one
@@ -2816,6 +2907,24 @@ impl Render for Transcript {
                 move |_, cx| {
                     weak.update(cx, |this, cx| {
                         this.attachment_preview = None;
+                        cx.notify();
+                    })
+                    .ok();
+                },
+            ));
+        }
+        // Full-screen mermaid modal (Open-full-screen affordance on a mermaid
+        // card). Independent zoom/scroll/pan state via a fixed viewer key.
+        if let Some((_, source)) = self.mermaid_fullscreen.clone() {
+            let theme = Theme::of(cx).clone();
+            let weak = cx.weak_entity();
+            return root.child(crate::markdown::render::mermaid_fullscreen(
+                window.viewport_size(),
+                &source,
+                &theme,
+                move |_, cx| {
+                    weak.update(cx, |this, cx| {
+                        this.mermaid_fullscreen = None;
                         cx.notify();
                     })
                     .ok();

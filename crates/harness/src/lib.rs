@@ -73,6 +73,7 @@ pub trait Harness: Send + Sync {
 pub mod acp;
 pub mod claude;
 pub mod codex;
+pub mod cursor;
 pub mod mock;
 mod provider_models;
 pub mod shell_env;
@@ -231,3 +232,4 @@ pub(crate) fn crash_message(
 pub use acp::AcpHarness;
 pub use claude::ClaudeHarness;
 pub use codex::CodexHarness;
+pub use cursor::CursorHarness;

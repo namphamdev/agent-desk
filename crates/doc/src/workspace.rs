@@ -874,6 +874,7 @@ mod tests {
                 model_options: Default::default(),
                 sandbox: SandboxLevel::WorkspaceWrite,
                 permission_mode: Default::default(),
+                acp_agent_id: None,
             }),
             last_message_preview: None,
             last_message_at: None,
@@ -941,6 +942,7 @@ mod tests {
             model_options: options,
             sandbox: SandboxLevel::WorkspaceWrite,
             permission_mode: Default::default(),
+            acp_agent_id: None,
         };
         assert!(ws.set_chat_config("chat-1", &config).unwrap());
         let row = ws.chat("chat-1").unwrap().expect("row exists");

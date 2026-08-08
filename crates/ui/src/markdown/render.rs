@@ -80,6 +80,9 @@ pub struct RenderOptions {
     /// Code-block copy-button plumbing (round 9): `None` renders no button
     /// (previews outside the transcript).
     pub copy: Option<CopyUi>,
+    /// Mermaid-card Copy + Open-full-screen plumbing: `None` renders neither
+    /// affordance (previews outside the transcript).
+    pub mermaid: Option<MermaidUi>,
 }
 
 /// Copy-button wiring for one row's code blocks: the handler writes the code
@@ -88,6 +91,17 @@ pub struct RenderOptions {
 #[derive(Clone)]
 pub struct CopyUi {
     pub handler: Rc<dyn Fn(usize, SharedString, &mut Window, &mut gpui::App)>,
+    pub copied_ix: Option<usize>,
+}
+
+/// Mermaid-card affordances (Copy source + Open full screen). `None` renders
+/// neither button (previews outside the transcript). `copied_ix` is the block
+/// currently showing the "Copied" flash; `fullscreen_ix` is the block whose
+/// open request is in flight (drives the modal in the transcript layer).
+#[derive(Clone)]
+pub struct MermaidUi {
+    pub copy: Rc<dyn Fn(usize, SharedString, &mut Window, &mut gpui::App)>,
+    pub fullscreen: Rc<dyn Fn(usize, &mut Window, &mut gpui::App)>,
     pub copied_ix: Option<usize>,
 }
 
@@ -100,6 +114,7 @@ impl RenderOptions {
             cache: None,
             now: Instant::now(),
             copy: None,
+            mermaid: None,
         }
     }
 }
@@ -513,7 +528,7 @@ fn render_mermaid(
         .get(source)
         .cloned()
     {
-        return mermaid_image_card(image, viewer_key);
+        return mermaid_image_card(image, viewer_key, source, ix, opts.mermaid.clone());
     }
     let mut render_options = mermaid_rs_renderer::RenderOptions::default();
     // The renderer's outer Y padding becomes a conspicuous empty band in a
@@ -528,10 +543,16 @@ fn render_mermaid(
         .lock()
         .expect("Mermaid cache poisoned")
         .insert(source.to_string(), image.clone());
-    mermaid_image_card(image, viewer_key)
+    mermaid_image_card(image, viewer_key, source, ix, opts.mermaid.clone())
 }
 
-fn mermaid_image_card(image: Arc<Image>, viewer_key: String) -> AnyElement {
+fn mermaid_image_card(
+    image: Arc<Image>,
+    viewer_key: String,
+    source: &str,
+    ix: usize,
+    ui: Option<MermaidUi>,
+) -> AnyElement {
     let (zoom, scroll) = mermaid_viewer(&viewer_key);
     let zoom_button = |label: &'static str, change: f32| {
         let key = viewer_key.clone();
@@ -559,6 +580,62 @@ fn mermaid_image_card(image: Arc<Image>, viewer_key: String) -> AnyElement {
     let release_key = viewer_key.clone();
     let wheel_key = viewer_key.clone();
     let pinch_key = viewer_key.clone();
+    // Copy + Open-full-screen affordances (mirrors the code-block copy button:
+    // a small ghost icon button in the card's top-right, beside the zoom
+    // controls). `None` (previews outside the transcript) renders neither.
+    let copy_button = ui.clone().map(|ui| {
+        let copied = ui.copied_ix == Some(ix);
+        let source_text: SharedString = source.to_string().into();
+        let handler = ui.copy.clone();
+        let fade_key = format!("{viewer_key}-copy");
+        div()
+            .id(SharedString::from(fade_key.clone()))
+            .h(px(22.0))
+            .w(px(22.0))
+            .rounded(px(4.0))
+            .flex()
+            .items_center()
+            .justify_center()
+            .cursor_pointer()
+            .bg(crate::motion::hover_blend(
+                &fade_key,
+                crate::theme::white_alpha(0.10),
+                crate::theme::white_alpha(0.18),
+            ))
+            .on_hover(crate::motion::hover_listener(fade_key))
+            .text_color(gpui::white())
+            .on_click(move |_, window, cx| handler(ix, source_text.clone(), window, cx))
+            .child(
+                crate::icons::icon(if copied {
+                    crate::icons::CHECK
+                } else {
+                    crate::icons::COPY
+                })
+                .size(px(13.0)),
+            )
+    });
+    let expand_button = ui.map(|ui| {
+        let handler = ui.fullscreen.clone();
+        let fade_key = format!("{viewer_key}-expand");
+        div()
+            .id(SharedString::from(fade_key.clone()))
+            .h(px(22.0))
+            .w(px(22.0))
+            .rounded(px(4.0))
+            .flex()
+            .items_center()
+            .justify_center()
+            .cursor_pointer()
+            .bg(crate::motion::hover_blend(
+                &fade_key,
+                crate::theme::white_alpha(0.10),
+                crate::theme::white_alpha(0.18),
+            ))
+            .on_hover(crate::motion::hover_listener(fade_key))
+            .text_color(gpui::white())
+            .on_click(move |_, window, cx| handler(ix, window, cx))
+            .child(crate::icons::icon(crate::icons::EXPAND).size(px(13.0)))
+    });
     div()
         .relative()
         .rounded(px(10.0))
@@ -641,7 +718,9 @@ fn mermaid_image_card(image: Arc<Image>, viewer_key: String) -> AnyElement {
                 .flex()
                 .gap(px(4.0))
                 .child(zoom_button("out", -0.25))
-                .child(zoom_button("in", 0.25)),
+                .child(zoom_button("in", 0.25))
+                .children(expand_button)
+                .children(copy_button),
         )
         .into_any_element()
 }
@@ -733,6 +812,74 @@ fn render_mermaid_fallback(source: &str, theme: &Theme) -> AnyElement {
 // Rich visualization rendering
 // ---------------------------------------------------------------------------
 
+/// Full-screen mermaid modal: dim scrim + the diagram in a frosted card with
+/// its own viewer key (`"mermaid-fullscreen"`), so zoom/scroll/pan state is
+/// independent of the inline card. The scrim click closes (any click outside
+/// the card dismisses, like the attachment lightbox).
+pub fn mermaid_fullscreen(
+    viewport: gpui::Size<gpui::Pixels>,
+    source: &str,
+    theme: &Theme,
+    on_close: impl Fn(&mut gpui::Window, &mut gpui::App) + 'static,
+) -> AnyElement {
+    // Resolve the cached SVG image (renders + caches on first open).
+    let image = mermaid_images()
+        .lock()
+        .expect("Mermaid cache poisoned")
+        .get(source)
+        .cloned()
+        .or_else(|| {
+            let mut render_options = mermaid_rs_renderer::RenderOptions::default();
+            render_options.layout.requirement.render_padding_y = 0.0;
+            mermaid_rs_renderer::render_with_options(source, render_options)
+                .ok()
+                .map(|svg| {
+                    let image = Arc::new(Image::from_bytes(ImageFormat::Svg, svg.into_bytes()));
+                    mermaid_images()
+                        .lock()
+                        .expect("Mermaid cache poisoned")
+                        .insert(source.to_string(), image.clone());
+                    image
+                })
+        });
+    let Some(image) = image else {
+        // Renderer failed — show the source fallback card centered.
+        let card = render_mermaid_fallback(source, theme);
+        return crate::popover::modal("mermaid-fullscreen", viewport, card);
+    };
+    // Independent viewer key so the modal's zoom/pan doesn't bleed back into
+    // the inline card (and vice versa).
+    let viewer_key = "mermaid-fullscreen".to_string();
+    let card = mermaid_image_card(image, viewer_key, source, 0, None);
+    // Strip the inline card's max-height cap so the modal can use the full
+    // viewport — wrap in a sized container instead.
+    let max_h = px(f32::from(viewport.height) * 0.86);
+    let max_w = px(f32::from(viewport.width) * 0.92);
+    let container = div()
+        .max_w(max_w)
+        .max_h(max_h)
+        .child(card);
+    gpui::deferred(
+        gpui::anchored()
+            .position(gpui::point(px(0.0), px(0.0)))
+            .child(
+                div()
+                    .id("mermaid-fullscreen-scrim")
+                    .occlude()
+                    .w(viewport.width)
+                    .h(viewport.height)
+                    .bg(crate::popover::scrim_alpha(0.7))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .on_click(move |_, window, cx| on_close(window, cx))
+                    .child(container),
+            ),
+    )
+    .priority(3)
+    .into_any_element()
+}
+
 /// Render a [`VizDocument`] as native GPUI elements. The element graph is
 /// resolved recursively from the root; each component type maps to a styled
 /// `div`/text element. Unknown types render a muted fallback.
@@ -747,9 +894,13 @@ fn render_visualization(
         return gpui::Empty.into_any_element();
     };
     let el = render_viz_element(root, doc, top_ix, ix, theme);
+    // Allow horizontal scroll for wide content (e.g. row Boxes with many
+    // children) instead of clipping. Each viz block needs a unique id for
+    // GPUI's scroll handle.
+    let scroll_id: SharedString = format!("viz-root-{top_ix}-{ix}").into();
     div()
-        .rounded(px(10.0))
-        .overflow_hidden()
+        .id(scroll_id)
+        .overflow_x_scroll()
         .child(el)
         .into_any_element()
 }
@@ -779,7 +930,7 @@ fn render_viz_element(
         .collect();
 
     match el.ty.as_str() {
-        "Box" => render_viz_box(&el.props, children, theme),
+        "Box" => render_viz_box(&el.props, children, child_ix, theme),
         "Text" => render_viz_text(&el.props, theme),
         "Heading" => render_viz_heading(&el.props, theme),
         "Card" => render_viz_card(&el.props, children, theme),
@@ -890,6 +1041,7 @@ fn hex_to_hsla(hex: &str) -> Option<Hsla> {
 fn render_viz_box(
     props: &serde_json::Map<String, serde_json::Value>,
     children: Vec<AnyElement>,
+    child_ix: usize,
     _theme: &Theme,
 ) -> AnyElement {
     let is_row = viz_str(props.get("flexDirection"), "column") == "row";
@@ -897,14 +1049,27 @@ fn render_viz_box(
     let gap = viz_num(props.get("gap"), 0.0);
     let mut el = div().flex();
     if is_row {
-        el = el.flex_row();
+        el = el.flex_row().flex_none();
     } else {
         el = el.flex_col();
     }
     el = el
         .when(padding > 0.0, |el| el.p(viz_px(padding)))
         .when(gap > 0.0, |el| el.gap(viz_px(gap)));
-    el.children(children).into_any_element()
+    let inner = el.children(children);
+
+    if is_row {
+        // Wrap in a horizontal scroll container so wide rows are scrollable
+        // rather than overflowing / being clipped by ancestors.
+        let scroll_id: SharedString = format!("viz-box-{child_ix}").into();
+        div()
+            .id(scroll_id)
+            .overflow_x_scroll()
+            .child(inner)
+            .into_any_element()
+    } else {
+        inner.into_any_element()
+    }
 }
 
 fn render_viz_text(

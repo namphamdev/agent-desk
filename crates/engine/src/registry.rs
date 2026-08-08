@@ -288,6 +288,37 @@ pub fn default_registry_with_config(
             }
         }),
     );
+    // Cursor, same lazy pattern: the static descriptor mirrors CursorHarness
+    // exactly — "Cursor" with TurnBoundary steering (the CLI consumes queued
+    // user lines at turn boundaries). CLI discovery (cursor-agent / cursor
+    // binary) only happens when a run/model call resolves the slot.
+    registry.register_lazy(
+        HarnessDescriptor {
+            id: HarnessId::Cursor,
+            name: "Cursor".into(),
+            supports_steering: true,
+            steering_mode: SteeringMode::TurnBoundary,
+            reasoning_levels: vec![
+                ReasoningLevel::Low,
+                ReasoningLevel::Medium,
+                ReasoningLevel::High,
+                ReasoningLevel::XHigh,
+                ReasoningLevel::Max,
+            ],
+            acp_agent_id: None,
+        },
+        Box::new({
+            let mcp_server_url = mcp_server_url.map(str::to_owned);
+            move || {
+                let harness = comet_harness::CursorHarness::new();
+                let harness = match &mcp_server_url {
+                    Some(url) => harness.with_mcp_server(url.clone()),
+                    None => harness,
+                };
+                Ok(Arc::new(harness) as Arc<dyn Harness>)
+            }
+        }),
+    );
     registry
 }
 
@@ -338,6 +369,7 @@ mod tests {
                 HarnessId::ClaudeCode,
                 HarnessId::Codex,
                 HarnessId::Acp,
+                HarnessId::Cursor,
             ]
         );
         assert!(registry.resolve(HarnessId::Mock).is_ok());
