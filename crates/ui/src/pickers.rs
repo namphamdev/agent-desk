@@ -310,7 +310,7 @@ pub struct Pickers {
     space_owner: Option<String>,
     open: Option<PickerKind>,
     harnesses: Loadable<Vec<HarnessDescriptor>>,
-    models: HashMap<HarnessId, Loadable<Vec<Model>>>,
+    models: HashMap<(HarnessId, Option<String>), Loadable<Vec<Model>>>,
     refs: Loadable<Vec<RepoRef>>,
     /// Space id the `refs` slot belongs to (invalidated on space change).
     refs_space: Option<String>,
@@ -409,10 +409,14 @@ impl Pickers {
             .unwrap_or_default();
         let draft_owner = state.read(cx).selected_chat.clone();
         let space_owner = state.read(cx).selected_space.clone();
+        let permission_mode = defaults.permission_mode.unwrap_or_default();
         Self {
             state,
             space_owner,
-            config: DraftConfig::default(),
+            config: DraftConfig {
+                permission_mode,
+                ..DraftConfig::default()
+            },
             defaults,
             data_dir,
             draft_owner,
@@ -519,6 +523,19 @@ impl Pickers {
             .and_then(|list| visible_harnesses(list).first().map(|d| d.id))
     }
 
+    /// Effective ACP agent id: the draft pick, or the selected chat's config.
+    /// Only meaningful when [`effective_harness`] is [`HarnessId::Acp`].
+    fn effective_acp_agent_id(&self, cx: &App) -> Option<String> {
+        if let Some(id) = self.config.acp_agent_id.clone() {
+            return Some(id);
+        }
+        self.state
+            .read(cx)
+            .selected_chat_row()
+            .and_then(|c| c.config.as_ref())
+            .and_then(|c| c.acp_agent_id.clone())
+    }
+
     /// Effective model id: the draft pick, the selected chat's config, or (on
     /// the new-chat canvas) the remembered last-used model for the harness.
     fn effective_model_id<'a>(&'a self, cx: &'a App) -> Option<&'a str> {
@@ -556,7 +573,8 @@ impl Pickers {
     /// (first row). Never `None` with a non-empty catalog.
     fn selected_model<'a>(&'a self, cx: &'a App) -> Option<&'a Model> {
         let harness = self.effective_harness(cx)?;
-        let models = self.models.get(&harness)?.ready()?;
+        let acp_agent_id = self.effective_acp_agent_id(cx);
+        let models = self.models.get(&(harness, acp_agent_id))?.ready()?;
         match self.effective_model_id(cx) {
             Some(id) => {
                 let found = models.iter().find(|m| m.id == id);
@@ -717,12 +735,13 @@ impl Pickers {
             PickerKind::HarnessModel | PickerKind::Traits => {
                 self.ensure_harnesses(cx);
                 if let Some(harness) = self.effective_harness(cx) {
+                    let acp_agent_id = self.effective_acp_agent_id(cx);
                     // Provider selection is device-local settings outside this
                     // entity. Refresh on every picker open so switching to a
                     // custom provider immediately replaces a previously
                     // cached built-in catalog.
-                    self.models.remove(&harness);
-                    self.ensure_models(harness, cx);
+                    self.models.remove(&(harness, acp_agent_id.clone()));
+                    self.ensure_models(harness, acp_agent_id, cx);
                 }
             }
             PickerKind::Permission => {}
@@ -765,7 +784,8 @@ impl Pickers {
                     Err(err) => Loadable::Error(err.to_string()),
                 };
                 if let Some(harness) = pickers.effective_harness(cx) {
-                    pickers.ensure_models(harness, cx);
+                    let acp_agent_id = pickers.effective_acp_agent_id(cx);
+                    pickers.ensure_models(harness, acp_agent_id, cx);
                 }
                 cx.notify();
             })
@@ -773,12 +793,18 @@ impl Pickers {
         }));
     }
 
-    fn ensure_models(&mut self, harness: HarnessId, cx: &mut Context<Self>) {
+    fn ensure_models(
+        &mut self,
+        harness: HarnessId,
+        acp_agent_id: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        let cache_key = (harness, acp_agent_id.clone());
         // Absent or Idle only — same render-loop hazard as `ensure_harnesses`;
         // the retry row clears the map to re-arm.
         if self
             .models
-            .get(&harness)
+            .get(&cache_key)
             .is_some_and(|slot| !matches!(slot, Loadable::Idle))
         {
             return;
@@ -787,9 +813,17 @@ impl Pickers {
             return;
         };
         let target = self.space_target(cx);
-        self.models.insert(harness, Loadable::Loading);
+        self.models.insert(cache_key.clone(), Loadable::Loading);
         cx.spawn(async move |this, cx| {
             let mut params = serde_json::json!({ "harness": harness });
+            if let Some(ref id) = acp_agent_id {
+                if let Some(object) = params.as_object_mut() {
+                    object.insert(
+                        "acpAgentId".into(),
+                        serde_json::Value::String(id.clone()),
+                    );
+                }
+            }
             if let (Some(target), Some(object)) = (&target, params.as_object_mut()) {
                 object.insert(
                     "targetDeviceId".into(),
@@ -813,7 +847,7 @@ impl Pickers {
                         pickers.save_defaults();
                     }
                 }
-                pickers.models.insert(harness, loaded);
+                pickers.models.insert(cache_key, loaded);
                 // Models arrived after the picker was already open: re-center
                 // the keyboard highlight on the selected row, otherwise it
                 // stays at 0 (set when the list was empty) and reads as a
@@ -1109,13 +1143,13 @@ impl Pickers {
             self.config.model_options.clear();
         }
         self.config.harness = Some(harness);
-        self.config.acp_agent_id = acp_agent_id;
+        self.config.acp_agent_id = acp_agent_id.clone();
         self.defaults.harness = Some(harness);
         self.save_defaults();
         self.active = 0;
         self.model_scroll.set_offset(gpui::Point::default());
-        self.models.remove(&harness);
-        self.ensure_models(harness, cx);
+        self.models.remove(&(harness, acp_agent_id.clone()));
+        self.ensure_models(harness, acp_agent_id, cx);
         cx.notify();
     }
 
@@ -1130,9 +1164,10 @@ impl Pickers {
             // New chat: draft pick + sticky last-used memory for this harness.
             self.config.model = Some(model_id.clone());
             if let Some(harness) = self.effective_harness(cx) {
+                let acp_agent_id = self.effective_acp_agent_id(cx);
                 let label = self
                     .models
-                    .get(&harness)
+                    .get(&(harness, acp_agent_id))
                     .and_then(|l| l.ready())
                     .and_then(|models| models.iter().find(|m| m.id == model_id))
                     .map(|m| m.label.clone())
@@ -1165,6 +1200,8 @@ impl Pickers {
             });
         } else {
             self.config.permission_mode = mode;
+            self.defaults.permission_mode = Some(mode);
+            self.save_defaults();
         }
         cx.notify();
     }
@@ -1223,7 +1260,11 @@ impl Pickers {
         // Reasoning must stay concrete for whatever model the row now names —
         // same ladder resolution as [`Self::trait_ladder`] (model levels, else
         // the harness's advertised ladder).
-        if let Some(models) = self.models.get(&config.harness).and_then(|l| l.ready()) {
+        if let Some(models) = self
+            .models
+            .get(&(config.harness, config.acp_agent_id.clone()))
+            .and_then(|l| l.ready())
+        {
             let mut ladder = config
                 .model
                 .as_deref()
@@ -1286,7 +1327,10 @@ impl Pickers {
     fn filtered_model_rows(&self, cx: &App) -> Vec<Model> {
         let Some(models) = self
             .effective_harness(cx)
-            .and_then(|h| self.models.get(&h))
+            .and_then(|h| {
+                let acp_agent_id = self.effective_acp_agent_id(cx);
+                self.models.get(&(h, acp_agent_id))
+            })
             .and_then(|l| l.ready())
         else {
             return Vec::new();
@@ -2135,7 +2179,8 @@ impl Pickers {
                             && (harness != HarnessId::Acp
                                 || self.config.acp_agent_id == acp_agent_id);
                         let is_disabled = locked && !is_viewed;
-                        let (icon_path, tint) = harness_brand_icon(harness);
+                        let (icon_path, tint) =
+                            harness_brand_icon(harness, acp_agent_id.as_deref());
                         let name: SharedString = descriptor.name.clone().into();
                         div()
                             .id(("harness-tab", ix))
@@ -2190,7 +2235,11 @@ impl Pickers {
         // The rows are collected FLAT — they become the scroll container's
         // direct children so `scroll_to_item(active)` maps 1:1 (the palette's
         // keyboard-follow standard).
-        let model_children: Vec<AnyElement> = match effective.map(|h| (h, self.models.get(&h))) {
+        let model_children: Vec<AnyElement> = match effective
+            .map(|h| {
+                let acp_agent_id = self.effective_acp_agent_id(cx);
+                (h, self.models.get(&(h, acp_agent_id)))
+            }) {
             Some((_, Some(Loadable::Ready(_)))) => {
                 // The check mirrors the chip: the resolved concrete pick (draft
                 // / chat config / remembered, else the harness default row).
@@ -2513,15 +2562,32 @@ fn trait_chip(theme: &Theme, active: bool) -> gpui::Div {
 /// Brand mark + optional tint for a harness (the Claude mark keeps its brand
 /// orange even on the monochrome surface; the mock harness scripts
 /// Claude-flavoured runs, so it wears the Claude mark).
-pub(crate) fn harness_brand_icon(harness: HarnessId) -> (&'static str, Option<gpui::Hsla>) {
+///
+/// When the harness is [`HarnessId::Acp`], `acp_agent_id` selects the brand
+/// mark of the specific ACP client (e.g. the Factory Droid mark for
+/// `factory-droid`). Unknown ACP agents fall back to the generic widget icon.
+pub(crate) fn harness_brand_icon(
+    harness: HarnessId,
+    acp_agent_id: Option<&str>,
+) -> (&'static str, Option<gpui::Hsla>) {
     match harness {
         HarnessId::ClaudeCode | HarnessId::Mock => (
             crate::icons::CLAUDE_MARK,
             Some(crate::icons::claude_brand()),
         ),
         HarnessId::Codex => (crate::icons::OPENAI_MARK, None),
-        HarnessId::Acp => (crate::icons::WIDGET, None),
+        HarnessId::Acp => acp_brand_icon(acp_agent_id),
         HarnessId::Cursor => (crate::icons::CURSOR_MARK, None),
+    }
+}
+
+/// Per-agent brand mark for a known ACP client, identified by its registry id.
+/// Unknown agents fall back to the generic widget icon so custom/unpublished
+/// agents still render a sensible glyph.
+fn acp_brand_icon(acp_agent_id: Option<&str>) -> (&'static str, Option<gpui::Hsla>) {
+    match acp_agent_id {
+        Some("factory-droid") => (crate::icons::DROID_MARK, None),
+        _ => (crate::icons::WIDGET, None),
     }
 }
 
@@ -2659,7 +2725,8 @@ impl Render for Pickers {
         // chip reads "Fable 5" (a concrete pick) before any popover opens.
         self.ensure_harnesses(cx);
         if let Some(harness) = self.effective_harness(cx) {
-            self.ensure_models(harness, cx);
+            let acp_agent_id = self.effective_acp_agent_id(cx);
+            self.ensure_models(harness, acp_agent_id, cx);
         }
         // A popover opened data-side (COMET_OPEN_PICKER) never went through
         // `toggle`, so kick its loads here (all ensure_* are idempotent).
@@ -2695,7 +2762,10 @@ impl Render for Pickers {
         };
         let harness_icon: (&'static str, Option<gpui::Hsla>) = self
             .effective_harness(cx)
-            .map(harness_brand_icon)
+            .map(|harness| {
+                let acp_agent_id = self.effective_acp_agent_id(cx);
+                harness_brand_icon(harness, acp_agent_id.as_deref())
+            })
             .unwrap_or((
                 crate::icons::CLAUDE_MARK,
                 Some(crate::icons::claude_brand()),
@@ -3047,5 +3117,20 @@ mod tests {
         // …and opted back in by COMET_HARNESS=mock (the e2e rig).
         assert_eq!(visible_harnesses_impl(&mixed, true).len(), 2);
         assert_eq!(visible_harnesses_impl(&mixed, true)[0].id, HarnessId::Mock);
+    }
+
+    #[test]
+    fn acp_brand_icon_uses_per_agent_logo() {
+        // Known ACP clients get their own brand mark.
+        let (path, _) = harness_brand_icon(HarnessId::Acp, Some("factory-droid"));
+        assert_eq!(path, crate::icons::DROID_MARK);
+        // Unknown / custom ACP agents fall back to the generic widget icon.
+        let (path, _) = harness_brand_icon(HarnessId::Acp, Some("custom:my-agent"));
+        assert_eq!(path, crate::icons::WIDGET);
+        let (path, _) = harness_brand_icon(HarnessId::Acp, None);
+        assert_eq!(path, crate::icons::WIDGET);
+        // Non-ACP harnesses ignore the agent id.
+        let (path, _) = harness_brand_icon(HarnessId::ClaudeCode, Some("factory-droid"));
+        assert_eq!(path, crate::icons::CLAUDE_MARK);
     }
 }

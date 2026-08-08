@@ -70,6 +70,10 @@ pub const CHIP_HEIGHT: f32 = 38.0;
 pub const CHIP_GAP: f32 = 0.0;
 pub const CHIP_CARD_HEIGHT: f32 = 30.0;
 const CHIPS_TOP_PAD: f32 = 2.0;
+/// Per-item height for an expanded Todo chip (checkbox glyph + one-line text).
+const TODO_ITEM_HEIGHT: f32 = 22.0;
+/// Vertical padding inside the todo-items area of a Todo chip.
+const TODO_ITEMS_PAD: f32 = 4.0;
 /// How long a user fold toggle keeps its height tween armed: the RESIZE
 /// spec's 200ms plus margin. Past this the fold renders statically — an armed
 /// tween replays on remount, i.e. on every scroll-back-into-view.
@@ -722,12 +726,34 @@ pub fn tool_group_summary(tools: &[ToolItem]) -> String {
 // cell grid).
 pub use comet_proto::view::{single_line, tool_chip_content};
 
+/// Height of a single chip row, including its guide rail padding. Most tool
+/// kinds are the flat [`CHIP_HEIGHT`]; a `Todo` chip expands to show its
+/// items inline, so its height depends on the item count.
+pub fn tool_chip_height(call: &ToolCall) -> f32 {
+    if let ToolCall::Todo { items } = call {
+        if items.is_empty() {
+            return CHIP_HEIGHT;
+        }
+        // Header card + items area below it.
+        CHIP_CARD_HEIGHT + TODO_ITEMS_PAD * 2.0 + items.len() as f32 * TODO_ITEM_HEIGHT
+    } else {
+        CHIP_HEIGHT
+    }
+}
+
 /// Analytic expanded-chips height — no measurement needed for the fold tween.
-pub fn chips_height(count: usize) -> f32 {
-    if count == 0 {
+/// Each tool contributes its own height (Todo chips may be taller than the
+/// flat [`CHIP_HEIGHT`] when they list items inline).
+pub fn chips_height(tools: &[ToolItem]) -> f32 {
+    if tools.is_empty() {
         return 0.0;
     }
-    CHIPS_TOP_PAD + count as f32 * CHIP_HEIGHT + (count as f32 - 1.0) * CHIP_GAP
+    CHIPS_TOP_PAD
+        + tools
+            .iter()
+            .map(|t| tool_chip_height(&t.call))
+            .sum::<f32>()
+        + (tools.len() as f32 - 1.0) * CHIP_GAP
 }
 
 // ---------------------------------------------------------------------------
@@ -979,6 +1005,11 @@ pub struct Transcript {
     attachment_loads: HashMap<(String, String), Task<()>>,
     /// Scheduled retry wake-ups for errored sources (the 2s→15s ladder).
     attachment_retries: HashMap<(String, String), Task<()>>,
+    /// Scrollbar drag anchor: the thumb-top pixel offset captured at
+    /// mouse-down, used to compute the delta for each drag-move.
+    scrollbar_drag_anchor: Option<f32>,
+    /// Scrollbar thumb / track hovered (rest-state auto-hide).
+    scrollbar_hover: bool,
     _observe: Subscription,
 }
 
@@ -1030,6 +1061,8 @@ impl Transcript {
             attachment_preview: None,
             attachment_loads: HashMap::new(),
             attachment_retries: HashMap::new(),
+            scrollbar_drag_anchor: None,
+            scrollbar_hover: false,
             _observe: observe,
         };
         this.sync(cx);
@@ -1389,11 +1422,16 @@ impl Transcript {
         rows
     }
 
-    fn toggle_fold(&mut self, row_id: SharedString, tool_count: usize, auto_open: bool) {
+    fn toggle_fold(
+        &mut self,
+        row_id: SharedString,
+        tools: &[ToolItem],
+        auto_open: bool,
+    ) {
         let entry = self.folds.entry(row_id).or_default();
         let currently_open = entry.open.unwrap_or(auto_open);
         entry.from = if currently_open {
-            chips_height(tool_count)
+            chips_height(tools)
         } else {
             0.0
         };
@@ -2007,11 +2045,11 @@ impl Transcript {
     ) -> AnyElement {
         let fold = self.folds.get(row_id).copied().unwrap_or_default();
         let open = fold.open.unwrap_or(auto_open);
-        let target = if open { chips_height(tools.len()) } else { 0.0 };
+        let target = if open { chips_height(tools) } else { 0.0 };
         let summary = tool_group_summary(tools);
 
         let toggle_id = row_id.clone();
-        let tool_count = tools.len();
+        let tools_for_toggle = tools.clone();
         // Header (comet tool-group.tsx): a small chevron tile centered over the
         // chips' guide rail, then the quiet 12px summary.
         let header = div()
@@ -2032,7 +2070,7 @@ impl Transcript {
             .text_color(theme.text_muted)
             .hover(|s| s.text_color(theme.text))
             .on_click(cx.listener(move |this, _, _, cx| {
-                this.toggle_fold(toggle_id.clone(), tool_count, auto_open);
+                this.toggle_fold(toggle_id.clone(), &tools_for_toggle, auto_open);
                 cx.notify();
             }))
             .child(
@@ -2282,66 +2320,6 @@ fn user_mention_text(
         .into_any_element()
 }
 
-/// The transcript ErrorChip — an exact port of comet chat-view.tsx
-/// `ErrorChip`: a 34px row (`rounded-[10px] border border-red-400/[0.16]
-/// bg-red-400/[0.05] px-2 text-[12px]`) with a 20px red-washed tile holding a
-/// 12px DangerTriangle (`bg-red-400/[0.12] text-red-300/80`), a medium
-/// "Error" label, then the human message truncating at `text-foreground/80` —
-/// a subtle red-tinted wash, never a bare red-stroke box.
-fn error_chip(message: SharedString, theme: &Theme) -> AnyElement {
-    let red_300 = theme.danger_muted; // tailwind red-300
-    let danger = theme.danger; // red-400
-    div()
-        .py(px(4.0))
-        .w_full()
-        .child(
-            div()
-                .h(px(34.0))
-                .w_full()
-                .flex()
-                .items_center()
-                .gap(px(8.0))
-                .overflow_hidden()
-                .rounded(px(10.0))
-                .border_1()
-                .border_color(danger.opacity(0.16))
-                .bg(danger.opacity(0.05))
-                .px(px(8.0))
-                .text_size(px(12.0))
-                .child(
-                    div()
-                        .flex_none()
-                        .size(px(20.0))
-                        .rounded(px(6.0))
-                        .bg(danger.opacity(0.12))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(
-                            crate::icons::icon(crate::icons::DANGER_TRIANGLE)
-                                .size(px(12.0))
-                                .text_color(red_300.opacity(0.8)),
-                        ),
-                )
-                .child(
-                    div()
-                        .flex_none()
-                        .font_weight(gpui::FontWeight::MEDIUM)
-                        .text_color(red_300.opacity(0.8))
-                        .child(SharedString::from("Error")),
-                )
-                .child(
-                    div()
-                        .min_w_0()
-                        .flex_1()
-                        .truncate()
-                        .text_color(theme.text.opacity(0.8))
-                        .child(message),
-                ),
-        )
-        .into_any_element()
-}
-
 /// A passive one-line chip marking a question the agent asked — the
 /// interactive controls live in the composer (chat-view.tsx `InputChip`):
 /// 34px row, `rounded-[10px] border-white/[0.08] bg-white/[0.045] px-2
@@ -2426,6 +2404,10 @@ fn tool_icon_path(call: &ToolCall) -> &'static str {
 /// One tool chip row: a guide rail on the left (continuous across stacked
 /// chips — the rail spans the row's full height) threading the chips to their
 /// group toggle, then the chip card (comet tool-chip.tsx).
+///
+/// `Todo` chips with items expand below the header to show each todo item
+/// inline (checkbox glyph + text), so the agent's task list is visible while
+/// it works — not collapsed to a one-line "N/M done" summary.
 fn tool_chip(tool: &ToolItem, theme: &Theme) -> AnyElement {
     let (label, detail) = tool_chip_content(&tool.call);
     let tint = if tool.is_error {
@@ -2433,14 +2415,98 @@ fn tool_chip(tool: &ToolItem, theme: &Theme) -> AnyElement {
     } else {
         theme.text_muted
     };
-    div()
-        .h(px(CHIP_HEIGHT))
-        .w_full()
+    let height = tool_chip_height(&tool.call);
+
+    // Card header row: icon tile + label + one-line detail. Identical to the
+    // flat chip's row; the Todo expansion adds item rows BELOW this inside the
+    // same card.
+    let header_row = div()
+        .h(px(CHIP_CARD_HEIGHT))
         .flex_none()
         .flex()
         .flex_row()
         .items_center()
-        // Guide rail: hairline centered under the header's chevron tile.
+        .gap(px(8.0))
+        .child(
+            div()
+                .size(px(18.0))
+                .flex_none()
+                .rounded(px(5.0))
+                .bg(crate::theme::ink(0.08))
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(
+                    crate::icons::icon(tool_icon_path(&tool.call))
+                        .size(px(12.0))
+                        .text_color(theme.text_muted),
+                ),
+        )
+        .child(
+            div()
+                .flex_none()
+                .font_weight(gpui::FontWeight::MEDIUM)
+                .text_color(tint)
+                .child(SharedString::from(label)),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .text_color(if tool.is_error {
+                    theme.danger
+                } else {
+                    theme.text.opacity(0.85)
+                })
+                .child(SharedString::from(detail)),
+        );
+
+    // Build the card body: header alone for most tools; header + items for
+    // Todo chips.
+    let card_body: AnyElement = match &tool.call {
+        ToolCall::Todo { items } if !items.is_empty() => div()
+            .flex_1()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .overflow_hidden()
+            .rounded(px(9.0))
+            .border_1()
+            .border_color(crate::theme::hairline(0.07))
+            .bg(crate::theme::ink(0.03))
+            .px(px(8.0))
+            .text_size(px(12.0))
+            .child(header_row)
+            .child(todo_items_list(items, theme))
+            .into_any_element(),
+        _ => div()
+            .h(px(CHIP_CARD_HEIGHT))
+            .min_w_0()
+            .flex_1()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(8.0))
+            .overflow_hidden()
+            .rounded(px(9.0))
+            .border_1()
+            .border_color(crate::theme::hairline(0.07))
+            .bg(crate::theme::ink(0.03))
+            .px(px(8.0))
+            .text_size(px(12.0))
+            .child(header_row)
+            .into_any_element(),
+    };
+
+    div()
+        .h(px(height))
+        .w_full()
+        .flex_none()
+        .flex()
+        .flex_row()
+        // Guide rail: hairline centered under the header's chevron tile,
+        // spanning the chip's full (possibly expanded) height.
         .child(
             div()
                 .ml(px(12.0))
@@ -2449,60 +2515,57 @@ fn tool_chip(tool: &ToolItem, theme: &Theme) -> AnyElement {
                 .flex_none()
                 .bg(crate::theme::ink(0.08)),
         )
-        .child(
+        .child(div().ml(px(12.0)).child(card_body))
+        .into_any_element()
+}
+
+/// Inline todo-item list rendered inside an expanded Todo chip. Each item is a
+/// checkbox glyph (filled for done, hollow for pending) + single-line text.
+fn todo_items_list(items: &[comet_proto::TodoItem], theme: &Theme) -> AnyElement {
+    div()
+        .flex()
+        .flex_col()
+        .pt(px(TODO_ITEMS_PAD))
+        .pb(px(TODO_ITEMS_PAD))
+        .children(items.iter().enumerate().map(|(i, item)| {
+            let done = item.done;
+            let text = single_line(&item.text);
+            let glyph = if done { "☑" } else { "☐" };
+            let color = if done {
+                theme.text_muted.opacity(0.6)
+            } else {
+                theme.text.opacity(0.85)
+            };
+            let glyph_color = if done {
+                theme.text_muted.opacity(0.7)
+            } else {
+                theme.text_muted
+            };
             div()
-                .ml(px(12.0))
-                .h(px(CHIP_CARD_HEIGHT))
-                .min_w_0()
-                .flex_1()
+                .id(SharedString::from(format!("todo-{i}")))
+                .h(px(TODO_ITEM_HEIGHT))
+                .flex_none()
                 .flex()
                 .flex_row()
                 .items_center()
-                .gap(px(8.0))
-                .overflow_hidden()
-                .rounded(px(9.0))
-                .border_1()
-                .border_color(crate::theme::hairline(0.07))
-                .bg(crate::theme::ink(0.03))
-                .px(px(8.0))
-                .text_size(px(12.0))
-                .child(
-                    // Icon tile (`size-[18px] rounded-[5px] bg-white/[0.08]`,
-                    // icon size-3).
-                    div()
-                        .size(px(18.0))
-                        .flex_none()
-                        .rounded(px(5.0))
-                        .bg(crate::theme::ink(0.08))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(
-                            crate::icons::icon(tool_icon_path(&tool.call))
-                                .size(px(12.0))
-                                .text_color(theme.text_muted),
-                        ),
-                )
+                .gap(px(6.0))
                 .child(
                     div()
                         .flex_none()
-                        .font_weight(gpui::FontWeight::MEDIUM)
-                        .text_color(tint)
-                        .child(SharedString::from(label)),
+                        .w(px(16.0))
+                        .text_size(px(13.0))
+                        .text_color(glyph_color)
+                        .child(SharedString::from(glyph)),
                 )
                 .child(
                     div()
                         .flex_1()
                         .min_w_0()
                         .truncate()
-                        .text_color(if tool.is_error {
-                            theme.danger
-                        } else {
-                            theme.text.opacity(0.85)
-                        })
-                        .child(SharedString::from(detail)),
-                ),
-        )
+                        .text_color(color)
+                        .child(SharedString::from(text)),
+                )
+        }))
         .into_any_element()
 }
 
@@ -2532,6 +2595,135 @@ fn entry_fingerprint(entry: &SessionMessageEntry, pending: bool) -> u64 {
     fnv1a(&acc)
 }
 
+impl Transcript {
+    // ---- scrollbar ----
+
+    /// Scrollbar layout constants.
+    const SCROLLBAR_WIDTH: f32 = 10.0;
+    const SCROLLBAR_THUMB_MIN: f32 = 30.0;
+    const SCROLLBAR_TRACK_INSET: f32 = 4.0;
+
+    /// Render the vertical scrollbar overlaid on the right edge of the
+    /// transcript. The thumb is invisible when the content fits the viewport
+    /// (no scrollable range) and auto-hides shortly after the pointer leaves
+    /// unless actively dragged.
+    fn render_scrollbar(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let max = f32::from(self.list.max_offset_for_scrollbar().y).max(0.0);
+        let viewport = f32::from(self.list.viewport_bounds().size.height);
+        // No scrollable range or pre-layout (viewport 0): render nothing.
+        let scrollable = max > 1.0 && viewport > 0.0;
+        if !scrollable {
+            return gpui::Empty.into_any_element();
+        }
+
+        // Thumb geometry: proportional to the visible fraction of the content,
+        // clamped to a minimum so it stays grabbable on very long transcripts.
+        let thumb_ratio = (viewport / (max + viewport)).clamp(0.05, 1.0);
+        let thumb_h = (thumb_ratio * viewport).max(Self::SCROLLBAR_THUMB_MIN);
+
+        // Thumb position from the scroll offset.
+        let distance = self.distance_from_bottom();
+        let scroll_from_top = (max - distance).max(0.0);
+        let track_h = viewport - Self::SCROLLBAR_TRACK_INSET * 2.0;
+        let thumb_travel = (track_h - thumb_h).max(0.0);
+        let thumb_top = if max > 0.0 {
+            (scroll_from_top / max) * thumb_travel + Self::SCROLLBAR_TRACK_INSET
+        } else {
+            Self::SCROLLBAR_TRACK_INSET
+        };
+
+        let dragging = self.scrollbar_drag_anchor.is_some();
+        let active = self.scrollbar_hover || dragging;
+        let thumb_color = if active {
+            crate::theme::ink(0.38)
+        } else {
+            crate::theme::ink(0.22)
+        };
+
+        // Capture the current thumb-top for the mouse-down anchor: the
+        // closure fires once at click time, and at that moment the rendered
+        // thumb_top IS the thumb's position on screen.
+        let thumb_top_for_down = thumb_top;
+
+        div()
+            .id("transcript-scrollbar-track")
+            .absolute()
+            .top_0()
+            .right_0()
+            .bottom_0()
+            .w(px(Self::SCROLLBAR_WIDTH))
+            .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                if this.scrollbar_hover != *hovered {
+                    this.scrollbar_hover = *hovered;
+                    cx.notify();
+                }
+            }))
+            .child(
+                div()
+                    .id("transcript-scrollbar-thumb")
+                    .absolute()
+                    .top(px(thumb_top))
+                    .left(px(Self::SCROLLBAR_TRACK_INSET))
+                    .w(px(Self::SCROLLBAR_WIDTH - Self::SCROLLBAR_TRACK_INSET * 2.0))
+                    .h(px(thumb_h))
+                    .rounded_full()
+                    .bg(thumb_color)
+                    .cursor_pointer()
+                    .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                        if this.scrollbar_hover != *hovered {
+                            this.scrollbar_hover = *hovered;
+                            cx.notify();
+                        }
+                    }))
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
+                            let mouse_y = f32::from(event.position.y);
+                            // Anchor = offset of the click within the thumb
+                            // (from its top), so the thumb doesn't jump.
+                            this.scrollbar_drag_anchor = Some(mouse_y - thumb_top_for_down);
+                            // Dragging always breaks the stick pin.
+                            this.pinned = false;
+                            this.spring.reset();
+                            this.spring_last_tick = None;
+                            cx.notify();
+                        }),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    /// Process a scrollbar drag-move: convert the mouse Y to a target scroll
+    /// offset and scroll the list accordingly.
+    fn scrollbar_drag_move(&mut self, mouse_y: f32, cx: &mut Context<Self>) {
+        let Some(anchor) = self.scrollbar_drag_anchor else {
+            return;
+        };
+        let max = f32::from(self.list.max_offset_for_scrollbar().y).max(0.0);
+        let viewport = f32::from(self.list.viewport_bounds().size.height);
+        if max < 1.0 || viewport < 1.0 {
+            return;
+        }
+        let thumb_ratio = (viewport / (max + viewport)).clamp(0.05, 1.0);
+        let thumb_h = (thumb_ratio * viewport).max(Self::SCROLLBAR_THUMB_MIN);
+        let track_h = viewport - Self::SCROLLBAR_TRACK_INSET * 2.0;
+        let thumb_travel = (track_h - thumb_h).max(0.0);
+        let new_top = (mouse_y - anchor)
+            .clamp(Self::SCROLLBAR_TRACK_INSET, Self::SCROLLBAR_TRACK_INSET + thumb_travel);
+        let new_scroll_top = if thumb_travel > 0.0 {
+            ((new_top - Self::SCROLLBAR_TRACK_INSET) / thumb_travel) * max
+        } else {
+            0.0
+        };
+        let current_scroll_top = (max - self.distance_from_bottom()).max(0.0);
+        let delta = new_scroll_top - current_scroll_top;
+        if delta.abs() > 0.5 {
+            self.list.scroll_by(px(-delta));
+            cx.notify();
+        }
+    }
+}
+
 impl Render for Transcript {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Release gpui-side decoded copies of any images the attachment LRU
@@ -2556,6 +2748,43 @@ impl Render for Transcript {
                     .ok();
             });
         }
+        // Re-register window-level mouse-move/up listeners each frame while
+        // a scrollbar drag is in progress. Must be called from a paint
+        // callback (canvas), NOT from render() or an event handler — gpui
+        // asserts that on_mouse_event runs during paint.
+        let drag_listeners = if self.scrollbar_drag_anchor.is_some() {
+            let weak = cx.weak_entity();
+            let weak_move = weak.clone();
+            let weak_up = weak.clone();
+            Some(canvas(
+                move |_, _, _| (),
+                move |_, _, window, _| {
+                    window.on_mouse_event(move |e: &gpui::MouseMoveEvent, phase, _window, cx| {
+                        if phase != gpui::DispatchPhase::Bubble || !e.dragging() {
+                            return;
+                        }
+                        weak_move.update(cx, |this, cx| {
+                            this.scrollbar_drag_move(f32::from(e.position.y), cx);
+                        })
+                        .ok();
+                    });
+                    window.on_mouse_event(move |_: &gpui::MouseUpEvent, phase, _window, cx| {
+                        if phase != gpui::DispatchPhase::Bubble {
+                            return;
+                        }
+                        weak_up.update(cx, |this, cx| {
+                            if this.scrollbar_drag_anchor.is_some() {
+                                this.scrollbar_drag_anchor = None;
+                                cx.notify();
+                            }
+                        })
+                        .ok();
+                    });
+                },
+            ))
+        } else {
+            None
+        };
         let rail = self.render_rail(cx);
         // The scroll-to-bottom pill is rendered by the SHELL (conversation
         // region overlay): it must float just above the composer and paint
@@ -2574,7 +2803,9 @@ impl Render for Transcript {
                     .size_full()
                     .with_sizing_behavior(gpui::ListSizingBehavior::Auto),
             )
-            .child(rail);
+            .child(rail)
+            .child(self.render_scrollbar(cx))
+            .when_some(drag_listeners, |el, c| el.child(c));
         // Full-size viewer for a clicked user-bubble thumbnail
         // (AttachmentPreviewDialog: bare lightbox, click closes).
         if let Some(preview) = self.attachment_preview.clone() {
@@ -3221,8 +3452,14 @@ mod tests {
         assert_eq!(label, "Run");
         assert_eq!(detail, "set -e fixture_in_original=0 grep -c \"x\"");
         assert!(!detail.contains('\n'));
-        // The chip row height is a constant, independent of content shape.
-        assert_eq!(chips_height(1), CHIPS_TOP_PAD + CHIP_HEIGHT);
+        // The chip row height is a constant, independent of content shape
+        // (for non-Todo tools).
+        let one = vec![ToolItem {
+            call: ToolCall::Exec { command: "x".into() },
+            is_error: false,
+            resolved: false,
+        }];
+        assert_eq!(chips_height(&one), CHIPS_TOP_PAD + CHIP_HEIGHT);
         // Every detail kind is sanitized (MCP inputs / queries are model text).
         let (_, q) = tool_chip_content(&ToolCall::WebSearch {
             query: "line one\nline two".into(),
@@ -3296,12 +3533,72 @@ mod tests {
 
     #[test]
     fn chips_height_is_analytic() {
-        assert_eq!(chips_height(0), 0.0);
-        assert_eq!(chips_height(1), CHIPS_TOP_PAD + CHIP_HEIGHT);
+        let exec = || ToolItem {
+            call: ToolCall::Exec { command: "x".into() },
+            is_error: false,
+            resolved: false,
+        };
+        assert_eq!(chips_height(&[]), 0.0);
+        assert_eq!(chips_height(&[exec()]), CHIPS_TOP_PAD + CHIP_HEIGHT);
         assert_eq!(
-            chips_height(3),
+            chips_height(&[exec(), exec(), exec()]),
             CHIPS_TOP_PAD + 3.0 * CHIP_HEIGHT + 2.0 * CHIP_GAP
         );
+    }
+
+    #[test]
+    fn todo_chip_height_grows_with_items() {
+        // Empty todo list: flat chip height (just the header summary).
+        let empty = ToolCall::Todo { items: vec![] };
+        assert_eq!(tool_chip_height(&empty), CHIP_HEIGHT);
+
+        // Each item adds TODO_ITEM_HEIGHT; the card is CHIP_CARD_HEIGHT for
+        // the header + padding top/bottom.
+        let two = ToolCall::Todo {
+            items: vec![
+                comet_proto::TodoItem {
+                    text: "a".into(),
+                    done: true,
+                },
+                comet_proto::TodoItem {
+                    text: "b".into(),
+                    done: false,
+                },
+            ],
+        };
+        let expected =
+            CHIP_CARD_HEIGHT + TODO_ITEMS_PAD * 2.0 + 2.0 * TODO_ITEM_HEIGHT;
+        assert_eq!(tool_chip_height(&two), expected);
+        assert!(expected > CHIP_HEIGHT, "todo chip must be taller than flat");
+    }
+
+    #[test]
+    fn chips_height_accounts_for_todo_expansion() {
+        let todo = ToolItem {
+            call: ToolCall::Todo {
+                items: vec![
+                    comet_proto::TodoItem {
+                        text: "a".into(),
+                        done: false,
+                    },
+                    comet_proto::TodoItem {
+                        text: "b".into(),
+                        done: false,
+                    },
+                ],
+            },
+            is_error: false,
+            resolved: false,
+        };
+        let exec = ToolItem {
+            call: ToolCall::Exec { command: "ls".into() },
+            is_error: false,
+            resolved: false,
+        };
+        // Mixed group: todo expansion height + flat exec height + gap.
+        let h = chips_height(&[todo.clone(), exec.clone()]);
+        let expected = CHIPS_TOP_PAD + tool_chip_height(&todo.call) + CHIP_GAP + CHIP_HEIGHT;
+        assert_eq!(h, expected);
     }
 
     #[test]

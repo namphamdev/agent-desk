@@ -6,7 +6,7 @@ license.workspace = true
 publish.workspace = true
 
 [[bin]]
-name = "comet"
+name = "agent-deski"
 path = "src/main.rs"
 
 [dependencies]

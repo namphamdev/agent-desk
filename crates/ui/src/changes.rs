@@ -672,6 +672,18 @@ impl Changes {
         self.git_context_key = Some(request_key.clone());
         self.git_loading = true;
         let params = Self::with_git_target(&cwd, &target, serde_json::json!({}));
+        // Kick an immediate re-snapshot of the checkout diffs alongside the
+        // status poll — the fs watcher may lag, so a manual refresh forces the
+        // file-changes list and rendered diffs to reflect the current tree.
+        let diff_engine = engine.clone();
+        let diff_params = Self::with_git_target(&cwd, &target, serde_json::json!({}));
+        cx.spawn(async move |_, _| {
+            let _ = diff_engine
+                .client()
+                .call(methods::REFRESH_DIFFS, diff_params)
+                .await;
+        })
+        .detach();
         self.git_task =
             Some(cx.spawn(async move |this, cx| {
                 let result = engine
@@ -1976,140 +1988,157 @@ impl Changes {
                 )
         };
 
-        let picker = match self.generation_picker {
-            Some(GitGenerationPicker::Harness) => {
-                let rows = self
-                    .harnesses
-                    .iter()
-                    .enumerate()
-                    .map(|(ix, descriptor)| {
-                        let harness = descriptor.id;
-                        let selected = self.selected_harness == Some(harness);
-                        div()
-                            .id(SharedString::from(format!("git-harness-{ix}")))
-                            .h(px(30.0))
-                            .px(px(Theme::SPACE_MD))
-                            .flex()
-                            .items_center()
-                            .text_size(px(11.0))
-                            .text_color(if selected {
-                                theme.text
-                            } else {
-                                theme.text_muted
-                            })
-                            .bg(if selected {
-                                crate::theme::white_alpha(0.05)
-                            } else {
-                                gpui::transparent_black()
-                            })
-                            .cursor_pointer()
-                            .hover(|style| style.bg(crate::theme::white_alpha(0.07)))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.select_harness(harness, cx);
-                            }))
-                            .child(SharedString::from(descriptor.name.clone()))
-                            .into_any_element()
-                    })
-                    .collect::<Vec<_>>();
-                Some(
+        let harness_picker = if self.generation_picker == Some(GitGenerationPicker::Harness) {
+            let rows = self
+                .harnesses
+                .iter()
+                .enumerate()
+                .map(|(ix, descriptor)| {
+                    let harness = descriptor.id;
+                    let selected = self.selected_harness == Some(harness);
                     div()
-                        .id("git-harness-options")
+                        .id(SharedString::from(format!("git-harness-{ix}")))
+                        .h(px(30.0))
+                        .px(px(Theme::SPACE_MD))
+                        .flex()
+                        .items_center()
+                        .text_size(px(11.0))
+                        .text_color(if selected {
+                            theme.text
+                        } else {
+                            theme.text_muted
+                        })
+                        .bg(if selected {
+                            crate::theme::white_alpha(0.05)
+                        } else {
+                            gpui::transparent_black()
+                        })
+                        .cursor_pointer()
+                        .hover(|style| style.bg(crate::theme::white_alpha(0.07)))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.select_harness(harness, cx);
+                        }))
+                        .child(SharedString::from(descriptor.name.clone()))
+                        .into_any_element()
+                })
+                .collect::<Vec<_>>();
+            let menu = popover::popover_card(theme)
+                .w(px(200.0))
+                .mt(px(16.0))
+                .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                    this.generation_picker = None;
+                    cx.notify();
+                }))
+                .child(
+                    div()
+                        .id("git-harness-list")
                         .flex()
                         .flex_col()
                         .max_h(px(240.0))
                         .overflow_y_scroll()
                         .track_scroll(&self.generation_scroll)
-                        .border_t_1()
-                        .border_color(theme.border)
-                        .children(rows)
-                        .into_any_element(),
-                )
-            }
-            Some(GitGenerationPicker::Model) => {
-                let query = self.model_search.read(cx).text().to_string();
-                let labels = self
-                    .models
-                    .iter()
-                    .map(|model| {
-                        format!(
-                            "{} {} {}",
-                            model.label,
-                            model.id,
-                            model.description.as_deref().unwrap_or_default()
-                        )
-                    })
-                    .collect::<Vec<_>>();
-                let filtered_indices = popover::filter_indices(&query, &labels);
-                let rows = filtered_indices
-                    .iter()
-                    .map(|&ix| {
-                        let model = &self.models[ix];
-                        let model_id = model.id.clone();
-                        let model_label = model.label.clone();
-                        let selected = self.selected_model.as_deref() == Some(model.id.as_str());
-                        div()
-                            .id(SharedString::from(format!("git-model-{ix}")))
-                            .h(px(30.0))
-                            .px(px(Theme::SPACE_MD))
-                            .flex()
-                            .items_center()
-                            .text_size(px(11.0))
-                            .text_color(if selected {
-                                theme.text
-                            } else {
-                                theme.text_muted
-                            })
-                            .bg(if selected {
-                                crate::theme::white_alpha(0.05)
-                            } else {
-                                gpui::transparent_black()
-                            })
-                            .cursor_pointer()
-                            .hover(|style| style.bg(crate::theme::white_alpha(0.07)))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.selected_model = Some(model_id.clone());
-                                if let Some(harness) = this.selected_harness {
-                                    this.generation_defaults.remember_model(
-                                        harness,
-                                        model_id.clone(),
-                                        model_label.clone(),
-                                    );
-                                    this.save_generation_defaults();
-                                }
-                                this.generation_picker = None;
-                                this.model_search.update(cx, |input, cx| {
-                                    input.set_text("", cx);
-                                });
-                                cx.notify();
-                            }))
-                            .child(SharedString::from(self.models[ix].label.clone()))
-                            .into_any_element()
-                    })
-                    .collect::<Vec<_>>();
-                let search = popover::search_input_frame(
-                    theme,
-                    self.model_search.clone().into_any_element(),
+                        .children(rows),
                 );
-                Some(
+            Some(popover::anchored_menu(
+                "git-harness-popover",
+                menu.into_any_element(),
+            ))
+        } else {
+            None
+        };
+
+        let model_picker = if self.generation_picker == Some(GitGenerationPicker::Model) {
+            let query = self.model_search.read(cx).text().to_string();
+            let labels = self
+                .models
+                .iter()
+                .map(|model| {
+                    format!(
+                        "{} {} {}",
+                        model.label,
+                        model.id,
+                        model.description.as_deref().unwrap_or_default()
+                    )
+                })
+                .collect::<Vec<_>>();
+            let filtered_indices = popover::filter_indices(&query, &labels);
+            let rows = filtered_indices
+                .iter()
+                .map(|&ix| {
+                    let model = &self.models[ix];
+                    let model_id = model.id.clone();
+                    let model_label = model.label.clone();
+                    let selected = self.selected_model.as_deref() == Some(model.id.as_str());
                     div()
-                        .id("git-model-options")
+                        .id(SharedString::from(format!("git-model-{ix}")))
+                        .h(px(30.0))
+                        .px(px(Theme::SPACE_MD))
+                        .flex()
+                        .items_center()
+                        .text_size(px(11.0))
+                        .text_color(if selected {
+                            theme.text
+                        } else {
+                            theme.text_muted
+                        })
+                        .bg(if selected {
+                            crate::theme::white_alpha(0.05)
+                        } else {
+                            gpui::transparent_black()
+                        })
+                        .cursor_pointer()
+                        .hover(|style| style.bg(crate::theme::white_alpha(0.07)))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.selected_model = Some(model_id.clone());
+                            if let Some(harness) = this.selected_harness {
+                                this.generation_defaults.remember_model(
+                                    harness,
+                                    model_id.clone(),
+                                    model_label.clone(),
+                                );
+                                this.save_generation_defaults();
+                            }
+                            this.generation_picker = None;
+                            this.model_search.update(cx, |input, cx| {
+                                input.set_text("", cx);
+                            });
+                            cx.notify();
+                        }))
+                        .child(SharedString::from(self.models[ix].label.clone()))
+                        .into_any_element()
+                })
+                .collect::<Vec<_>>();
+            let search = popover::search_input_frame(
+                theme,
+                self.model_search.clone().into_any_element(),
+            );
+            let menu = popover::popover_card(theme)
+                .w(px(200.0))
+                .mt(px(16.0))
+                .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                    this.generation_picker = None;
+                    this.model_search.update(cx, |input, cx| {
+                        input.set_text("", cx);
+                    });
+                    cx.notify();
+                }))
+                .child(search)
+                .child(
+                    div()
+                        .id("git-model-list")
                         .flex()
                         .flex_col()
-                        .child(search)
-                        .child(
-                            div()
-                                .id("git-model-list")
-                                .flex()
-                                .flex_col()
-                                .max_h(px(200.0))
-                                .overflow_y_scroll()
-                                .track_scroll(&self.generation_scroll)
-                                .children(rows),
-                        )
-                        .into_any_element(),
-                )
-            }
-            None => None,
+                        .max_h(px(200.0))
+                        .overflow_y_scroll()
+                        .track_scroll(&self.generation_scroll)
+                        .children(rows),
+                );
+            Some(popover::anchored_menu(
+                "git-model-popover",
+                menu.into_any_element(),
+            ))
+        } else {
+            None
         };
         let can_generate = !disabled
             && self.selected_harness.is_some()
@@ -2133,41 +2162,46 @@ impl Changes {
                     .items_center()
                     .gap(px(6.0))
                     .child(
-                        selector("git-harness-select", harness_label).when(!disabled, |el| {
-                            el.on_click(cx.listener(|this, _, _, cx| {
-                                this.generation_picker = if this.generation_picker
-                                    == Some(GitGenerationPicker::Harness)
-                                {
-                                    None
-                                } else {
-                                    Some(GitGenerationPicker::Harness)
-                                };
-                                if this.harnesses.is_empty() {
-                                    this.load_generation_options(cx);
-                                }
-                                cx.notify();
-                            }))
-                        }),
+                        selector("git-harness-select", harness_label)
+                            .when(!disabled, |el| {
+                                el.on_click(cx.listener(|this, _, _, cx| {
+                                    this.generation_picker = if this.generation_picker
+                                        == Some(GitGenerationPicker::Harness)
+                                    {
+                                        None
+                                    } else {
+                                        Some(GitGenerationPicker::Harness)
+                                    };
+                                    if this.harnesses.is_empty() {
+                                        this.load_generation_options(cx);
+                                    }
+                                    cx.notify();
+                                }))
+                            })
+                            .when_some(harness_picker, |el, menu| el.child(menu)),
                     )
                     .child(
-                        selector("git-model-select", model_label).when(!disabled, |el| {
-                            el.on_click(cx.listener(|this, _, _, cx| {
-                                let closing = this.generation_picker
-                                    == Some(GitGenerationPicker::Model);
-                                this.generation_picker =
-                                    if this.generation_picker == Some(GitGenerationPicker::Model) {
+                        selector("git-model-select", model_label)
+                            .when(!disabled, |el| {
+                                el.on_click(cx.listener(|this, _, _, cx| {
+                                    let closing = this.generation_picker
+                                        == Some(GitGenerationPicker::Model);
+                                    this.generation_picker = if this.generation_picker
+                                        == Some(GitGenerationPicker::Model)
+                                    {
                                         None
                                     } else {
                                         Some(GitGenerationPicker::Model)
                                     };
-                                if closing {
-                                    this.model_search.update(cx, |input, cx| {
-                                        input.set_text("", cx);
-                                    });
-                                }
-                                cx.notify();
-                            }))
-                        }),
+                                    if closing {
+                                        this.model_search.update(cx, |input, cx| {
+                                            input.set_text("", cx);
+                                        });
+                                    }
+                                    cx.notify();
+                                }))
+                            })
+                            .when_some(model_picker, |el, menu| el.child(menu)),
                     )
                     .child(
                         div()
@@ -2200,7 +2234,6 @@ impl Changes {
                             })),
                     ),
             )
-            .children(picker)
             .into_any_element()
     }
 

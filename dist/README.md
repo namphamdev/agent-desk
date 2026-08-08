@@ -12,7 +12,7 @@ Produces `target/package/comet-<version>-linux-<arch>.tar.gz` containing:
 - `comet` — the binary (headed by default; `comet headless` runs the engine alone)
 - `comet.desktop` — XDG desktop entry
 - `comet.png` — 1024×1024 app icon (the comet mark from the original app;
-  vector source `comet.svg`)
+  vector source `agent-deski.png`)
 - `install.sh` — installs into `~/.local/{bin,share/applications,share/icons}`
 
 The release profile in the root `Cargo.toml` sets `lto = "thin"` and
@@ -45,10 +45,10 @@ cross-build from Linux):
    sed "s/__VERSION__/$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')/" \
      dist/macos/Info.plist > Comet.app/Contents/Info.plist
    ```
-3. Icon: generate `comet.icns` from `dist/comet.png` (`iconutil`) and place it at
+3. Icon: generate `comet.icns` from `dist/agent-deski.png` (`iconutil`) and place it at
    `Comet.app/Contents/Resources/comet.icns`:
    ```sh
-   mkdir comet.iconset && sips -z 256 256 dist/comet.png --out comet.iconset/icon_256x256.png
+   mkdir comet.iconset && sips -z 256 256 dist/agent-deski.png --out comet.iconset/icon_256x256.png
    iconutil -c icns comet.iconset -o Comet.app/Contents/Resources/comet.icns
    ```
 4. Sign + notarize (required for distribution):

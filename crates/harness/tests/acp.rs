@@ -67,7 +67,7 @@ async fn samples_live_process_tree_memory() {
 #[tokio::test]
 async fn lists_models_exposed_by_the_acp_agent() {
     let harness = AcpHarness::with_command(fixture_path().display().to_string());
-    let models = harness.models().await.unwrap();
+    let models = harness.models(None).await.unwrap();
 
     assert_eq!(
         models
@@ -99,8 +99,8 @@ async fn caches_models_discovered_from_the_acp_agent() {
         .to_string(),
     );
 
-    let first = harness.models().await.unwrap();
-    let second = harness.models().await.unwrap();
+    let first = harness.models(None).await.unwrap();
+    let second = harness.models(None).await.unwrap();
 
     assert_eq!(first, second);
     assert_eq!(
@@ -112,7 +112,7 @@ async fn caches_models_discovered_from_the_acp_agent() {
 #[tokio::test]
 async fn preserves_models_when_the_agent_exits_after_discovery() {
     let harness = AcpHarness::with_command(exiting_fixture_command());
-    let models = harness.models().await.unwrap();
+    let models = harness.models(None).await.unwrap();
 
     assert_eq!(
         models
@@ -127,7 +127,7 @@ async fn preserves_models_when_the_agent_exits_after_discovery() {
 async fn does_not_attach_mcp_servers_during_model_discovery() {
     let harness = AcpHarness::with_command(mcp_rejecting_fixture_command())
         .with_mcp_server("http://127.0.0.1:6699/mcp");
-    let models = harness.models().await.unwrap();
+    let models = harness.models(None).await.unwrap();
 
     assert_eq!(
         models
@@ -341,4 +341,120 @@ async fn emits_a_turn_boundary_for_a_steer_after_completion() {
         .position(|event| matches!(event, AgentEvent::TextDelta { .. }))
         .expect("steered prompt should produce text");
     assert!(boundary < reply, "events: {events:#?}");
+}
+
+/// A run with `resume: Some(id)` sends `session/load` first; the fixture
+/// recognizes the id from its own prior `session/new` and returns the same
+/// config options — proving the resume path uses the stored session id.
+#[tokio::test]
+async fn resumes_an_acp_session_via_session_load() {
+    let harness = AcpHarness::with_command(fixture_path().display().to_string());
+    let (steer_tx, steer_rx) = mpsc::channel(1);
+    let controls = RunControls {
+        request_input: Box::new(|_| {
+            let (_tx, rx) = oneshot::channel();
+            rx
+        }),
+        steering: steer_rx,
+        interrupt: CancellationToken::new(),
+        report_memory: Box::new(|_| {}),
+    };
+    let request = RunRequest {
+        prompt: "Say hello".into(),
+        model: None,
+        reasoning: None,
+        model_options: serde_json::Map::new(),
+        cwd: "/tmp".into(),
+        sandbox: SandboxLevel::WorkspaceWrite,
+        auto_approve: true,
+        resume: Some("acp-session-1".into()),
+        attachments: vec![],
+        seed: None,
+        seed_role: None,
+        seed_purpose: None,
+        harness: None,
+        acp_agent_id: None,
+    };
+
+    let stream = harness.run(request, controls).await.unwrap();
+    drop(steer_tx);
+    let events = tokio::time::timeout(
+        Duration::from_secs(10),
+        stream.map(Result::unwrap).collect::<Vec<_>>(),
+    )
+    .await
+    .expect("ACP fixture should finish resumed session");
+
+    // The fixture returned the SAME session id from the load path — the
+    // harness must emit it in SessionStarted and Done unchanged.
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            AgentEvent::SessionStarted { session_id, .. } if session_id == "acp-session-1"
+        )),
+        "resumed session should preserve the loaded session id: {events:#?}"
+    );
+    assert!(events.contains(&AgentEvent::Done {
+        status: DoneStatus::Completed,
+        result: None,
+        error: None,
+        session_id: Some("acp-session-1".into()),
+    }));
+}
+
+/// When `session/load` fails (unknown id), the harness falls back to
+/// `session/new` — the user gets a fresh session with a new id.
+#[tokio::test]
+async fn falls_back_to_new_session_when_load_fails() {
+    let command = serde_json::json!({
+        "command": fixture_path(),
+        "env": { "FAKE_ACP_LOAD_FAIL": "1" },
+    })
+    .to_string();
+    let harness = AcpHarness::with_command(command);
+    let (steer_tx, steer_rx) = mpsc::channel(1);
+    let controls = RunControls {
+        request_input: Box::new(|_| {
+            let (_tx, rx) = oneshot::channel();
+            rx
+        }),
+        steering: steer_rx,
+        interrupt: CancellationToken::new(),
+        report_memory: Box::new(|_| {}),
+    };
+    let request = RunRequest {
+        prompt: "Say hello".into(),
+        model: None,
+        reasoning: None,
+        model_options: serde_json::Map::new(),
+        cwd: "/tmp".into(),
+        sandbox: SandboxLevel::WorkspaceWrite,
+        auto_approve: true,
+        resume: Some("nonexistent-session".into()),
+        attachments: vec![],
+        seed: None,
+        seed_role: None,
+        seed_purpose: None,
+        harness: None,
+        acp_agent_id: None,
+    };
+
+    let stream = harness.run(request, controls).await.unwrap();
+    drop(steer_tx);
+    let events = tokio::time::timeout(
+        Duration::from_secs(10),
+        stream.map(Result::unwrap).collect::<Vec<_>>(),
+    )
+    .await
+    .expect("ACP fixture should finish fallback session");
+
+    // The load failed, so the harness created a NEW session — the fixture
+    // always mints "acp-session-1" for new sessions.
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            AgentEvent::SessionStarted { session_id, .. } if session_id == "acp-session-1"
+        )),
+        "fallback should start a fresh session: {events:#?}"
+    );
 }

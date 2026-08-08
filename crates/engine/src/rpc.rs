@@ -84,6 +84,8 @@ struct ChatParams {
 #[serde(rename_all = "camelCase")]
 struct ListModelsParams {
     harness: HarnessId,
+    #[serde(default)]
+    acp_agent_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -255,6 +257,13 @@ struct CompleteAgentLoginParams {
 #[serde(rename_all = "camelCase")]
 struct AcpAgentParams {
     agent_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AddCustomAcpAgentParams {
+    name: String,
+    command: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -877,6 +886,7 @@ fn forwardable(method: &str) -> bool {
             | methods::GIT_GENERATE_COMMIT_MESSAGE
             // Checkout diffs are produced on the device holding the checkout.
             | methods::WATCH_CHECKOUT_DIFFS
+            | methods::REFRESH_DIFFS
             // Terminals live on the chat's host device.
             | methods::OPEN_TERMINAL
             | methods::SUBSCRIBE_TERMINAL
@@ -1142,7 +1152,7 @@ impl RpcService for EngineRpc {
                     .resolve(p.harness)
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
                 let models = harness
-                    .models()
+                    .models(p.acp_agent_id.as_deref())
                     .await
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
                 RpcReply::value(&models)
@@ -1209,6 +1219,10 @@ impl RpcService for EngineRpc {
             }
             methods::WATCH_CHECKOUT_DIFFS => {
                 Ok(RpcReply::Stream(watch_stream(self.diff_sync.watch_diffs())))
+            }
+            methods::REFRESH_DIFFS => {
+                self.diff_sync.sync_all();
+                RpcReply::value(&serde_json::json!({ "ok": true }))
             }
             methods::LIST_REPOS => RpcReply::value(&self.repos.list().await),
             methods::ADD_REPO => {
@@ -1563,6 +1577,15 @@ impl RpcService for EngineRpc {
                 let snapshot = self
                     .acp_agents
                     .remove(&p.agent_id)
+                    .await
+                    .map_err(|error| RpcError::Failed(error.to_string()))?;
+                RpcReply::value(&snapshot)
+            }
+            methods::ADD_CUSTOM_ACP_AGENT => {
+                let p: AddCustomAcpAgentParams = parse_params(params)?;
+                let snapshot = self
+                    .acp_agents
+                    .add_custom(&p.name, &p.command)
                     .await
                     .map_err(|error| RpcError::Failed(error.to_string()))?;
                 RpcReply::value(&snapshot)

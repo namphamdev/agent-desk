@@ -6,6 +6,16 @@ import sys
 selected_model = "acp-fast"
 selected_thought_level = "medium"
 
+# Session ids that "exist" and can be loaded via session/load.
+# The fixture always mints "acp-session-1" for new sessions, so it is
+# pre-seeded here so a standalone session/load test (no prior session/new
+# in the same process) can succeed.
+known_sessions = {"acp-session-1"}
+
+# When FAKE_ACP_LOAD_FAIL is set, session/load always fails — the harness
+# must fall back to session/new.
+load_fail = bool(os.environ.get("FAKE_ACP_LOAD_FAIL"))
+
 
 def send(message):
     print(json.dumps(message), flush=True)
@@ -82,8 +92,61 @@ for line in sys.stdin:
                 ],
             },
         })
+        known_sessions.add("acp-session-1")
         if os.environ.get("FAKE_ACP_EXIT_AFTER_SESSION_NEW"):
             sys.exit(1)
+    elif method == "session/load":
+        load_session_id = message.get("params", {}).get("sessionId", "")
+        if load_fail or load_session_id not in known_sessions:
+            send({
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "error": {
+                    "code": -32602,
+                    "message": f"Session not found: {load_session_id}",
+                },
+            })
+        else:
+            send({
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "result": {
+                    "configOptions": [
+                        {
+                            "id": "model",
+                            "name": "Model",
+                            "category": "model",
+                            "type": "select",
+                            "currentValue": selected_model,
+                            "options": [
+                                {
+                                    "value": "acp-fast",
+                                    "name": "ACP Fast",
+                                    "description": "Fast model",
+                                },
+                                {
+                                    "value": "acp-smart",
+                                    "name": "ACP Smart",
+                                    "description": "Smart model",
+                                },
+                            ],
+                        },
+                        {
+                            "id": "thought-level",
+                            "name": "Reasoning",
+                            "category": "thought_level",
+                            "type": "select",
+                            "currentValue": selected_thought_level,
+                            "options": [
+                                {"value": "low", "name": "Low"},
+                                {"value": "medium", "name": "Medium"},
+                                {"value": "high", "name": "High"},
+                                {"value": "x-high", "name": "Extra High"},
+                            ],
+                        },
+                    ],
+                },
+            })
     elif method == "session/set_config_option":
         if message["params"]["configId"] == "model":
             selected_model = message["params"]["value"]

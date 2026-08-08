@@ -54,7 +54,7 @@ Write-Host "▸ starting engine daemon on :$IPC"
         $env:COMET_MOCK_DELAY_MS = $null
     }
 
-    $daemonProcess = Start-Process -FilePath "$ROOT\target\debug\comet.exe" -ArgumentList "headless" -PassThru -NoNewWindow
+    $daemonProcess = Start-Process -FilePath "$ROOT\target\debug\agent-deski.exe" -ArgumentList "headless" -PassThru -NoNewWindow
 
     # Restore env values
     $env:COMET_DATA_DIR = $oldDataDir
@@ -204,7 +204,7 @@ try {
     $env:COMET_EDGE_TOKEN = $DEMO_TOKEN
     $env:RUST_LOG = "warn"
     
-    & "$ROOT\target\debug\comet.exe"
+    & "$ROOT\target\debug\agent-deski.exe"
 } finally {
     if ($daemonProcess -and -not $daemonProcess.HasExited) {
         Write-Host "▸ stopping engine daemon"

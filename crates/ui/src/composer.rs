@@ -25,7 +25,7 @@ use gpui::{
 use unicode_segmentation::UnicodeSegmentation;
 
 use comet_doc::{MessagePart, MessageRole, SessionCommandPayload, SessionMessageEntry};
-use comet_proto::{FileSearchMatch, RunRequest, SandboxLevel, UserInputAnswer, UserInputQuestion};
+use comet_proto::{FileSearchMatch, RunRequest, UserInputAnswer, UserInputQuestion};
 use comet_rpc::{RpcError, methods};
 
 use crate::attachments::{self, StagedAttachment};

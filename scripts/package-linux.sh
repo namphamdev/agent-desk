@@ -31,7 +31,7 @@ rm -rf "$STAGE" "$TARBALL"
 mkdir -p "$STAGE"
 install -m 755 "$BIN" "$STAGE/comet"
 install -m 644 "$ROOT/dist/comet.desktop" "$STAGE/comet.desktop"
-install -m 644 "$ROOT/dist/comet.png" "$STAGE/comet.png"
+install -m 644 "$ROOT/dist/agent-deski.png" "$STAGE/comet.png"
 
 cat >"$STAGE/install.sh" <<'INSTALL'
 #!/usr/bin/env bash

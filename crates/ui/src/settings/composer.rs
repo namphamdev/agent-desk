@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use comet_proto::{HarnessId, ReasoningLevel};
+use comet_proto::{HarnessId, PermissionMode, ReasoningLevel};
 
 const FILE_NAME: &str = "composer-defaults.json";
 
@@ -37,6 +37,8 @@ pub struct ComposerDefaults {
     pub model_by_harness: HashMap<HarnessId, RememberedModel>,
     /// Last reasoning level picked (global, like comet's `reasoning` key).
     pub reasoning: Option<ReasoningLevel>,
+    /// Last permission mode picked on the new-chat canvas.
+    pub permission_mode: Option<PermissionMode>,
     /// Every model label ever seen (id → label), fed from catalog loads.
     /// The chip's fallback while a harness's list is still loading — a
     /// session whose configured model differs from the remembered pick
@@ -118,6 +120,7 @@ mod tests {
         let mut defaults = ComposerDefaults {
             harness: Some(HarnessId::ClaudeCode),
             reasoning: Some(ReasoningLevel::XHigh),
+            permission_mode: Some(PermissionMode::AcceptEdits),
             ..Default::default()
         };
         defaults.remember_model(

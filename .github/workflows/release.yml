@@ -94,7 +94,7 @@ jobs:
 
           cargo build --release -p comet
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
-          Copy-Item target/release/comet.exe (Join-Path $stage 'comet.exe')
+          Copy-Item target/release/agent-deski.exe (Join-Path $stage 'agent-deski.exe')
           Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zip -Force
           Remove-Item -Recurse -Force $stage
           Write-Host "packaged: $zip"

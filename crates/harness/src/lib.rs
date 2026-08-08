@@ -58,7 +58,10 @@ pub trait Harness: Send + Sync {
     fn supports_steering(&self) -> bool;
     fn steering_mode(&self) -> SteeringMode;
     fn reasoning_levels(&self) -> &[ReasoningLevel];
-    async fn models(&self) -> Result<Vec<Model>, HarnessError>;
+    /// Discover available models. `acp_agent_id` is only meaningful for the
+    /// ACP harness (selects which installed agent to query); other harnesses
+    /// ignore it.
+    async fn models(&self, acp_agent_id: Option<&str>) -> Result<Vec<Model>, HarnessError>;
     /// Run one (persistent) session; the stream ends with `AgentEvent::Done`.
     async fn run(
         &self,

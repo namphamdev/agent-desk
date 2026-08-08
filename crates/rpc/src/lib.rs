@@ -95,6 +95,9 @@ pub mod methods {
     /// Checkout-diff stream for the target device's chats (DataRpc,
     /// relay-forwardable — diffs are produced where the checkout lives).
     pub const WATCH_CHECKOUT_DIFFS: &str = "WatchCheckoutDiffs";
+    /// Force an immediate re-snapshot of every tracked checkout's working-tree
+    /// diff (relay-forwardable — the snapshot runs where the checkout lives).
+    pub const REFRESH_DIFFS: &str = "RefreshDiffs";
     // Agent accounts (ControlRpc, relay-forwardable — CLI logins are per-device).
     pub const LIST_AGENT_ACCOUNTS: &str = "ListAgentAccounts";
     pub const ACTIVATE_AGENT_ACCOUNT: &str = "ActivateAgentAccount";
@@ -108,6 +111,9 @@ pub mod methods {
     pub const INSTALL_ACP_AGENT: &str = "InstallAcpAgent";
     pub const ACTIVATE_ACP_AGENT: &str = "ActivateAcpAgent";
     pub const REMOVE_ACP_AGENT: &str = "RemoveAcpAgent";
+    /// Add a user-defined ACP agent by name + launch command, bypassing the
+    /// registry (for agents not listed in the official catalog).
+    pub const ADD_CUSTOM_ACP_AGENT: &str = "AddCustomAcpAgent";
     // Custom providers (ControlRpc, relay-forwardable and device-local).
     pub const GET_CUSTOM_PROVIDERS: &str = "GetCustomProviders";
     pub const UPSERT_CUSTOM_PROVIDER: &str = "UpsertCustomProvider";

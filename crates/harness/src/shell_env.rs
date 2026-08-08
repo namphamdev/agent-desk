@@ -22,10 +22,7 @@
 //!
 //! Set `COMET_NO_LOGIN_SHELL=1` to disable the snapshot entirely.
 
-use std::ffi::{OsStr, OsString};
-use std::sync::OnceLock;
-
-static CACHE: OnceLock<Option<OsString>> = OnceLock::new();
+use std::ffi::OsStr;
 
 /// The PATH the user's login shell reports, captured once and cached for the
 /// life of the process. `None` when disabled, non-unix, no usable shell, or
@@ -33,6 +30,11 @@ static CACHE: OnceLock<Option<OsString>> = OnceLock::new();
 pub fn login_shell_path() -> Option<&'static OsStr> {
     #[cfg(unix)]
     {
+        use std::ffi::OsString;
+        use std::sync::OnceLock;
+
+        static CACHE: OnceLock<Option<OsString>> = OnceLock::new();
+
         CACHE.get_or_init(unix::capture).as_deref()
     }
     #[cfg(not(unix))]

@@ -171,6 +171,60 @@ impl AcpAgents {
         self.list().await
     }
 
+    /// Register a user-defined ACP agent without going through the registry.
+    ///
+    /// `command` is the launch spec understood by the ACP SDK's
+    /// `AcpAgent::from_str` (a bare executable, a shell pipeline, or the JSON
+    /// `{ "command": "...", "args": [...], "env": { ... } }`). The agent is
+    /// persisted with distribution `"custom"` and made active immediately.
+    pub async fn add_custom(
+        &self,
+        name: &str,
+        command: &str,
+    ) -> anyhow::Result<AcpAgentsSnapshot> {
+        let name = name.trim();
+        let command = command.trim();
+        if name.is_empty() {
+            bail!("ACP agent name is required");
+        }
+        if command.is_empty() {
+            bail!("ACP agent command is required");
+        }
+
+        let _guard = self.mutation.lock().await;
+        let mut config = self.load_config()?;
+
+        // Stable-ish id from the name, deduped if it collides with an existing
+        // custom or registry agent id.
+        let base_id = format!("custom:{}", safe_component(name));
+        let mut id = base_id.clone();
+        let mut suffix = 2;
+        while config.agents.iter().any(|agent| agent.id == id) {
+            id = format!("{base_id}-{suffix}");
+            suffix += 1;
+        }
+
+        let installed = InstalledAcpAgent {
+            id: id.clone(),
+            name: name.to_string(),
+            version: "custom".to_string(),
+            command: normalize_custom_command(command),
+            distribution: "custom".into(),
+        };
+        config.agents.retain(|agent| agent.id != installed.id);
+        config.agents.push(installed.clone());
+        config.agents.sort_by(|a, b| a.name.cmp(&b.name));
+        config.active_agent_id = Some(installed.id);
+        self.save_config(&config)?;
+
+        // The snapshot includes the live registry; a fetch failure is
+        // non-fatal for a local add.
+        match self.fetch_registry().await {
+            Ok(entries) => Ok(snapshot(config, entries, None)),
+            Err(error) => Ok(snapshot(config, vec![], Some(format!("{error:#}")))),
+        }
+    }
+
     async fn fetch_registry(&self) -> anyhow::Result<Vec<RegistryEntry>> {
         let response = self
             .client
@@ -405,6 +459,28 @@ fn launch_json(
     env: &BTreeMap<String, String>,
 ) -> anyhow::Result<String> {
     Ok(serde_json::to_string(&LaunchConfig { command, args, env })?)
+}
+
+/// Strip a `"type"` field from a user-supplied JSON command config.
+///
+/// The ACP SDK's `AcpAgentConfig` denies unknown fields, so MCP-style JSON
+/// like `{"type":"stdio","command":"..."}` would fail at launch time. This
+/// is a convenience normalization so users can paste common config snippets
+/// without editing. Non-JSON commands are returned unchanged.
+fn normalize_custom_command(command: &str) -> String {
+    let trimmed = command.trim();
+    if !trimmed.starts_with('{') {
+        return command.to_string();
+    }
+    let Ok(mut value) = serde_json::from_str::<serde_json::Value>(trimmed) else {
+        return command.to_string();
+    };
+    if let Some(obj) = value.as_object_mut() {
+        if obj.remove("type").is_some() {
+            return serde_json::to_string(&value).unwrap_or_else(|_| command.to_string());
+        }
+    }
+    command.to_string()
 }
 
 fn find_executable(name: &str) -> Option<PathBuf> {
@@ -739,5 +815,81 @@ mod tests {
             agents.load_config().unwrap().active_agent_id.as_deref(),
             Some("a")
         );
+    }
+
+    #[tokio::test]
+    async fn add_custom_persists_and_activates() {
+        let temp = tempfile::tempdir().unwrap();
+        let agents = AcpAgents::new(temp.path());
+        let snapshot = agents
+            .add_custom("My Agent", "/usr/local/bin/my-agent --acp")
+            .await
+            .unwrap();
+        assert_eq!(snapshot.installed.len(), 1);
+        let agent = &snapshot.installed[0];
+        assert_eq!(agent.name, "My Agent");
+        assert_eq!(agent.command, "/usr/local/bin/my-agent --acp");
+        assert_eq!(agent.distribution, "custom");
+        // `safe_component` sanitizes spaces to underscores in the id.
+        assert_eq!(agent.id, "custom:My_Agent");
+        assert_eq!(snapshot.active_agent_id.as_deref(), Some(agent.id.as_str()));
+
+        // Reloading from disk preserves the agent.
+        let reloaded = agents.load_config().unwrap();
+        assert_eq!(reloaded.agents.len(), 1);
+        assert_eq!(reloaded.agents[0].name, "My Agent");
+    }
+
+    #[tokio::test]
+    async fn add_custom_rejects_empty_fields() {
+        let temp = tempfile::tempdir().unwrap();
+        let agents = AcpAgents::new(temp.path());
+        assert!(agents.add_custom("", "/usr/local/bin/agent").await.is_err());
+        assert!(agents.add_custom("Agent", "   ").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn add_custom_deduplicates_id_on_name_collision() {
+        let temp = tempfile::tempdir().unwrap();
+        let agents = AcpAgents::new(temp.path());
+        let first = agents.add_custom("Agent", "/bin/a").await.unwrap();
+        let second = agents.add_custom("Agent", "/bin/b").await.unwrap();
+        // The second agent with the same name gets a "-2" suffix on its id.
+        let ids: Vec<&str> = second.installed.iter().map(|a| a.id.as_str()).collect();
+        assert!(ids.contains(&"custom:Agent"));
+        assert!(ids.contains(&"custom:Agent-2"));
+        assert_eq!(second.installed.len(), 2);
+        // The most recently added agent becomes active.
+        assert_eq!(
+            second.active_agent_id.as_deref(),
+            Some("custom:Agent-2")
+        );
+        // The first snapshot only had the original id.
+        assert_eq!(first.installed[0].id, "custom:Agent");
+    }
+
+    #[test]
+    fn normalize_strips_type_from_mcp_style_json() {
+        let input = r#"{"type":"stdio","command":"/usr/local/bin/agent","args":["--acp"]}"#;
+        let result = normalize_custom_command(input);
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert!(parsed.get("type").is_none());
+        assert_eq!(parsed["command"], "/usr/local/bin/agent");
+        assert_eq!(parsed["args"], serde_json::json!(["--acp"]));
+    }
+
+    #[test]
+    fn normalize_preserves_non_json_commands() {
+        assert_eq!(
+            normalize_custom_command("/usr/local/bin/agent --acp"),
+            "/usr/local/bin/agent --acp"
+        );
+        assert_eq!(normalize_custom_command("npx -y @org/agent"), "npx -y @org/agent");
+    }
+
+    #[test]
+    fn normalize_preserves_valid_json_without_type() {
+        let input = r#"{"command":"/usr/local/bin/agent","args":[]}"#;
+        assert_eq!(normalize_custom_command(input), input);
     }
 }

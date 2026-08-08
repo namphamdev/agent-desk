@@ -156,7 +156,7 @@ impl TitleGenerator {
                 return None;
             }
         };
-        let cheap = cheapest_model(&harness.models().await.unwrap_or_default());
+        let cheap = cheapest_model(&harness.models(None).await.unwrap_or_default());
         let title_prompt = format!(
             "Reply with ONLY a concise 3-5 word title in Title Case (no quotes, no punctuation) \
              for a coding session that begins with this request:\n\n{prompt}"

@@ -74,7 +74,7 @@ function Run-Dev {
     $env:COMET_HARNESS = $HARNESS
     $env:RUST_LOG = $LOG_LEVEL
 
-    $daemonProcess = Start-Process -FilePath "$ROOT\target\debug\comet.exe" -ArgumentList "headless" -PassThru -NoNewWindow
+    $daemonProcess = Start-Process -FilePath "$ROOT\target\debug\agent-deski.exe" -ArgumentList "headless" -PassThru -NoNewWindow
 
     # Restore env values
     $env:COMET_DATA_DIR = $oldDataDir
@@ -110,7 +110,7 @@ function Run-Dev {
         $env:COMET_EDGE_TOKEN = $TOKEN
         $env:RUST_LOG = $LOG_LEVEL
 
-        & "$ROOT\target\debug\comet.exe"
+        & "$ROOT\target\debug\agent-deski.exe"
     } finally {
         if ($daemonProcess -and -not $daemonProcess.HasExited) {
             Write-Host "▸ stopping local engine daemon"

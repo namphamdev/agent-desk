@@ -1,32 +1,49 @@
-use comet_proto::{AcpAgentsSnapshot, AcpRegistryAgent, InstalledAcpAgent};
+use comet_proto::{AcpAgentsSnapshot, AcpRegistryAgent, AuthState, InstalledAcpAgent};
 use comet_rpc::methods;
 use gpui::{
     AnyElement, Context, Entity, SharedString, Subscription, Task, Window, div, prelude::*, px,
 };
 
-use crate::popover::Loadable;
+use crate::composer::{ComposerInput, ComposerInputEvent};
+use crate::popover::{self, Loadable};
 use crate::settings::widgets;
 use crate::state::AppState;
-use crate::theme::Theme;
+use crate::theme::{Theme, white_alpha};
 
 pub struct AcpAgentsPage {
     state: Entity<AppState>,
     snapshot: Loadable<AcpAgentsSnapshot>,
     busy_agent: Option<String>,
     error: Option<SharedString>,
+    editor: Option<CustomAgentEditor>,
+    /// Whether we were signed in the last time we rendered. Used to detect the
+    /// sign-out → sign-in transition so we can reload after re-auth.
+    was_signed_in: bool,
     load_task: Option<Task<()>>,
     action_task: Option<Task<()>>,
     _observe: Subscription,
 }
 
+struct CustomAgentEditor {
+    name: Entity<ComposerInput>,
+    command: Entity<ComposerInput>,
+    _inputs: Vec<Subscription>,
+}
+
 impl AcpAgentsPage {
     pub fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
         let observe = cx.observe(&state, |_, _, cx| cx.notify());
+        let was_signed_in = matches!(
+            state.read(cx).auth.as_ref(),
+            Some(AuthState::SignedIn { .. })
+        );
         let mut page = Self {
             state,
             snapshot: Loadable::Idle,
             busy_agent: None,
             error: None,
+            editor: None,
+            was_signed_in,
             load_task: None,
             action_task: None,
             _observe: observe,
@@ -80,6 +97,144 @@ impl AcpAgentsPage {
             .ok();
         }));
         cx.notify();
+    }
+
+    fn open_editor(&mut self, cx: &mut Context<Self>) {
+        let name = cx.new(|cx| ComposerInput::new("My agent", cx));
+        let command = cx.new(|cx| {
+            ComposerInput::new("e.g. npx -y @my-org/my-agent or /usr/local/bin/agent", cx)
+        });
+        let _inputs = [&name, &command]
+            .into_iter()
+            .map(|input| {
+                cx.subscribe(input, |_, _, event: &ComposerInputEvent, cx| {
+                    if matches!(event, ComposerInputEvent::Edited) {
+                        cx.notify();
+                    }
+                })
+            })
+            .collect();
+        self.editor = Some(CustomAgentEditor {
+            name,
+            command,
+            _inputs,
+        });
+        self.error = None;
+        cx.notify();
+    }
+
+    fn cancel_editor(&mut self, cx: &mut Context<Self>) {
+        self.editor = None;
+        self.error = None;
+        cx.notify();
+    }
+
+    fn save_custom(&mut self, cx: &mut Context<Self>) {
+        let Some(editor) = self.editor.as_ref() else {
+            return;
+        };
+        let name = editor.name.read(cx).text().trim().to_string();
+        let command = editor.command.read(cx).text().trim().to_string();
+        if name.is_empty() {
+            self.error = Some("Agent name is required.".into());
+            cx.notify();
+            return;
+        }
+        if command.is_empty() {
+            self.error = Some("Agent command is required.".into());
+            cx.notify();
+            return;
+        }
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            return;
+        };
+        self.busy_agent = Some("__custom__".into());
+        self.error = None;
+        self.action_task = Some(cx.spawn(async move |this, cx| {
+            let result = engine
+                .client()
+                .call(
+                    methods::ADD_CUSTOM_ACP_AGENT,
+                    serde_json::json!({ "name": name, "command": command }),
+                )
+                .await;
+            this.update(cx, |page, cx| {
+                page.busy_agent = None;
+                match result {
+                    Ok(value) => match serde_json::from_value::<AcpAgentsSnapshot>(value) {
+                        Ok(snapshot) => {
+                            page.snapshot = Loadable::Ready(snapshot);
+                            page.editor = None;
+                        }
+                        Err(error) => page.error = Some(error.to_string().into()),
+                    },
+                    Err(error) => page.error = Some(error.to_string().into()),
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+        cx.notify();
+    }
+
+    fn editor_panel(&self, theme: &Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let Some(editor) = self.editor.as_ref() else {
+            return Vec::new();
+        };
+        let name_valid = !editor.name.read(cx).text().trim().is_empty();
+        let command_valid = !editor.command.read(cx).text().trim().is_empty();
+        let valid = name_valid && command_valid;
+        let saving = self.busy_agent.as_deref() == Some("__custom__");
+        vec![div()
+            .mt(px(16.0))
+            .rounded(px(12.0))
+            .border_1()
+            .border_color(theme.border)
+            .bg(theme.surface)
+            .p(px(20.0))
+            .child(widgets::row_title(theme, "Add custom ACP agent"))
+            .child(
+                div()
+                    .mt(px(6.0))
+                    .text_size(px(11.5))
+                    .text_color(theme.text_muted.opacity(0.65))
+                    .child(
+                        "Register any ACP-compatible agent. The command is the same string the \
+                         ACP SDK accepts: a bare executable, a shell pipeline, or JSON like \
+                         {\"command\":\"...\",\"args\":[...],\"env\":{...}}.",
+                    ),
+            )
+            .child(editor_field(theme, "Name", editor.name.clone()))
+            .child(editor_field(theme, "Command", editor.command.clone()))
+            .child(
+                div()
+                    .mt(px(18.0))
+                    .flex()
+                    .gap(px(8.0))
+                    .child(
+                        popover::btn_primary(theme, "Save")
+                            .id("save-custom-acp-agent")
+                            .when(!valid || saving, |button| button.opacity(0.45))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if valid && !saving {
+                                    this.save_custom(cx);
+                                }
+                            })),
+                    )
+                    .child(
+                        widgets::ghost_action(theme)
+                            .id("cancel-custom-acp-agent")
+                            .when(saving, |button| button.opacity(0.45))
+                            .hover(|s| widgets::ghost_hover(theme, s))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if !saving {
+                                    this.cancel_editor(cx);
+                                }
+                            }))
+                            .child("Cancel"),
+                    ),
+            )
+            .into_any_element()]
     }
 
     fn installed_row(
@@ -207,6 +362,31 @@ impl AcpAgentsPage {
     }
 }
 
+fn editor_field(theme: &Theme, label: &'static str, input: Entity<ComposerInput>) -> gpui::Div {
+    div()
+        .mt(px(12.0))
+        .child(
+            div()
+                .mb(px(5.0))
+                .text_size(px(11.5))
+                .text_color(theme.text_muted)
+                .child(label),
+        )
+        .child(
+            div()
+                .h(px(38.0))
+                .flex()
+                .items_center()
+                .overflow_hidden()
+                .rounded(px(8.0))
+                .border_1()
+                .border_color(theme.border)
+                .bg(white_alpha(0.02))
+                .px(px(9.0))
+                .child(input),
+        )
+}
+
 fn decode_snapshot(
     result: Result<serde_json::Value, comet_rpc::RpcError>,
 ) -> Loadable<AcpAgentsSnapshot> {
@@ -221,6 +401,20 @@ fn decode_snapshot(
 impl gpui::Render for AcpAgentsPage {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::of(cx).clone();
+
+        // Detect sign-out → sign-in transition and reload. Without this, the
+        // page's one-shot load (in `new`) is the only fetch; after re-auth the
+        // snapshot can be stale or empty even though the engine still has the
+        // data on disk.
+        let now_signed_in = matches!(
+            self.state.read(cx).auth.as_ref(),
+            Some(AuthState::SignedIn { .. })
+        );
+        if now_signed_in && !self.was_signed_in {
+            self.load(cx);
+        }
+        self.was_signed_in = now_signed_in;
+
         let snapshot = self.snapshot.ready().cloned();
         let refreshing = self.snapshot.is_loading();
         let count = snapshot
@@ -327,6 +521,25 @@ impl gpui::Render for AcpAgentsPage {
                             .child(div().flex_1())
                             .child(
                                 widgets::ghost_action(&theme)
+                                    .id("add-custom-acp-agent")
+                                    .when(self.editor.is_some() || self.busy_agent.is_some(), |button| {
+                                        button.opacity(0.45)
+                                    })
+                                    .hover(|s| widgets::ghost_hover(&theme, s))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        if this.editor.is_none() && this.busy_agent.is_none() {
+                                            this.open_editor(cx);
+                                        }
+                                    }))
+                                    .child(
+                                        crate::icons::icon(crate::icons::ADD_CIRCLE)
+                                            .size(px(14.0))
+                                            .text_color(theme.text_muted),
+                                    )
+                                    .child("Add custom"),
+                            )
+                            .child(
+                                widgets::ghost_action(&theme)
                                     .id("refresh-acp-registry")
                                     .when(refreshing, |button| button.opacity(0.5))
                                     .hover(|s| widgets::ghost_hover(&theme, s))
@@ -362,6 +575,7 @@ impl gpui::Render for AcpAgentsPage {
                                 })),
                         )
                     })
+                    .children(self.editor_panel(&theme, cx))
                     .children(content),
             )
     }

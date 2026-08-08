@@ -209,11 +209,6 @@ fn windows_machine_guid() -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-#[cfg(not(target_os = "windows"))]
-fn windows_machine_guid() -> Option<String> {
-    None
-}
-
 // -- macOS --
 
 #[cfg(target_os = "macos")]
@@ -244,11 +239,6 @@ fn macos_platform_uuid() -> Option<String> {
     None
 }
 
-#[cfg(not(target_os = "macos"))]
-fn macos_platform_uuid() -> Option<String> {
-    None
-}
-
 // -- Linux --
 
 #[cfg(target_os = "linux")]
@@ -261,11 +251,6 @@ fn linux_machine_id() -> Option<String> {
             }
         }
     }
-    None
-}
-
-#[cfg(not(target_os = "linux"))]
-fn linux_machine_id() -> Option<String> {
     None
 }
 

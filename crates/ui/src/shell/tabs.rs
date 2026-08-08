@@ -6,20 +6,16 @@
 //! the old header's titlebar duties: 44px tall, drag region, animated
 //! window-controls inset, and the toggle-changes button (git spaces only).
 //!
-//! Styling and drag-reorder mirror the terminal tab bar
-//! (`terminal/panel.rs::render_tab_bar`) — same fixed-width tabs, drop-index
-//! math, 150ms sibling slide, and drag ghost. The manual order is device-local
-//! (`UiSettings.tab_order`, keyed by space). Overflow scrolls horizontally
-//! with edge fades.
+//! Tabs are ordered by session creation order (device-local). Overflow scrolls
+//! horizontally with edge fades. Click a tab to activate it; middle-click
+//! closes it.
 
 use super::*;
-use crate::motion::TAB_SLIDE;
-use crate::terminal::panel::{drop_index, reorder_tabs, slide_offset};
 use comet_proto::ChatIndicator;
 
 /// Fixed tab width (terminal tabs use 118; session titles get a bit more).
 pub(super) const SESSION_TAB_WIDTH: f32 = 140.0;
-/// Flex gap between tabs — part of the drop-index slot width.
+/// Flex gap between tabs.
 const TAB_GAP: f32 = 4.0;
 /// Width of the overflow edge fades. Wide enough that per-glyph fade steps
 /// (title text fades glyph-by-glyph on glass) stay gentle.
@@ -36,60 +32,9 @@ fn format_rss(bytes: Option<u64>) -> Option<String> {
     }
 }
 
-/// Drag-reorder state; `epoch` keys the 150ms slide animation restarts.
-pub(super) struct TabDragState {
-    from: usize,
-    over: usize,
-    epoch: usize,
-    prev_over: usize,
-}
-
-/// The dragged-tab payload (gpui drag-and-drop), space-scoped.
-struct TabDragPayload {
-    space: String,
-    from: usize,
-    title: SharedString,
-    brand: Option<(&'static str, Option<gpui::Hsla>)>,
-}
-
-/// The floating tab rendered at the cursor while dragging.
-struct TabGhost {
-    title: SharedString,
-    brand: Option<(&'static str, Option<gpui::Hsla>)>,
-}
-
-impl Render for TabGhost {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = Theme::of(cx);
-        div()
-            .w(px(SESSION_TAB_WIDTH))
-            .h(px(28.0))
-            .px(px(Theme::SPACE_SM))
-            .flex()
-            .items_center()
-            .gap(px(6.0))
-            .rounded(px(Theme::CONTROL_RADIUS))
-            .bg(theme.surface_raised)
-            .border_1()
-            .border_color(theme.border_strong)
-            .text_size(px(12.0))
-            .text_color(theme.text)
-            .opacity(0.85)
-            .when_some(self.brand, |el, (path, tint)| {
-                el.child(
-                    icon(path)
-                        .size(px(14.0))
-                        .flex_none()
-                        .text_color(tint.unwrap_or(theme.text_muted)),
-                )
-            })
-            .child(div().truncate().child(self.title.clone()))
-    }
-}
-
-/// Resolve the visual tab order for a space: the manual (drag) order first —
-/// skipping chats that no longer exist — then any new chats appended in
-/// creation order. Pure.
+/// Resolve the visual tab order: the manual (drag) order first — skipping
+/// entries that no longer exist — then any new items appended in creation
+/// order. Shared by session tabs and space rows. Pure.
 pub(super) fn resolve_tab_order(created_order: &[String], manual: &[String]) -> Vec<String> {
     let mut out: Vec<String> = manual
         .iter()
@@ -151,19 +96,14 @@ impl Shell {
         }));
     }
 
-    /// The space's tabs in VISUAL order (manual drag order over creation order).
+    /// The space's tabs in visual order (session creation order).
     fn tab_ids(&self, space_id: &str, cx: &App) -> Vec<String> {
-        let created: Vec<String> = self
-            .state
+        self.state
             .read(cx)
             .chats_in_space(space_id)
             .iter()
             .map(|c| c.id.clone())
-            .collect();
-        match self.settings.tab_order.get(space_id) {
-            Some(manual) => resolve_tab_order(&created, manual),
-            None => created,
-        }
+            .collect()
     }
 
     /// Close a tab = archive the session. Selection moves to a neighbor; the
@@ -182,42 +122,6 @@ impl Shell {
             self.state.update(cx, |s, cx| s.select_chat(next, cx));
         }
         self.archive_chat(chat_id, cx);
-    }
-
-    /// Track the drop slot while a tab is dragged over the strip (150ms sibling
-    /// slides restart per committed `over` change — terminal-panel idiom).
-    fn update_tab_drag_over(&mut self, from: usize, over: usize, cx: &mut Context<Self>) {
-        match &mut self.tab_drag {
-            Some(drag) if drag.from == from => {
-                if drag.over != over {
-                    drag.prev_over = drag.over;
-                    drag.over = over;
-                    drag.epoch += 1;
-                    cx.notify();
-                }
-            }
-            _ => {
-                self.tab_drag = Some(TabDragState {
-                    from,
-                    over,
-                    epoch: 0,
-                    prev_over: from,
-                });
-                cx.notify();
-            }
-        }
-    }
-
-    /// Commit a drag: persist the new visual order for the space (device-local).
-    fn commit_tab_reorder(&mut self, space: &str, from: usize, to: usize, cx: &mut Context<Self>) {
-        let mut order = self.tab_ids(space, cx);
-        if from < order.len() {
-            reorder_tabs(&mut order, from, to);
-            self.settings.tab_order.insert(space.to_string(), order);
-            self.schedule_save(cx);
-        }
-        self.tab_drag = None;
-        cx.notify();
     }
 
     /// Select the tab `delta` positions away from the currently selected one
@@ -247,15 +151,10 @@ impl Shell {
         self.state.update(cx, |s, cx| s.select_chat(Some(target), cx));
     }
 
-    /// The tab strip: [scrollable tabs (edge fades)][+][drag spacer][toggle-changes].
+    /// The tab strip: [scrollable tabs (edge fades)][+][toggle-changes].
     pub(super) fn render_session_tab_strip(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = Theme::of(cx).clone();
         let now = Utc::now();
-        // A drag that ended off-strip (no drop event) must not strand the
-        // sibling slide offsets.
-        if self.tab_drag.is_some() && !cx.has_active_drag() {
-            self.tab_drag = None;
-        }
         let space_id = self.state.read(cx).selected_space.clone();
         let order: Vec<String> = space_id
             .as_deref()
@@ -265,6 +164,7 @@ impl Shell {
             String,
             SharedString,
             Option<comet_proto::HarnessId>,
+            Option<String>,
             ChatIndicator,
         )> = {
             let state = self.state.read(cx);
@@ -278,6 +178,9 @@ impl Shell {
                             &chat.title.clone().unwrap_or_else(|| "New session".into()),
                         )),
                         chat.config.as_ref().map(|c| c.harness),
+                        chat.config
+                            .as_ref()
+                            .and_then(|c| c.acp_agent_id.clone()),
                         state.display_status_for(chat, now),
                     ))
                 })
@@ -355,15 +258,10 @@ impl Shell {
         // No sessions yet → the canvas already shows; a `+` would be redundant.
         let has_tabs = !tabs.is_empty();
         let count = tabs.len();
-        let drag = self
-            .tab_drag
-            .as_ref()
-            .map(|d| (d.from, d.over, d.epoch, d.prev_over));
 
         let tab_elements: Vec<AnyElement> =
             tabs.into_iter()
-                .enumerate()
-                .map(|(ix, (id, title, harness, status))| {
+                .map(|(id, title, harness, acp_agent_id, status)| {
                     let is_selected = selected.as_deref() == Some(id.as_str());
                     let is_hovered = hovered.as_deref() == Some(id.as_str());
                     // Hover state lives in Shell (the trailing slot swaps dot ↔
@@ -377,27 +275,22 @@ impl Shell {
                         (theme.text_muted.opacity(0.6), crate::theme::wash(0.0))
                     };
                     let glyph_alpha = if is_selected { 0.9 } else { 0.6 };
-                    let brand = harness.map(crate::pickers::harness_brand_icon);
+                    let brand = harness.map(|harness| {
+                        crate::pickers::harness_brand_icon(harness, acp_agent_id.as_deref())
+                    });
                     let select_id = id.clone();
                     let close_id = id.clone();
                     let middle_id = id.clone();
                     let hover_id = id.clone();
-                    let drag_space = space_id.clone().unwrap_or_default();
                     // The trailing slot is ALWAYS in the tree (stable hit-test
                     // position): the status dot at rest, the close button on
                     // hover.
                     //
-                    // CRITICAL: the close button uses `on_mouse_down` with
+                    // The close button uses `on_mouse_down` with
                     // `stop_propagation` to prevent the pointer-down event
-                    // from bubbling to the parent tab's `on_drag` gesture.
-                    // Without this, a click with even 1px of pointer movement
-                    // crosses on_drag's threshold and starts a reorder instead
-                    // of closing the tab. `on_click` alone is too late — on_drag
-                    // has already latched.
-                    //
-                    // The trailing slot also updates tab_hover so moving the
-                    // pointer from the tab body onto the button keeps the hover
-                    // state (no flicker).
+                    // from bubbling to the parent tab's click handler, and
+                    // `on_click` with `stop_propagation` so the tab's own
+                    // click-to-activate never fires when closing.
                     let dot = spaces::status_dot_color(status, &theme);
                     let trailing_hover_id = id.clone();
                     let trailing: AnyElement = div()
@@ -420,8 +313,8 @@ impl Shell {
                             el.cursor_pointer()
                                 .hover(|s| s.bg(crate::theme::wash(0.14)))
                                 .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                                    // Stop the down event here so the parent
-                                    // tab's on_drag never sees it.
+                                    // Stop the down event so the parent
+                                    // tab's click handler never sees it.
                                     cx.stop_propagation();
                                 })
                                 .on_click(cx.listener(move |this, _, _, cx| {
@@ -472,17 +365,55 @@ impl Shell {
                         })
                         .cursor_pointer()
                         // Tabs sit inside the titlebar drag strip — carve them
-                        // out with `.occlude()`. We previously used
-                        // `block_mouse_except_scroll` to also let wheel events
-                        // pass through to the scroll container, BUT BlockMouse
-                        // eats drop events: on_drop on the tab and on the scroll
-                        // container never fired, so drag-reorder was broken.
-                        // `.occlude()` carves the tab out of the titlebar drag
-                        // region AND lets drop events reach the tab's own
-                        // on_drop handler. The trailing slot's on_hover (set up
-                        // above) keeps hover alive when the pointer crosses onto
-                        // the close button — no flicker.
+                        // out so the titlebar drag gesture doesn't swallow
+                        // clicks. `occlude` creates a `BlockMouse` hitbox so
+                        // the tab owns hover/click across its full area
+                        // (title text and icon included). BlockMouse is also
+                        // required so the titlebar's `WindowControlArea::Drag`
+                        // hitbox is excluded from the mouse hit-test — without
+                        // it, the OS treats the tab area as a drag region and
+                        // swallows click + wheel events at the platform level.
+                        //
+                        // Because BlockMouse breaks the hit-test chain, the
+                        // scroll container's own `on_scroll_wheel` never fires
+                        // when the cursor is over a tab. The per-tab
+                        // `on_scroll_wheel` handler below fills that gap: each
+                        // tab's hitbox IS in the hit-test (it's the topmost),
+                        // so `should_handle_scroll` returns true for it.
                         .occlude()
+                        // Convert vertical wheel into horizontal scroll.
+                        // Attached to each tab (not the scroll container)
+                        // because the tab's `occlude()` blocks the scroll
+                        // container from receiving scroll-wheel events — but
+                        // the tab's own hitbox is the frontmost in the
+                        // hit-test, so its listener fires reliably.
+                        .on_scroll_wheel(cx.listener(
+                            move |this, event: &gpui::ScrollWheelEvent, window, cx| {
+                                let dy = match event.delta {
+                                    gpui::ScrollDelta::Lines(delta) => {
+                                        f32::from(delta.y) * SESSION_TAB_WIDTH
+                                    }
+                                    gpui::ScrollDelta::Pixels(delta) => f32::from(delta.y),
+                                };
+                                let dx = match event.delta {
+                                    gpui::ScrollDelta::Lines(delta) => {
+                                        f32::from(delta.x) * SESSION_TAB_WIDTH
+                                    }
+                                    gpui::ScrollDelta::Pixels(delta) => f32::from(delta.x),
+                                };
+                                let total = dx - dy;
+                                if total.abs() > 0.0 {
+                                    let offset = this.tabs_scroll.offset();
+                                    let max = this.tabs_scroll.max_offset();
+                                    let new_x =
+                                        (f32::from(offset.x) - total).clamp(-f32::from(max.x), 0.0);
+                                    this.tabs_scroll
+                                        .set_offset(gpui::point(px(new_x), offset.y));
+                                    window.refresh();
+                                    cx.notify();
+                                }
+                            },
+                        ))
                         // Track hover in Shell state: the trailing slot flips
                         // between dot and close button (hover_blend only fades
                         // colors; child swaps need real state).
@@ -496,11 +427,6 @@ impl Shell {
                         }))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             cx.stop_propagation();
-                            // Clear any stranded drag state so a click always
-                            // returns to normal mode (Bug 2: stuck reorder).
-                            if this.tab_drag.is_some() {
-                                this.tab_drag = None;
-                            }
                             this.state
                                 .update(cx, |s, cx| s.select_chat(Some(select_id.clone()), cx));
                         }))
@@ -510,42 +436,6 @@ impl Shell {
                             cx.listener(move |this, _, _, cx| {
                                 cx.stop_propagation();
                                 this.close_session_tab(middle_id.clone(), cx);
-                            }),
-                        )
-                        .on_drag(
-                            TabDragPayload {
-                                space: drag_space.clone(),
-                                from: ix,
-                                title: title.clone(),
-                                brand,
-                            },
-                            |payload, _point, _, cx| {
-                                let title = payload.title.clone();
-                                let brand = payload.brand;
-                                cx.stop_propagation();
-                                cx.new(|_| TabGhost { title, brand })
-                            },
-                        )
-                        // Each tab also handles on_drop: `block_mouse_except_scroll`
-                        // on the tab eats the drop event before it can reach the
-                        // scroll container's on_drop, so the scroll container's
-                        // handler alone never fires. The tab relays the drop using
-                        // the current `tab_drag.over` position tracked by
-                        // on_drag_move.
-                        .on_drop::<TabDragPayload>(cx.listener(
-                            move |this, payload: &TabDragPayload, _, cx| {
-                                if payload.space != drag_space {
-                                    this.tab_drag = None;
-                                    cx.notify();
-                                    return;
-                                }
-                                let to = this
-                                    .tab_drag
-                                    .as_ref()
-                                    .map(|d| d.over)
-                                    .unwrap_or(payload.from);
-                                let space = drag_space.clone();
-                                this.commit_tab_reorder(&space, payload.from, to, cx);
                             }),
                         )
                         .when_some(brand, |el, (path, tint)| {
@@ -558,34 +448,7 @@ impl Shell {
                         .child(div().flex_1().min_w_0().truncate().child(title))
                         .child(trailing);
 
-                    // Sliding transform while a sibling is dragged over: animate
-                    // 150ms between committed offsets (terminal-panel idiom).
-                    match drag {
-                        Some((from, over, epoch, prev_over)) if ix != from => {
-                            let slot = SESSION_TAB_WIDTH + TAB_GAP;
-                            let target = slide_offset(ix, from, over) * slot;
-                            let start = slide_offset(ix, from, prev_over) * slot;
-                            div()
-                                .relative()
-                                .child(tab_el.with_animation(
-                                    SharedString::from(format!("session-tab-slide-{id}-{epoch}")),
-                                    TAB_SLIDE.animation(),
-                                    move |el, t| el.left(px(motion::lerp(start, target, t))),
-                                ))
-                                .into_any_element()
-                        }
-                        // The dragged tab is represented by the cursor ghost; its
-                        // flow slot renders as an INVISIBLE spacer. A dimmed tab
-                        // here overlapped whatever sibling slid into the vacated
-                        // slot (slide_offset moves one tab exactly there —
-                        // user-reported double-exposure).
-                        Some((from, ..)) if ix == from => div()
-                            .w(px(SESSION_TAB_WIDTH))
-                            .h(px(28.0))
-                            .flex_none()
-                            .into_any_element(),
-                        _ => tab_el.into_any_element(),
-                    }
+                    tab_el.into_any_element()
                 })
                 .collect();
 
@@ -638,9 +501,6 @@ impl Shell {
         let fade_right = scrolled < max_scroll - 1.0;
         let glass = theme.is_glass();
         let bar_bg = theme.surface;
-        let drag_move_space = space_id.clone().unwrap_or_default();
-        let drop_space = space_id.clone().unwrap_or_default();
-        let scroll_for_drag = self.tabs_scroll.clone();
         let tab_region = div()
             .relative()
             .min_w_0()
@@ -683,38 +543,6 @@ impl Shell {
                                 window.refresh();
                                 cx.notify();
                             }
-                        },
-                    ))
-                    .on_drag_move::<TabDragPayload>(cx.listener(
-                        move |this, event: &gpui::DragMoveEvent<TabDragPayload>, _, cx| {
-                            let payload = event.drag(cx);
-                            if payload.space != drag_move_space {
-                                return;
-                            }
-                            let from = payload.from;
-                            // Drop math runs in CONTENT coordinates: viewport-
-                            // relative x plus the scrolled-off width.
-                            let rel_x = f32::from(event.event.position.x)
-                                - f32::from(event.bounds.left())
-                                + -f32::from(scroll_for_drag.offset().x);
-                            let over = drop_index(rel_x, SESSION_TAB_WIDTH + TAB_GAP, count);
-                            this.update_tab_drag_over(from, over, cx);
-                        },
-                    ))
-                    .on_drop::<TabDragPayload>(cx.listener(
-                        move |this, payload: &TabDragPayload, _, cx| {
-                            if payload.space != drop_space {
-                                this.tab_drag = None;
-                                cx.notify();
-                                return;
-                            }
-                            let to = this
-                                .tab_drag
-                                .as_ref()
-                                .map(|d| d.over)
-                                .unwrap_or(payload.from);
-                            let space = drop_space.clone();
-                            this.commit_tab_reorder(&space, payload.from, to, cx);
                         },
                     ))
                     .children(tab_elements),

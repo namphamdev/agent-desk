@@ -633,6 +633,7 @@ impl Shell {
                 let is_selected = selected.as_deref() == Some(chat.id.as_str());
                 let height = super::CHAT_ROW_HEIGHT;
                 let harness = chat.config.as_ref().map(|c| c.harness);
+                let acp_agent_id = chat.config.as_ref().and_then(|c| c.acp_agent_id.clone());
                 let element = self.render_chat_row(
                     chat.id.clone(),
                     transcript::single_line(
@@ -643,6 +644,7 @@ impl Shell {
                     folder.into(),
                     branch.map(SharedString::from),
                     harness,
+                    acp_agent_id,
                     status,
                     is_selected,
                     theme,

@@ -366,7 +366,7 @@ impl Harness for CodexHarness {
     /// so an absent binary surfaces as [`HarnessError::NotInstalled`] here.
     /// This is the seam for live discovery: a short-lived `codex app-server`
     /// paging `model/list` (experimentalApi) exactly as codex.ts does.
-    async fn models(&self) -> Result<Vec<Model>, HarnessError> {
+    async fn models(&self, _acp_agent_id: Option<&str>) -> Result<Vec<Model>, HarnessError> {
         self.resolve_executable()?;
         if let Some(models) = crate::provider_models::discover_selected_provider_models(
             self.custom_providers_path.as_deref(),

@@ -15,8 +15,11 @@
 //! Icons render via [`icon`]: `icon(icons::PAPERCLIP).size(px(16.)).text_color(…)`.
 
 use std::borrow::Cow;
+use std::sync::Arc;
 
-use gpui::{AssetSource, Hsla, Result, SharedString, Styled as _, Svg, svg};
+use gpui::{
+    AssetSource, Hsla, Image, ImageFormat, Result, SharedString, Styled as _, Svg, svg,
+};
 
 macro_rules! icon_assets {
     ($(($const_name:ident, $path:literal)),+ $(,)?) => {
@@ -117,6 +120,8 @@ icon_assets![
     (CLAUDE_MARK, "claude-mark"),
     (OPENAI_MARK, "openai-mark"),
     (CURSOR_MARK, "cursor-mark"),
+    // ACP agent brand marks (per-agent logos for known ACP clients).
+    (DROID_MARK, "droid-mark"),
 ];
 
 /// The Claude mark's brand orange (`#D97757`) — comet keeps it even on the
@@ -130,6 +135,17 @@ pub fn claude_brand() -> Hsla {
 /// `[&_svg]:size-4` idiom.
 pub fn icon(path: &'static str) -> Svg {
     svg().path(path).flex_none()
+}
+
+/// The official Agent Desk logo used by the packaged application.
+///
+/// Keep this as a PNG image rather than converting it to an SVG: the PNG in
+/// `dist/` is the canonical brand asset and is also used by the installers.
+pub fn logo_image() -> Arc<Image> {
+    Arc::new(Image::from_bytes(
+        ImageFormat::Png,
+        include_bytes!("../../../dist/agent-deski.png").to_vec(),
+    ))
 }
 
 #[cfg(test)]

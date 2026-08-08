@@ -18,7 +18,7 @@ use chrono::Utc;
 use gpui::{
     AnyElement, App, Context, Empty, Entity, Focusable as _, IntoElement, KeyBinding, Keystroke,
     MouseButton, MouseDownEvent, MouseUpEvent, Pixels, Point, Render, SharedString, Subscription,
-    Task, Window, WindowControlArea, actions, div, prelude::*, px,
+    Task, Window, WindowControlArea, actions, div, img, prelude::*, px,
 };
 use serde::{Deserialize, Serialize};
 
@@ -498,8 +498,6 @@ pub struct Shell {
     space_last_chat: std::collections::HashMap<String, String>,
     /// Session tab currently hovered (close button appears on hover).
     tab_hover: Option<String>,
-    /// Session-tab drag-reorder in flight (see `tabs::TabDragState`).
-    tab_drag: Option<tabs::TabDragState>,
     /// Space-row drag-reorder in flight (see `spaces::SpaceDragState`).
     space_drag: Option<spaces::SpaceDragState>,
     /// Scroll position of the session tab region (drives the edge fades and
@@ -721,7 +719,6 @@ impl Shell {
             add_space: None,
             space_last_chat: std::collections::HashMap::new(),
             tab_hover: None,
-            tab_drag: None,
             space_drag: None,
             tabs_scroll: gpui::ScrollHandle::new(),
             tabs_scrolled_to: None,
@@ -2091,6 +2088,7 @@ impl Shell {
         space_name: SharedString,
         branch: Option<SharedString>,
         harness: Option<comet_proto::HarnessId>,
+        acp_agent_id: Option<String>,
         status: comet_proto::ChatIndicator,
         selected: bool,
         theme: &Theme,
@@ -2216,7 +2214,12 @@ impl Shell {
                     .items_center()
                     .gap(px(4.0))
                     .when_some(
-                        harness.map(crate::pickers::harness_brand_icon),
+                        harness.map(|harness| {
+                            crate::pickers::harness_brand_icon(
+                                harness,
+                                acp_agent_id.as_deref(),
+                            )
+                        }),
                         |el, (path, tint)| {
                             el.child(
                                 icon(path)
@@ -2343,6 +2346,7 @@ impl Shell {
                     space.into(),
                     branch,
                     chat.config.as_ref().map(|c| c.harness),
+                    chat.config.as_ref().and_then(|c| c.acp_agent_id.clone()),
                     *status,
                     selected.as_deref() == Some(chat.id.as_str()),
                     theme,
@@ -2411,6 +2415,7 @@ impl Shell {
                                 space.into(),
                                 branch,
                                 chat.config.as_ref().map(|c| c.harness),
+                                chat.config.as_ref().and_then(|c| c.acp_agent_id.clone()),
                                 *status,
                                 selected.as_deref() == Some(chat.id.as_str()),
                                 theme,
@@ -3254,10 +3259,10 @@ impl Shell {
                         .flex_col()
                         .items_center()
                         .child(
-                            icon(icons::COMET_LOGO)
+                            img(icons::logo_image())
                                 .w(px(41.9))
                                 .h(px(48.0))
-                                .text_color(theme.text.opacity(0.09)),
+                                .opacity(0.09),
                         )
                         .child(
                             div()
@@ -3306,10 +3311,10 @@ impl Shell {
                         .flex_col()
                         .items_center()
                         .child(
-                            icon(icons::COMET_LOGO)
+                            img(icons::logo_image())
                                 .w(px(41.9))
                                 .h(px(48.0))
-                                .text_color(theme.text.opacity(0.09)),
+                                .opacity(0.09),
                         )
                         .child(
                             div()
@@ -3727,10 +3732,10 @@ impl Shell {
                 .items_center()
                 .text_center()
                 .child(
-                    icon(icons::COMET_LOGO)
+                    img(icons::logo_image())
                         .w(px(31.4))
                         .h(px(36.0))
-                        .text_color(theme.text),
+                        .opacity(0.9),
                 )
                 .child(
                     div()
@@ -3912,10 +3917,10 @@ impl Shell {
             .flex()
             .flex_col()
             .child(
-                icon(icons::COMET_LOGO)
+                img(icons::logo_image())
                     .w(px(24.4))
                     .h(px(28.0))
-                    .text_color(theme.text),
+                    .opacity(0.9),
             )
             .child(
                 div()

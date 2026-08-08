@@ -5,7 +5,7 @@
 //! normalizes ACP session updates into Comet events and keeps the ACP session
 //! alive across turns.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
@@ -56,7 +56,7 @@ pub struct AcpHarness {
     command: Option<String>,
     config_file: Option<PathBuf>,
     mcp_server_url: Option<String>,
-    discovered_models: tokio::sync::Mutex<Option<Vec<Model>>>,
+    discovered_models: tokio::sync::Mutex<HashMap<String, Vec<Model>>>,
 }
 
 impl AcpHarness {
@@ -70,7 +70,7 @@ impl AcpHarness {
             command: Some(command.into()),
             config_file: None,
             mcp_server_url: None,
-            discovered_models: tokio::sync::Mutex::new(None),
+            discovered_models: tokio::sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -84,10 +84,6 @@ impl AcpHarness {
     pub fn with_mcp_server(mut self, url: impl Into<String>) -> Self {
         self.mcp_server_url = Some(url.into());
         self
-    }
-
-    fn command(&self) -> Result<String, HarnessError> {
-        self.command_for(None)
     }
 
     /// Resolve the launch command for a specific ACP agent id. When `agent_id`
@@ -111,6 +107,7 @@ impl AcpHarness {
                     .find(|agent| Some(agent.id.as_str()) == wanted)
                     .map(|agent| agent.command)
             })
+            .map(normalize_acp_command)
             .filter(|command| !command.trim().is_empty())
             .ok_or_else(|| {
                 HarnessError::NotInstalled(format!(
@@ -133,6 +130,29 @@ struct AcpHarnessConfig {
 struct AcpHarnessAgent {
     id: String,
     command: String,
+}
+
+/// Normalize a resolved ACP agent command so the SDK's `AcpAgent::from_str`
+/// accepts it. Users sometimes paste MCP-style JSON configs that include a
+/// `"type"` field (e.g. `{"type":"stdio","command":"..."}`); the ACP SDK's
+/// `AcpAgentConfig` uses `#[serde(deny_unknown_fields)]` and rejects anything
+/// beyond `command`, `args`, `env`. Strip the offending field before the SDK
+/// ever sees it.
+fn normalize_acp_command(command: String) -> String {
+    let trimmed = command.trim();
+    if !trimmed.starts_with('{') {
+        return command;
+    }
+    let Ok(mut value) = serde_json::from_str::<serde_json::Value>(trimmed) else {
+        return command;
+    };
+    let Some(obj) = value.as_object_mut() else {
+        return command;
+    };
+    if obj.remove("type").is_none() {
+        return command;
+    }
+    serde_json::to_string(&value).unwrap_or(command)
 }
 
 #[async_trait]
@@ -158,10 +178,10 @@ impl Harness for AcpHarness {
         REASONING_LEVELS
     }
 
-    async fn models(&self) -> Result<Vec<Model>, HarnessError> {
-        let command = self.command()?;
+    async fn models(&self, acp_agent_id: Option<&str>) -> Result<Vec<Model>, HarnessError> {
+        let command = self.command_for(acp_agent_id)?;
         let mut cached_models = self.discovered_models.lock().await;
-        if let Some(models) = cached_models.as_ref() {
+        if let Some(models) = cached_models.get(&command) {
             return Ok(models.clone());
         }
 
@@ -212,7 +232,7 @@ impl Harness for AcpHarness {
                 }
             }
         };
-        *cached_models = Some(models.clone());
+        cached_models.insert(command, models.clone());
         Ok(models)
     }
 
@@ -698,12 +718,23 @@ async fn run_connection(
 
     let cwd = absolute_cwd(&request.cwd);
     let mcp_servers = mcp_servers(mcp_server_url.as_deref());
+    let with_mcp = |request: NewSessionRequest| {
+        if mcp_servers.is_empty() {
+            request
+        } else {
+            request.mcp_servers(mcp_servers.clone())
+        }
+    };
+    let with_mcp_load = |request: LoadSessionRequest| {
+        if mcp_servers.is_empty() {
+            request
+        } else {
+            request.mcp_servers(mcp_servers.clone())
+        }
+    };
     let (session_id, config_options) = if let Some(resume) = &request.resume {
         match connection
-            .send_request(
-                LoadSessionRequest::new(resume.clone(), cwd.clone())
-                    .mcp_servers(mcp_servers.clone()),
-            )
+            .send_request(with_mcp_load(LoadSessionRequest::new(resume.clone(), cwd.clone())))
             .block_task()
             .await
         {
@@ -711,7 +742,7 @@ async fn run_connection(
             Err(error) => {
                 tracing::debug!(target: "comet_harness::acp", %error, "session/load failed; starting a new ACP session");
                 let response = connection
-                    .send_request(NewSessionRequest::new(cwd.clone()).mcp_servers(mcp_servers))
+                    .send_request(with_mcp(NewSessionRequest::new(cwd.clone())))
                     .block_task()
                     .await?;
                 (response.session_id, response.config_options)
@@ -1496,7 +1527,7 @@ mod tests {
         )
         .unwrap();
         let harness = AcpHarness::new().with_config_file(config);
-        assert_eq!(harness.command().unwrap(), "second-agent --acp");
+        assert_eq!(harness.command_for(None).unwrap(), "second-agent --acp");
     }
 
     #[test]
@@ -1700,5 +1731,48 @@ mod tests {
         );
         let events = normalize_update(update, &completed);
         assert!(events.is_empty());
+    }
+
+    #[test]
+    fn normalize_strips_type_field_from_json_command() {
+        let input = r#"{"type":"stdio","command":"/usr/local/bin/agent","args":["--acp"]}"#.to_string();
+        let result = normalize_acp_command(input.clone());
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert!(parsed.get("type").is_none());
+        assert_eq!(parsed["command"], "/usr/local/bin/agent");
+
+        // Non-JSON commands pass through unchanged.
+        assert_eq!(
+            normalize_acp_command("/usr/local/bin/agent --acp".to_string()),
+            "/usr/local/bin/agent --acp"
+        );
+
+        // JSON without a `type` field is returned as-is.
+        let clean = r#"{"command":"/usr/local/bin/agent"}"#;
+        assert_eq!(
+            normalize_acp_command(clean.to_string()),
+            clean
+        );
+    }
+
+    #[test]
+    fn command_for_normalizes_mcp_style_json_config() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = temp.path().join("acp-agents.json");
+        std::fs::write(
+            &config,
+            r#"{
+                "activeAgentId": "mcp-agent",
+                "agents": [
+                    {"id": "mcp-agent", "command": "{\"type\":\"stdio\",\"command\":\"/usr/local/bin/agent\"}"}
+                ]
+            }"#,
+        )
+        .unwrap();
+        let harness = AcpHarness::new().with_config_file(config);
+        let command = harness.command_for(None).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&command).unwrap();
+        assert!(parsed.get("type").is_none());
+        assert_eq!(parsed["command"], "/usr/local/bin/agent");
     }
 }

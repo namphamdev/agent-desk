@@ -61,7 +61,7 @@ impl Harness for MockHarness {
     fn reasoning_levels(&self) -> &[ReasoningLevel] {
         &[ReasoningLevel::Medium]
     }
-    async fn models(&self) -> Result<Vec<Model>, HarnessError> {
+    async fn models(&self, _acp_agent_id: Option<&str>) -> Result<Vec<Model>, HarnessError> {
         Ok(vec![
             Model {
                 id: "mock-1".into(),

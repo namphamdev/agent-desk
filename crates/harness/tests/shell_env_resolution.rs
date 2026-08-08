@@ -60,11 +60,11 @@ async fn cli_on_login_shell_path_only_is_resolved() {
     // models() gates on resolve_executable(): both CLIs are only reachable
     // through the snapshot, so success means resolution consulted it.
     CodexHarness::new()
-        .models()
+        .models(None)
         .await
         .expect("codex resolves via login-shell PATH");
     ClaudeHarness::new()
-        .models()
+        .models(None)
         .await
         .expect("claude resolves via login-shell PATH");
 }
