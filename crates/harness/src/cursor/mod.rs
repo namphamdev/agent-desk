@@ -80,9 +80,9 @@ fn resolve_cursor_executable() -> Option<PathBuf> {
 
 fn candidate_exe_names() -> &'static [&'static str] {
     if cfg!(windows) {
-        &["cursor-agent.exe", "cursor-agent.cmd", "cursor.cmd"]
+        &["agent.exe", "cursor-agent.exe", "cursor-agent.cmd", "cursor.exe"]
     } else {
-        &["cursor-agent", "cursor"]
+        &["agent", "cursor-agent", "cursor"]
     }
 }
 

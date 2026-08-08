@@ -25,7 +25,9 @@ use gpui::{
 use unicode_segmentation::UnicodeSegmentation;
 
 use comet_doc::{MessagePart, MessageRole, SessionCommandPayload, SessionMessageEntry};
-use comet_proto::{FileSearchMatch, RunRequest, UserInputAnswer, UserInputQuestion};
+use comet_proto::{
+    FileSearchMatch, RunRequest, SteeringMode, UserInputAnswer, UserInputQuestion,
+};
 use comet_rpc::{RpcError, methods};
 
 use crate::attachments::{self, StagedAttachment};
@@ -4476,7 +4478,7 @@ impl Composer {
                         }
                     }
                     if let Err(err) = engine.client().call(methods::MUTATE, mutate).await {
-                        tracing::debug!(error = %err, "CreateChat mutate unavailable; doc host will materialize the chat");
+                        tracing::warn!(error = %err, "CreateChat mutate unavailable; doc host will materialize the chat");
                     }
                     if let Some(title) = &chat_title {
                         let _ = engine
@@ -4565,7 +4567,7 @@ impl Composer {
                     SessionCommandPayload::Run {
                         request: RunRequest {
                             prompt: content.clone(),
-                            harness: None,
+                            harness: resolved.harness,
                             model: resolved.model.clone(),
                             reasoning: resolved.reasoning,
                             model_options: resolved.model_options.clone(),
@@ -4587,6 +4589,7 @@ impl Composer {
                             }),
                             attachments: attachment_paths,
                             acp_agent_id: resolved.chat_config().as_ref().and_then(|c| c.acp_agent_id.clone()),
+                            custom_provider: None,
                         },
                         message_id: message_id.clone(),
                     }
@@ -5280,6 +5283,26 @@ impl Render for Composer {
         self.last_rendered_height = pill_height;
 
         let send_button = self.render_send_button(mode, cx);
+        // Queued-steer hint: when the agent uses TurnBoundary steering (e.g.
+        // Grok over ACP), a steer message doesn't interrupt the live turn —
+        // it queues for the next turn boundary. Without this cue the queue
+        // read as a dropped steer (user report).
+        let steer_hint = match mode {
+            SendButtonMode::Steer => self
+                .pickers
+                .read(cx)
+                .resolved_steering_mode(cx)
+                .filter(|m| *m == SteeringMode::TurnBoundary)
+                .map(|_| {
+                    div()
+                        .text_size(px(11.0))
+                        .text_color(theme.text_muted.opacity(0.7))
+                        .child(SharedString::from(
+                            "Steer queued — applied when the current turn ends",
+                        ))
+                }),
+            _ => None,
+        };
         // Attach button — opens the native image picker (the original's hidden
         // `<input type=file accept="image/*" multiple>`); paste/drop also feed
         // the same strip. `ml-1` per the source cluster — chips→attach reads
@@ -5443,6 +5466,17 @@ impl Render for Composer {
             container
         };
         let container = container.child(motion::fade_quick("composer-input", body));
+        let container =
+            container.when_some(steer_hint, |el, hint| {
+                el.child(
+                    div()
+                        .w_full()
+                        .flex()
+                        .justify_end()
+                        .px(px(Theme::SPACE_SM))
+                        .child(hint),
+                )
+            });
         // Branch/worktree toolbar under the pill (t3code BranchToolbar): the
         // checkout-kind selector + ref picker for new sessions, read-only
         // labels once the session exists. Git spaces only.

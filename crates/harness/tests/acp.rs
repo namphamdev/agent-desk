@@ -166,6 +166,7 @@ async fn parked_acp_session_does_not_busy_poll() {
         seed_purpose: None,
         harness: None,
             acp_agent_id: None,
+        custom_provider: None,
     };
 
     let mut stream = harness.run(request, controls).await.unwrap();
@@ -228,6 +229,7 @@ async fn streams_and_normalizes_an_acp_session() {
         seed_purpose: None,
         harness: None,
             acp_agent_id: None,
+        custom_provider: None,
     };
 
     let stream = harness.run(request, controls).await.unwrap();
@@ -303,6 +305,7 @@ async fn emits_a_turn_boundary_for_a_steer_after_completion() {
         seed_purpose: None,
         harness: None,
             acp_agent_id: None,
+        custom_provider: None,
     };
 
     let mut stream = harness.run(request, controls).await.unwrap();
@@ -374,6 +377,7 @@ async fn resumes_an_acp_session_via_session_load() {
         seed_purpose: None,
         harness: None,
         acp_agent_id: None,
+        custom_provider: None,
     };
 
     let stream = harness.run(request, controls).await.unwrap();
@@ -437,6 +441,7 @@ async fn falls_back_to_new_session_when_load_fails() {
         seed_purpose: None,
         harness: None,
         acp_agent_id: None,
+        custom_provider: None,
     };
 
     let stream = harness.run(request, controls).await.unwrap();
@@ -456,5 +461,105 @@ async fn falls_back_to_new_session_when_load_fails() {
             AgentEvent::SessionStarted { session_id, .. } if session_id == "acp-session-1"
         )),
         "fallback should start a fresh session: {events:#?}"
+    );
+}
+
+/// Verifies that custom-provider env vars (`MODEL_PROVIDER`, `CODEX_CONFIG`,
+/// `CODEX_API_KEY`) passed through the ACP command JSON's `"env"` field reach
+/// the spawned agent subprocess. This mirrors how agent-desk would inject a
+/// custom provider at chat-send time: the env is built from the selected
+/// provider's config and merged into the codex-acp launch environment.
+#[tokio::test]
+async fn passes_custom_provider_env_to_acp_agent() {
+    let env_log = tempfile::NamedTempFile::new().unwrap();
+
+    // Simulate the env that would be built when a user selects a custom
+    // provider for Codex — these are the vars codex-acp reads.
+    let codex_config = serde_json::json!({
+        "model_provider": "custom",
+        "model_providers": {
+            "custom": {
+                "name": "NP",
+                "base_url": "https://api.np.example",
+                "wire_api": "responses"
+            }
+        }
+    })
+    .to_string();
+
+    let command = serde_json::json!({
+        "command": fixture_path(),
+        "env": {
+            "FAKE_ACP_ENV_LOG": env_log.path(),
+            "MODEL_PROVIDER": "custom",
+            "CODEX_CONFIG": codex_config,
+            "CODEX_API_KEY": "test-secret-key",
+        }
+    })
+    .to_string();
+
+    let harness = AcpHarness::with_command(command);
+    let (steer_tx, steer_rx) = mpsc::channel(1);
+    let controls = RunControls {
+        request_input: Box::new(|_| {
+            let (_tx, rx) = oneshot::channel();
+            rx
+        }),
+        steering: steer_rx,
+        interrupt: CancellationToken::new(),
+        report_memory: Box::new(|_| {}),
+    };
+    let request = RunRequest {
+        prompt: "Say hello".into(),
+        model: None,
+        reasoning: None,
+        model_options: serde_json::Map::new(),
+        cwd: "/tmp".into(),
+        sandbox: SandboxLevel::WorkspaceWrite,
+        auto_approve: true,
+        resume: None,
+        attachments: vec![],
+        seed: None,
+        seed_role: None,
+        seed_purpose: None,
+        harness: None,
+        acp_agent_id: None,
+        custom_provider: None,
+    };
+
+    let stream = harness.run(request, controls).await.unwrap();
+    drop(steer_tx);
+    let _events = tokio::time::timeout(
+        Duration::from_secs(10),
+        stream.map(Result::unwrap).collect::<Vec<_>>(),
+    )
+    .await
+    .expect("ACP fixture should finish");
+
+    // The fixture recorded the env vars it received. Verify the custom
+    // provider env was delivered to the subprocess.
+    let log_contents = std::fs::read_to_string(env_log.path())
+        .expect("env log file should exist after the session started");
+    let recorded: serde_json::Value =
+        serde_json::from_str(&log_contents).expect("env log should be valid JSON");
+
+    assert_eq!(recorded["MODEL_PROVIDER"], "custom");
+    assert_eq!(recorded["CODEX_API_KEY"], "test-secret-key");
+
+    // The CODEX_CONFIG JSON should contain the inline provider definition.
+    let config_str = recorded["CODEX_CONFIG"]
+        .as_str()
+        .expect("CODEX_CONFIG should be a string");
+    let config_json: serde_json::Value =
+        serde_json::from_str(config_str).expect("CODEX_CONFIG should be valid JSON");
+    assert_eq!(config_json["model_provider"], "custom");
+    assert_eq!(config_json["model_providers"]["custom"]["name"], "NP");
+    assert_eq!(
+        config_json["model_providers"]["custom"]["base_url"],
+        "https://api.np.example"
+    );
+    assert_eq!(
+        config_json["model_providers"]["custom"]["wire_api"],
+        "responses"
     );
 }

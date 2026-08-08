@@ -567,6 +567,7 @@ async fn titling_e2e_names_chat_and_renames_worktree_branch() {
         harness: None,
         seed_role: None,
         acp_agent_id: None,
+        custom_provider: None,
     };
     core.sessions
         .dispatch(chat_id, HarnessId::Mock, request, None)
@@ -616,6 +617,7 @@ async fn titling_e2e_names_chat_and_renames_worktree_branch() {
         harness: None,
         seed_role: None,
         acp_agent_id: None,
+        custom_provider: None,
     };
     core.sessions
         .dispatch(chat_id, HarnessId::Mock, request, None)

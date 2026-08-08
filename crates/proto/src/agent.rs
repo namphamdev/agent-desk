@@ -1,6 +1,7 @@
 //! Agent-side wire types: harness identity, run requests, streaming events, tool calls.
 
 use serde::{Deserialize, Serialize};
+use crate::providers::CustomProviderFormat;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -106,6 +107,29 @@ pub struct ModelOptionChoice {
     pub label: String,
 }
 
+/// Connection details for a custom provider, carried in a `RunRequest` so the
+/// harness can inject provider-specific env vars into the spawned agent
+/// subprocess. The API key is filled at run time from device-local encrypted
+/// storage and never persists in session state.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CustomProviderEnv {
+    /// Provider id (e.g. `"np"`). Used as the model_providers key in codex
+    /// config and the model_provider value (always `"custom"` for codex).
+    pub provider_id: String,
+    /// Display name shown by the agent.
+    pub name: String,
+    /// Base URL of the provider's API endpoint.
+    pub base_url: String,
+    /// API key for authentication.
+    pub api_key: String,
+    /// Wire formats the provider supports (determines `wire_api` in codex config).
+    pub formats: Vec<CustomProviderFormat>,
+    /// Optional subagent model id (codex only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codex_subagent_model: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunRequest {
@@ -143,6 +167,14 @@ pub struct RunRequest {
     /// content blocks. Additive + serde-defaulted for wire compat.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<String>,
+    /// When the selected model belongs to a custom provider, the engine fills
+    /// this with the provider's connection details + API key. The harness
+    /// builds provider-specific env vars (e.g. `MODEL_PROVIDER`,
+    /// `CODEX_CONFIG`, `CODEX_API_KEY` for codex-acp) and injects them into
+    /// the spawned agent subprocess at session start. Credentials live only
+    /// in-memory for the run — never persisted in session state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_provider: Option<CustomProviderEnv>,
 }
 
 impl RunRequest {

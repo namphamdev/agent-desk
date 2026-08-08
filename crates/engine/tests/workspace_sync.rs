@@ -166,6 +166,7 @@ fn run_request(prompt: &str) -> RunRequest {
         harness: None,
         seed_role: None,
         acp_agent_id: None,
+        custom_provider: None,
     }
 }
 

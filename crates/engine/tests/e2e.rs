@@ -41,6 +41,7 @@ fn run_request(prompt: &str) -> RunRequest {
         seed_purpose: None,
         harness: None,
         acp_agent_id: None,
+        custom_provider: None,
     }
 }
 
@@ -1710,6 +1711,7 @@ async fn real_claude_sees_uploaded_image_inline() {
         seed_purpose: None,
         harness: None,
             acp_agent_id: None,
+        custom_provider: None,
     };
     core.doc_host
         .queue_command(

@@ -89,20 +89,17 @@ pub(crate) struct ContentBlock {
 impl MessageBody {
     pub fn blocks(&self) -> Vec<ContentBlock> {
         if let Some(arr) = self.content.as_array() {
-            return arr
-                .iter()
-                .filter_map(|b| decode_block(b))
-                .collect();
+            return arr.iter().filter_map(decode_block).collect();
         }
         // Flat string content → one text block.
-        if let Some(s) = self.content.as_str() {
-            if !s.is_empty() {
-                return vec![ContentBlock {
-                    kind: "text".into(),
-                    text: s.into(),
-                    ..Default::default()
-                }];
-            }
+        if let Some(s) = self.content.as_str()
+            && !s.is_empty()
+        {
+            return vec![ContentBlock {
+                kind: "text".into(),
+                text: s.into(),
+                ..Default::default()
+            }];
         }
         Vec::new()
     }

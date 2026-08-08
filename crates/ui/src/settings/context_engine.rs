@@ -8,7 +8,7 @@ use comet_engine::context_engine::{
 use gpui::{Context, SharedString, Window, div, prelude::*, px};
 
 use crate::settings::widgets;
-use crate::theme::{Theme, white_alpha};
+use crate::theme::Theme;
 
 pub struct ContextEnginePage {
     data_dir: PathBuf,
@@ -57,7 +57,7 @@ fn toggle_switch(theme: &Theme, on: bool) -> gpui::Div {
         .w(px(32.0))
         .h(px(18.0))
         .rounded_full()
-        .bg(if on { theme.text } else { white_alpha(0.15) })
+        .bg(if on { theme.text } else { theme.ink(0.15) })
         .relative()
         .child(
             div()
@@ -67,9 +67,9 @@ fn toggle_switch(theme: &Theme, on: bool) -> gpui::Div {
                 .size(px(14.0))
                 .rounded_full()
                 .bg(if on {
-                    crate::theme::grey(0x0e)
+                    theme.on_solid
                 } else {
-                    white_alpha(0.7)
+                    theme.ink(0.7)
                 }),
         )
 }

@@ -23,6 +23,7 @@ use gpui::{
 use comet_engine::registry::HarnessDescriptor;
 use comet_proto::{
     ChatConfig, FolderListing, HarnessId, Model, PermissionMode, ReasoningLevel, RepoRef,
+    SteeringMode,
 };
 use comet_rpc::methods;
 
@@ -521,6 +522,18 @@ impl Pickers {
         self.harnesses
             .ready()
             .and_then(|list| visible_harnesses(list).first().map(|d| d.id))
+    }
+
+    /// Resolved steering mode for the effective harness: the draft pick (or
+    /// the selected chat's harness) looked up in the loaded descriptor list.
+    /// Returns `None` when the catalog hasn't loaded yet.
+    pub(crate) fn resolved_steering_mode(&self, cx: &App) -> Option<SteeringMode> {
+        let harness = self.effective_harness(cx)?;
+        self.harnesses.ready().and_then(|list| {
+            list.iter()
+                .find(|d| d.id == harness)
+                .map(|d| d.steering_mode)
+        })
     }
 
     /// Effective ACP agent id: the draft pick, or the selected chat's config.

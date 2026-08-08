@@ -139,6 +139,10 @@ struct DocHostInner {
     sessions: OnceLock<SessionsEngine>,
     workspace: OnceLock<WorkspaceHost>,
     handles: Mutex<HashMap<String, Arc<ChatDocHandle>>>,
+    /// Resolves the custom provider selected for a harness, including the API
+    /// key, from device-local storage. Set by the engine layer (which owns
+    /// `CustomProviders`). Returns `None` when no custom provider is selected.
+    provider_resolver: OnceLock<Arc<dyn Fn(HarnessId) -> Option<comet_proto::CustomProviderEnv> + Send + Sync>>,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -329,8 +333,19 @@ impl DocHost {
                 sessions: OnceLock::new(),
                 workspace: OnceLock::new(),
                 handles: Mutex::new(HashMap::new()),
+                provider_resolver: OnceLock::new(),
             }),
         }
+    }
+
+    /// Wire the custom-provider resolver (engine assembly). The closure
+    /// returns the provider selected for a harness, including its API key,
+    /// so the run path can inject provider env vars into agent subprocesses.
+    pub fn set_provider_resolver(
+        &self,
+        resolver: Arc<dyn Fn(HarnessId) -> Option<comet_proto::CustomProviderEnv> + Send + Sync>,
+    ) {
+        let _ = self.inner.provider_resolver.set(resolver);
     }
 
     /// Wire the sessions engine (engine assembly; see `SessionsEngine::set_doc_host`).
@@ -617,6 +632,36 @@ impl DocHost {
             .unwrap_or(self.inner.config.default_harness)
     }
 
+    /// The harness a request dispatches on: the request's own pick when it
+    /// carries one (rides the command plane, immune to registry-row races),
+    /// else [`Self::harness_for`].
+    pub(crate) fn harness_for_request(
+        &self,
+        chat_id: &str,
+        request: &comet_proto::RunRequest,
+    ) -> HarnessId {
+        request.harness.unwrap_or_else(|| self.harness_for(chat_id))
+    }
+
+    /// When the harness is Codex and a custom provider is selected, inject
+    /// the provider's connection details + API key into the request so the
+    /// ACP harness can build provider env vars for the codex-acp subprocess.
+    fn inject_custom_provider(
+        &self,
+        mut request: comet_proto::RunRequest,
+        harness: HarnessId,
+    ) -> comet_proto::RunRequest {
+        if request.custom_provider.is_none()
+            && harness == HarnessId::Codex
+            && let Some(resolver) = self.inner.provider_resolver.get()
+        {
+            if let Some(provider) = resolver(harness) {
+                request.custom_provider = Some(provider);
+            }
+        }
+        request
+    }
+
     /// Drain pending commands (host-only): evaluate → mark processed BEFORE execute →
     /// execute → write the outcome as the sole outcome writer.
     pub async fn drain_commands(&self, handle: &Arc<ChatDocHandle>) {
@@ -726,22 +771,35 @@ impl DocHost {
                 if let Some(ws) = self.workspace() {
                     ws.claim_chat(chat_id, Some(&request.cwd))?;
                 }
-                // Prefer the harness carried in the request (authoritative —
-                // set by the composer). Fall back to the workspace-row config
-                // for older peers that don't send it, then the engine default.
-                let harness = request.harness.unwrap_or_else(|| self.harness_for(chat_id));
-                let row_config = self.workspace().and_then(|ws| ws.chat_config(chat_id));
-                tracing::info!(
-                    chat = %chat_id,
-                    request_harness = ?request.harness,
-                    resolved_harness = ?harness,
-                    row_config_harness = ?row_config.as_ref().map(|c| c.harness),
-                    request_model = %request.model.clone().unwrap_or_else(|| "<none>".into()),
-                    row_model = %row_config.as_ref().and_then(|c| c.model.clone()).unwrap_or_else(|| "<none>".into()),
-                    "debug: dispatch run (harness trace)"
-                );
+                let harness = self.harness_for_request(chat_id, request);
+                // A row with no config renders no harness glyph (and every
+                // later dispatch falls back to the engine default), so stamp
+                // what this run actually executes with. Claimed rows and
+                // catalog-not-loaded createChats both land here; the racing
+                // real createChat carries the same picked values.
+                if let Some(ws) = self.workspace()
+                    && ws.chat_config(chat_id).is_none()
+                {
+                    let config = comet_proto::ChatConfig {
+                        harness,
+                        model: request.model.clone(),
+                        reasoning: request.reasoning,
+                        model_options: request.model_options.clone(),
+                        sandbox: request.sandbox,
+                        permission_mode: request.effective_permission_mode(),
+                        acp_agent_id: request.acp_agent_id.clone(),
+                    };
+                    if let Err(err) = ws.set_chat_config(chat_id, &config) {
+                        tracing::warn!(chat = %chat_id, error = %err, "run-config backfill failed");
+                    }
+                }
                 sessions
-                    .dispatch(chat_id, harness, request.clone(), Some(message_id.clone()))
+                    .dispatch(
+                        chat_id,
+                        harness,
+                        self.inject_custom_provider(request.clone(), harness),
+                        Some(message_id.clone()),
+                    )
                     .await?;
                 Ok((SessionCommandStatus::Applied, None))
             }
@@ -771,13 +829,9 @@ impl DocHost {
                         // turn's images; this steer's own refs (if any) already
                         // ride the prompt text.
                         request.attachments = Vec::new();
+                        let harness = self.harness_for_request(chat_id, &request);
                         sessions
-                            .dispatch(
-                                chat_id,
-                                self.harness_for(chat_id),
-                                request,
-                                message_id.clone(),
-                            )
+                            .dispatch(chat_id, harness, request, message_id.clone())
                             .await?;
                         Ok((
                             SessionCommandStatus::Applied,
@@ -849,9 +903,8 @@ impl DocHost {
                     tracing::warn!(chat = %chat_id, request = %request_id, error = %err,
                         "orphaned input resolve failed");
                 }
-                sessions
-                    .dispatch(chat_id, self.harness_for(chat_id), request, None)
-                    .await?;
+                let harness = self.harness_for_request(chat_id, &request);
+                sessions.dispatch(chat_id, harness, request, None).await?;
                 Ok((
                     SessionCommandStatus::Applied,
                     Some("answered as new turn".into()),
@@ -881,10 +934,10 @@ impl DocHost {
         let config = chat.config;
         Some(comet_proto::RunRequest {
             prompt: prompt.to_string(),
+            harness: config.as_ref().map(|c| c.harness),
             model: config.as_ref().and_then(|c| c.model.clone()),
             seed: None,
             seed_purpose: None,
-        harness: None,
             seed_role: None,
             acp_agent_id: config.as_ref().and_then(|c| c.acp_agent_id.clone()),
             reasoning: config.as_ref().and_then(|c| c.reasoning),
@@ -900,6 +953,7 @@ impl DocHost {
             auto_approve: false,
             attachments: Vec::new(),
             resume: None,
+            custom_provider: None,
         })
     }
 

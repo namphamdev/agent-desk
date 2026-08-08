@@ -21,6 +21,7 @@ fn run_request_attachments_survive_command_round_trip() {
         harness: None,
         seed_role: None,
         acp_agent_id: None,
+        custom_provider: None,
     };
     doc.queue_command(&SessionCommandEntry {
         id: "c1".into(),

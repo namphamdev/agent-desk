@@ -1,13 +1,12 @@
 //! Model catalog + effort mapping for Claude Code, ported from comet's
-//! `packages/harness/src/claude.ts` (which itself mirrors Claude Code's own
-//! picker via t3code's catalog).
+//! `packages/harness/src/claude.ts`.
 //!
-//! The TS harness discovers models at runtime through the SDK's
-//! `supportedModels()` control request and then OVERLAYS these static effort
-//! ladders / option sets (the SDK under-reports both). Until we grow a
-//! short-lived control-channel discovery session, [`static_models`] returns the
-//! curated list directly; `ClaudeHarness::models` is the single seam where
-//! dynamic discovery can later be spliced in.
+//! The catalog is surfaced as a spec input to the shared ACP harness
+//! ([`crate::AcpHarness::claude`]). The effort ladders (`to_effort`) and the
+//! Ultrathink prompt prefix (`apply_ultrathink`) are used by the harness spec;
+//! the model list (`static_models`) is the fallback catalog for UI display.
+
+#![allow(dead_code)]
 
 use comet_proto::{Model, ModelOption, ModelOptionChoice, ReasoningLevel};
 

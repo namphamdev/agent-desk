@@ -1,4 +1,6 @@
-use comet_proto::{AcpAgentsSnapshot, AcpRegistryAgent, AuthState, InstalledAcpAgent};
+use comet_proto::{
+    AcpAgentsSnapshot, AcpRegistryAgent, AuthState, HarnessHealth, HarnessId, InstalledAcpAgent,
+};
 use comet_rpc::methods;
 use gpui::{
     AnyElement, Context, Entity, SharedString, Subscription, Task, Window, div, prelude::*, px,
@@ -13,7 +15,9 @@ use crate::theme::{Theme, white_alpha};
 pub struct AcpAgentsPage {
     state: Entity<AppState>,
     snapshot: Loadable<AcpAgentsSnapshot>,
+    harness_health: Loadable<Vec<HarnessHealth>>,
     busy_agent: Option<String>,
+    installing_harness: Option<HarnessId>,
     error: Option<SharedString>,
     editor: Option<CustomAgentEditor>,
     /// Whether we were signed in the last time we rendered. Used to detect the
@@ -40,7 +44,9 @@ impl AcpAgentsPage {
         let mut page = Self {
             state,
             snapshot: Loadable::Idle,
+            harness_health: Loadable::Idle,
             busy_agent: None,
+            installing_harness: None,
             error: None,
             editor: None,
             was_signed_in,
@@ -55,16 +61,22 @@ impl AcpAgentsPage {
     fn load(&mut self, cx: &mut Context<Self>) {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             self.snapshot = Loadable::Error("Engine not connected".into());
+            self.harness_health = Loadable::Error("Engine not connected".into());
             return;
         };
         self.snapshot = Loadable::Loading;
+        self.harness_health = Loadable::Loading;
         self.load_task = Some(cx.spawn(async move |this, cx| {
-            let result = engine
-                .client()
-                .call(methods::LIST_ACP_AGENTS, serde_json::json!({}))
-                .await;
+            let (acp_result, health_result) = futures::future::join(
+                engine.client().call(methods::LIST_ACP_AGENTS, serde_json::json!({})),
+                engine
+                    .client()
+                    .call(methods::CHECK_HARNESS_HEALTH, serde_json::json!({})),
+            )
+            .await;
             this.update(cx, |page, cx| {
-                page.snapshot = decode_snapshot(result);
+                page.snapshot = decode_snapshot(acp_result);
+                page.harness_health = decode_health(health_result);
                 cx.notify();
             })
             .ok();
@@ -90,6 +102,57 @@ impl AcpAgentsPage {
                         Ok(snapshot) => page.snapshot = Loadable::Ready(snapshot),
                         Err(error) => page.error = Some(error.to_string().into()),
                     },
+                    Err(error) => page.error = Some(error.to_string().into()),
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+        cx.notify();
+    }
+
+    fn install_harness(&mut self, id: HarnessId, cx: &mut Context<Self>) {
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            return;
+        };
+        self.installing_harness = Some(id);
+        self.error = None;
+        self.action_task = Some(cx.spawn(async move |this, cx| {
+            let result = engine
+                .client()
+                .call(
+                    methods::INSTALL_HARNESS,
+                    serde_json::json!({ "harness": id }),
+                )
+                .await;
+            this.update(cx, |page, cx| {
+                page.installing_harness = None;
+                match result {
+                    Ok(value) => {
+                        if let Ok(install_result) =
+                            serde_json::from_value::<comet_proto::HarnessInstallResult>(value)
+                        {
+                            if let Some(err) = install_result.error {
+                                page.error = Some(err.into());
+                            }
+                        }
+                        // Reload health regardless — even on error the state may have changed.
+                        let engine = page.state.read(cx).engine().cloned();
+                        if let Some(engine) = engine {
+                            page.harness_health = Loadable::Loading;
+                            page.load_task = Some(cx.spawn(async move |this, cx| {
+                                let health_result = engine
+                                    .client()
+                                    .call(methods::CHECK_HARNESS_HEALTH, serde_json::json!({}))
+                                    .await;
+                                this.update(cx, |page, cx| {
+                                    page.harness_health = decode_health(health_result);
+                                    cx.notify();
+                                })
+                                .ok();
+                            }));
+                        }
+                    }
                     Err(error) => page.error = Some(error.to_string().into()),
                 }
                 cx.notify();
@@ -300,6 +363,109 @@ impl AcpAgentsPage {
             .into_any_element()
     }
 
+    fn harness_health_row(
+        &self,
+        health: &HarnessHealth,
+        first: bool,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let id = health.id;
+        let installing = self.installing_harness == Some(id);
+        let can_install = health.install_package.is_some() && !health.installed;
+
+        let status_icon = if health.installed {
+            crate::icons::icon(crate::icons::CHECK)
+                .size(px(16.0))
+                .text_color(theme.success)
+        } else if health.available {
+            crate::icons::icon(crate::icons::DANGER_TRIANGLE)
+                .size(px(16.0))
+                .text_color(theme.warning)
+        } else {
+            crate::icons::icon(crate::icons::DANGER_TRIANGLE)
+                .size(px(16.0))
+                .text_color(theme.danger)
+        };
+
+        let status_label = if health.installed {
+            "Installed"
+        } else if health.available {
+            "Available via npx"
+        } else {
+            "Not installed"
+        };
+
+        let status_color = if health.installed {
+            theme.success_muted
+        } else if health.available {
+            theme.warning_muted
+        } else {
+            theme.danger_muted
+        };
+
+        widgets::card_row(theme, first)
+            .child(
+                div()
+                    .flex_none()
+                    .size(px(36.0))
+                    .rounded(px(10.0))
+                    .border_1()
+                    .border_color(theme.border)
+                    .bg(white_alpha(0.03))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(status_icon),
+            )
+            .child(
+                div()
+                    .min_w_0()
+                    .flex_1()
+                    .child(widgets::row_title(theme, health.name.clone()))
+                    .child(
+                        div()
+                            .mt(px(4.0))
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_x(px(8.0))
+                            .text_size(px(11.5))
+                            .child(
+                                div()
+                                    .text_color(status_color.opacity(0.9))
+                                    .child(SharedString::from(status_label)),
+                            )
+                            .child(
+                                div()
+                                    .text_color(theme.text_muted.opacity(0.3))
+                                    .child(SharedString::from("·")),
+                            )
+                            .child(
+                                div()
+                                    .text_color(theme.text_muted.opacity(0.65))
+                                    .child(SharedString::from(health.message.clone())),
+                            ),
+                    ),
+            )
+            .when(health.installed, |row| {
+                row.child(widgets::badge_active(theme, "Ready"))
+            })
+            .when(can_install, |row| {
+                row.child(
+                    popover::btn_primary(theme, if installing { "Installing…" } else { "Install" })
+                        .id(SharedString::from(format!("install-harness-{id:?}")))
+                        .when(installing, |button| button.opacity(0.5))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if this.installing_harness.is_none() {
+                                this.install_harness(id, cx);
+                            }
+                        })),
+                )
+            })
+            .into_any_element()
+    }
+
     fn registry_row(
         &self,
         agent: &AcpRegistryAgent,
@@ -398,6 +564,17 @@ fn decode_snapshot(
     }
 }
 
+fn decode_health(
+    result: Result<serde_json::Value, comet_rpc::RpcError>,
+) -> Loadable<Vec<HarnessHealth>> {
+    match result {
+        Ok(value) => serde_json::from_value(value)
+            .map(Loadable::Ready)
+            .unwrap_or_else(|error| Loadable::Error(error.to_string())),
+        Err(error) => Loadable::Error(error.to_string()),
+    }
+}
+
 impl gpui::Render for AcpAgentsPage {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::of(cx).clone();
@@ -422,7 +599,9 @@ impl gpui::Render for AcpAgentsPage {
             .map(|snapshot| snapshot.installed.len())
             .filter(|count| *count > 0);
 
-        let content: Vec<AnyElement> = match snapshot {
+        let health_rows = self.harness_health.ready().cloned();
+
+        let mut content: Vec<AnyElement> = match snapshot {
             Some(snapshot) => {
                 let installed_rows = snapshot
                     .installed
@@ -506,6 +685,40 @@ impl gpui::Render for AcpAgentsPage {
             ],
             None => vec![],
         };
+
+        // Prepend the built-in harness health section so it appears first.
+        if let Some(healths) = health_rows {
+            let harness_rows: Vec<AnyElement> = healths
+                .iter()
+                .enumerate()
+                .map(|(index, health)| {
+                    self.harness_health_row(health, index == 0, &theme, cx)
+                })
+                .collect();
+            content.insert(
+                0,
+                div()
+                    .mt(px(24.0))
+                    .child(widgets::row_title(&theme, "Built-in harnesses"))
+                    .child(
+                        div()
+                            .mt(px(4.0))
+                            .text_size(px(12.5))
+                            .text_color(theme.text_muted)
+                            .child(
+                                "Check and install the CLI binaries for Claude Code, Codex, \
+                                 and Cursor. Each harness needs its adapter installed to run \
+                                 sessions.",
+                            ),
+                    )
+                    .child(
+                        widgets::section_card(&theme)
+                            .mt(px(8.0))
+                            .children(harness_rows),
+                    )
+                    .into_any_element(),
+            );
+        }
 
         div()
             .id("acp-agents-page")

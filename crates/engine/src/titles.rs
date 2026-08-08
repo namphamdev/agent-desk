@@ -164,6 +164,7 @@ impl TitleGenerator {
         for attempt in 0..=RETRY_DELAYS_MS.len() {
             let request = RunRequest {
                 prompt: title_prompt.clone(),
+                harness: Some(harness_id),
                 model: cheap.clone(),
                 reasoning: Some(ReasoningLevel::Minimal),
                 model_options: serde_json::Map::new(),
@@ -174,9 +175,9 @@ impl TitleGenerator {
                 resume: None,
                 seed: None,
                 seed_purpose: None,
-        harness: None,
                 seed_role: None,
                 acp_agent_id: None,
+        custom_provider: None,
             };
             match collect_text(harness.as_ref(), request).await {
                 Ok(raw) => {

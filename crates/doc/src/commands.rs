@@ -317,6 +317,7 @@ mod tests {
         harness: None,
             seed_role: None,
             acp_agent_id: None,
+        custom_provider: None,
         }
     }
 }

@@ -23,23 +23,61 @@
 //! Set `COMET_NO_LOGIN_SHELL=1` to disable the snapshot entirely.
 
 use std::ffi::OsStr;
+#[cfg(unix)]
+use std::sync::atomic::{AtomicBool, Ordering};
+
+// Caching: a Mutex-protected Option<&'static OsStr> plus an AtomicBool
+// initialized flag. Unlike the old OnceLock, this can be invalidated after
+// a harness binary install so the next login_shell_path() re-captures.
+
+#[cfg(unix)]
+static CACHE: std::sync::Mutex<Option<Option<&'static OsStr>>> = std::sync::Mutex::new(None);
+
+#[cfg(unix)]
+static INITIALIZED: AtomicBool = AtomicBool::new(false);
 
 /// The PATH the user's login shell reports, captured once and cached for the
-/// life of the process. `None` when disabled, non-unix, no usable shell, or
-/// the shell never produced a parseable snapshot.
+/// life of the process (until [`invalidate_cache`] is called). `None` when
+/// disabled, non-unix, no usable shell, or the shell never produced a
+/// parseable snapshot.
 pub fn login_shell_path() -> Option<&'static OsStr> {
     #[cfg(unix)]
     {
-        use std::ffi::OsString;
-        use std::sync::OnceLock;
-
-        static CACHE: OnceLock<Option<OsString>> = OnceLock::new();
-
-        CACHE.get_or_init(unix::capture).as_deref()
+        // Fast path: already initialized.
+        if INITIALIZED.load(Ordering::Acquire) {
+            if let Ok(guard) = CACHE.lock() {
+                return (*guard).flatten();
+            }
+        }
+        // Slow path: capture and cache.
+        let captured = unix::capture();
+        let leaked = captured.map(|s| {
+            // Leak the OsString so we can return a &'static OsStr.
+            let boxed = Box::new(s);
+            Box::leak(boxed) as &'static OsStr
+        });
+        if let Ok(mut guard) = CACHE.lock() {
+            *guard = Some(leaked);
+        }
+        INITIALIZED.store(true, Ordering::Release);
+        leaked
     }
     #[cfg(not(unix))]
     {
         None
+    }
+}
+
+/// Invalidate the cached login-shell PATH snapshot so the next call to
+/// [`login_shell_path`] re-captures it. Useful after installing a new binary
+/// (e.g. via `npm install -g`) that the stale snapshot wouldn't see.
+pub fn invalidate_cache() {
+    #[cfg(unix)]
+    {
+        if let Ok(mut guard) = CACHE.lock() {
+            *guard = None;
+        }
+        INITIALIZED.store(false, Ordering::Release);
     }
 }
 

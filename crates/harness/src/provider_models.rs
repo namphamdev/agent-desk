@@ -1,3 +1,8 @@
+//! Custom-provider model discovery — retained for future use; currently
+//! unused after the Claude/Codex ACP conversion (the adapters manage their
+//! own auth). See docs/research/acp.md.
+#![allow(dead_code)]
+
 use std::collections::HashSet;
 use std::path::Path;
 use std::time::Duration;

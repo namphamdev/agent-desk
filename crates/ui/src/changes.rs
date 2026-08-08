@@ -851,6 +851,13 @@ impl Changes {
                 serde_json::Value::String(target.clone()),
             );
         }
+        // Restore the model last picked for this harness, so switching agents
+        // doesn't reset to the catalog's first entry (and the pick survives
+        // app restarts via composer-defaults.json).
+        let remembered_model = self
+            .generation_defaults
+            .model_for(harness)
+            .map(|model| model.id.clone());
         self.generation_task = Some(cx.spawn(async move |this, cx| {
             let result = engine.client().call(methods::LIST_MODELS, params).await;
             this.update(cx, |changes, cx| {
@@ -858,7 +865,9 @@ impl Changes {
                 match result {
                     Ok(value) => match serde_json::from_value::<Vec<Model>>(value) {
                         Ok(models) => {
-                            changes.selected_model = models.first().map(|model| model.id.clone());
+                            changes.selected_model = remembered_model
+                                .filter(|id| models.iter().any(|model| &model.id == id))
+                                .or_else(|| models.first().map(|model| model.id.clone()));
                             changes.models = models;
                         }
                         Err(error) => {

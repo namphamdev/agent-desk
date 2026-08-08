@@ -1379,7 +1379,20 @@ impl Transcript {
                 for row in &self.rows[old_range.clone()] {
                     self.render_cache.borrow_mut().invalidate_row(&row.id);
                 }
-                self.list.splice(old_range, count);
+                // When a turn finishes streaming, every row of the streamed
+                // message changes diff version (streaming bit, tool auto_open,
+                // timestamp bit) with identical ids and count, so sync feeds
+                // the whole message to ListState::splice. splice resets the
+                // items to hint-less Unmeasured (heights read 0 until the next
+                // layout), and with a stuck-to-bottom anchor that read of 0
+                // makes layout think the list shrank, so the anchor walks back.
+                // `remeasure_items` keeps old sizes as hints and holds the
+                // anchor across the remeasure.
+                if count == old_range.len() {
+                    self.list.remeasure_items(old_range);
+                } else {
+                    self.list.splice(old_range, count);
+                }
             }
         }
         self.rows = new_rows;

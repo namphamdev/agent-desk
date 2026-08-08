@@ -208,6 +208,13 @@ impl EngineCore {
         let agent_accounts = AgentAccounts::new(AgentAccountsConfig::detect(data_dir));
         let acp_agents = AcpAgents::new(data_dir);
         let custom_providers = CustomProviders::new(data_dir, edge.clone());
+        // Wire the custom-provider resolver into the doc host so codex runs
+        // inject provider env vars (MODEL_PROVIDER, CODEX_CONFIG, etc.) into
+        // the codex-acp subprocess.
+        doc_host.set_provider_resolver(Arc::new({
+            let cp = custom_providers.clone();
+            move |harness: HarnessId| cp.selected_provider_for_harness(harness)
+        }));
         sessions.set_titles(TitleGenerator::new(
             workspace.clone(),
             registry.clone(),

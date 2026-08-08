@@ -5,17 +5,21 @@
 //!   in-repo — no external assets): **done** (run finished) and **request**
 //!   (agent is asking a question);
 //! - playback = write to a temp file, hand it to the system player on a
-//!   background thread: `afplay` (macOS), PowerShell `Media.SoundPlayer`
-//!   (Windows), first of `paplay`/`pw-play`/`aplay`/`ffplay`/`mpv` (Linux —
-//!   WAV, so even bare ALSA `aplay` decodes it);
+//!   background thread: `afplay` (macOS), first of `paplay`/`pw-play`/
+//!   `aplay`/`ffplay`/`mpv` (Linux — WAV, so even bare ALSA `aplay` decodes
+//!   it). On Windows the embedded WAV bytes go straight to the OS via
+//!   `PlaySoundW(SND_MEMORY)` — no temp file, no process spawn;
 //! - `COMET_DISABLE_SOUND` env kill-switch + the `soundEnabled` ui-setting;
 //! - failures are logged and swallowed — a missing player must never bother
 //!   the session flow.
 
+#[cfg(not(windows))]
 use std::path::{Path, PathBuf};
+#[cfg(not(windows))]
 use std::sync::atomic::{AtomicU64, Ordering};
 
 const DISABLE_ENV: &str = "COMET_DISABLE_SOUND";
+#[cfg(not(windows))]
 static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 static SOUND_DONE: &[u8] = include_bytes!("../assets/sounds/done.wav");
@@ -48,14 +52,24 @@ pub fn play(sound: Sound) {
 }
 
 fn play_bytes(data: &[u8]) -> Result<(), String> {
-    // The system players want a file path; write the embedded bytes out.
-    let tmp = temp_path();
-    std::fs::write(&tmp, data).map_err(|e| e.to_string())?;
-    let result = run_player(&tmp);
-    let _ = std::fs::remove_file(&tmp);
-    result
+    #[cfg(windows)]
+    {
+        // Windows uses PlaySoundW with SND_MEMORY — bytes go straight to the
+        // OS audio system, no temp file needed.
+        return run_player(data);
+    }
+    #[cfg(not(windows))]
+    {
+        // The system players want a file path; write the embedded bytes out.
+        let tmp = temp_path();
+        std::fs::write(&tmp, data).map_err(|e| e.to_string())?;
+        let result = run_player(&tmp);
+        let _ = std::fs::remove_file(&tmp);
+        result
+    }
 }
 
+#[cfg(not(windows))]
 fn temp_path() -> PathBuf {
     let id = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
     std::env::temp_dir().join(format!("comet-sound-{}-{id}.wav", std::process::id()))
@@ -67,27 +81,27 @@ fn run_player(path: &Path) -> Result<(), String> {
 }
 
 #[cfg(windows)]
-fn run_player(path: &Path) -> Result<(), String> {
-    // SoundPlayer handles WAV natively; PlaySync keeps the process alive for
-    // the chime's duration.
-    let script = format!(
-        "(New-Object Media.SoundPlayer '{}').PlaySync()",
-        path.display()
-    );
-    let output = std::process::Command::new("powershell.exe")
-        .args([
-            "-NoLogo",
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            &script,
-        ])
-        .output()
-        .map_err(|e| format!("powershell failed: {e}"))?;
-    if output.status.success() {
+fn run_player(data: &[u8]) -> Result<(), String> {
+    // Native Win32 PlaySoundW with SND_MEMORY — plays the embedded WAV bytes
+    // directly, no temp file, no process spawn. SND_ASYNC returns immediately
+    // so the background thread isn't blocked; the static byte slices outlive
+    // playback. A second call naturally interrupts the previous sound.
+    use windows::Win32::Media::Audio::{
+        PlaySoundW, SND_ASYNC, SND_MEMORY, SND_NODEFAULT,
+    };
+    use windows::core::PCWSTR;
+
+    let result = unsafe {
+        PlaySoundW(
+            PCWSTR(data.as_ptr() as *const u16),
+            None,
+            SND_MEMORY | SND_ASYNC | SND_NODEFAULT,
+        )
+    };
+    if result.as_bool() {
         Ok(())
     } else {
-        Err(format!("powershell exited with {}", output.status))
+        Err("PlaySoundW returned FALSE".to_string())
     }
 }
 
@@ -192,6 +206,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(windows))]
     fn temp_paths_are_unique() {
         assert_ne!(temp_path(), temp_path());
     }

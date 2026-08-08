@@ -41,6 +41,20 @@ for line in sys.stdin:
         if discovery_log := os.environ.get("FAKE_ACP_DISCOVERY_LOG"):
             with open(discovery_log, "a") as log:
                 log.write("session/new\n")
+        # When FAKE_ACP_ENV_LOG is set, record the provider-related env vars
+        # the harness passed so tests can assert they reached the subprocess.
+        if env_log := os.environ.get("FAKE_ACP_ENV_LOG"):
+            interesting = {
+                key: os.environ.get(key, "")
+                for key in [
+                    "MODEL_PROVIDER",
+                    "CODEX_CONFIG",
+                    "CODEX_API_KEY",
+                    "OPENAI_API_KEY",
+                ]
+            }
+            with open(env_log, "w") as log:
+                json.dump(interesting, log)
         if (
             os.environ.get("FAKE_ACP_REJECT_MCP")
             and message.get("params", {}).get("mcpServers")

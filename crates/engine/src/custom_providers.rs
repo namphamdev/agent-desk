@@ -285,6 +285,31 @@ impl CustomProviders {
             .ok_or_else(|| anyhow::anyhow!("Provider returned an empty chat completion"))
     }
 
+    /// Synchronously read the provider selected for `harness` from
+    /// device-local storage, including its API key. Returns `None` when no
+    /// provider is selected or the config file is absent. Used by the run
+    /// path to inject custom-provider env vars into agent subprocesses.
+    pub fn selected_provider_for_harness(
+        &self,
+        harness: HarnessId,
+    ) -> Option<comet_proto::CustomProviderEnv> {
+        let config = self.load_config().ok()?;
+        let provider_id = config.selection.get(&harness)?;
+        let provider = config
+            .providers
+            .into_iter()
+            .find(|p| &p.id == provider_id)?;
+        let api_key = provider.api_key.filter(|key| !key.is_empty())?;
+        Some(comet_proto::CustomProviderEnv {
+            provider_id: provider.id,
+            name: provider.name,
+            base_url: provider.base_url,
+            api_key,
+            formats: provider.formats,
+            codex_subagent_model: provider.codex_subagent_model,
+        })
+    }
+
     fn chat_provider(&self, provider_id: &str) -> anyhow::Result<StoredCustomProvider> {
         let config = self.load_config()?;
         let provider = config

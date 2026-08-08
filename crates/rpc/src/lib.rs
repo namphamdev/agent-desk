@@ -34,6 +34,11 @@ pub use server::{serve_connection, serve_ws_listener};
 /// Full surface: docs/research/feature-inventory.md §2.
 pub mod methods {
     pub const LIST_HARNESSES: &str = "ListHarnesses";
+    /// Check whether each harness's external binary is installed, available via
+    /// npx fallback, or missing.
+    pub const CHECK_HARNESS_HEALTH: &str = "CheckHarnessHealth";
+    /// Install a harness's external binary via `npm install -g <package>`.
+    pub const INSTALL_HARNESS: &str = "InstallHarness";
     pub const GET_PROJECT_HARNESS: &str = "GetProjectHarness";
     pub const APPLY_PROJECT_HARNESS: &str = "ApplyProjectHarness";
     pub const LIST_MODELS: &str = "ListModels";

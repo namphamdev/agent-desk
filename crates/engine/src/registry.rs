@@ -140,10 +140,12 @@ pub fn default_registry_with_mcp(mcp_server_url: Option<&str>) -> HarnessRegistr
 }
 
 /// Production registry with optional MCP and device-local ACP configuration.
+/// `custom_providers_path` is retained for API compatibility — Claude/Codex
+/// now run through ACP adapters that manage their own auth.
 pub fn default_registry_with_config(
     mcp_server_url: Option<&str>,
     acp_config_file: Option<std::path::PathBuf>,
-    custom_providers_path: Option<std::path::PathBuf>,
+    _custom_providers_path: Option<std::path::PathBuf>,
 ) -> HarnessRegistry {
     // Warm the login-shell PATH snapshot in the background so the first
     // claude/codex resolve doesn't pay the shell-startup latency inline.
@@ -194,8 +196,8 @@ pub fn default_registry_with_config(
             id: HarnessId::ClaudeCode,
             name: "Claude Code".into(),
             supports_steering: true,
-            steering_mode: SteeringMode::StepBoundary,
-            // Must mirror ClaudeHarness::reasoning_levels() exactly — the
+            steering_mode: SteeringMode::TurnBoundary,
+            // Must mirror AcpHarness::claude()'s spec exactly — the
             // descriptor-stability rule (see the codex test below).
             reasoning_levels: vec![
                 ReasoningLevel::Low,
@@ -208,33 +210,27 @@ pub fn default_registry_with_config(
         },
         Box::new({
             let mcp_server_url = mcp_server_url.map(str::to_owned);
-            let custom_providers = custom_providers_path.clone();
             move || {
-                let harness = comet_harness::ClaudeHarness::new();
+                let harness = comet_harness::AcpHarness::claude();
                 let harness = match &mcp_server_url {
                     Some(url) => harness.with_mcp_server(url.clone()),
-                    None => harness,
-                };
-                let harness = match &custom_providers {
-                    Some(path) => harness.with_custom_providers(path.clone()),
                     None => harness,
                 };
                 Ok(Arc::new(harness) as Arc<dyn Harness>)
             }
         }),
     );
-    // Codex, same lazy pattern: the static descriptor mirrors CodexHarness
+    // Codex, same lazy pattern: the static descriptor mirrors AcpHarness::codex()
     // exactly (`describe()` after the first resolve must not change the
-    // catalog entry) — "Codex" per the original HARNESS_LABEL, StepBoundary
-    // steering via native `turn/steer`, and the unified reasoning ladder from
-    // comet_harness::codex::catalog. CLI discovery only happens when a
-    // run/model call actually resolves the slot.
+    // catalog entry) — "Codex" per the original HARNESS_LABEL, and the unified
+    // reasoning ladder from comet_harness::codex::catalog. CLI discovery only
+    // happens when a run/model call actually resolves the slot.
     registry.register_lazy(
         HarnessDescriptor {
             id: HarnessId::Codex,
             name: "Codex".into(),
             supports_steering: true,
-            steering_mode: SteeringMode::StepBoundary,
+            steering_mode: SteeringMode::TurnBoundary,
             reasoning_levels: vec![
                 ReasoningLevel::Minimal,
                 ReasoningLevel::Low,
@@ -248,15 +244,10 @@ pub fn default_registry_with_config(
         },
         Box::new({
             let mcp_server_url = mcp_server_url.map(str::to_owned);
-            let custom_providers = custom_providers_path.clone();
             move || {
-                let harness = comet_harness::CodexHarness::new();
+                let harness = comet_harness::AcpHarness::codex();
                 let harness = match &mcp_server_url {
                     Some(url) => harness.with_mcp_server(url.clone()),
-                    None => harness,
-                };
-                let harness = match &custom_providers {
-                    Some(path) => harness.with_custom_providers(path.clone()),
                     None => harness,
                 };
                 Ok(Arc::new(harness) as Arc<dyn Harness>)

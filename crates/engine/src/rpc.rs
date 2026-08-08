@@ -90,6 +90,12 @@ struct ListModelsParams {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct InstallHarnessParams {
+    harness: HarnessId,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct GetProjectHarnessParams {
     cwd: String,
     #[serde(default)]
@@ -856,6 +862,8 @@ fn forwardable(method: &str) -> bool {
     matches!(
         method,
         methods::LIST_HARNESSES
+            | methods::CHECK_HARNESS_HEALTH
+            | methods::INSTALL_HARNESS
             | methods::GET_PROJECT_HARNESS
             | methods::APPLY_PROJECT_HARNESS
             | methods::LIST_MODELS
@@ -1151,11 +1159,56 @@ impl RpcService for EngineRpc {
                     .registry
                     .resolve(p.harness)
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
-                let models = harness
+                let mut models = harness
                     .models(p.acp_agent_id.as_deref())
                     .await
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
+
+                // When a custom provider is selected for Codex, merge its
+                // available models into the picker so the user can select
+                // a provider-native model id.
+                if p.harness == HarnessId::Codex
+                    && let Some(provider) =
+                        self.custom_providers.selected_provider_for_harness(p.harness)
+                    && provider
+                        .formats
+                        .contains(&comet_proto::CustomProviderFormat::Responses)
+                && let Ok(provider_models) =
+                    self.custom_providers.list_chat_models(&provider.provider_id).await
+                {
+                    use comet_proto::{Model, ReasoningLevel};
+                    let ladder = vec![
+                        ReasoningLevel::Low,
+                        ReasoningLevel::Medium,
+                        ReasoningLevel::High,
+                        ReasoningLevel::XHigh,
+                    ];
+                    for model_id in provider_models {
+                        // Skip duplicates: if the static catalog already has
+                        // this model id, don't add a second entry.
+                        if models.iter().any(|m| m.id == model_id) {
+                            continue;
+                        }
+                        models.push(Model {
+                            id: model_id.clone(),
+                            label: model_id,
+                            description: Some(provider.name.clone()),
+                            reasoning_levels: ladder.clone(),
+                            options: vec![],
+                        });
+                    }
+                }
+
                 RpcReply::value(&models)
+            }
+            methods::CHECK_HARNESS_HEALTH => {
+                let healths = comet_harness::installer::check_all();
+                RpcReply::value(&healths)
+            }
+            methods::INSTALL_HARNESS => {
+                let p: InstallHarnessParams = parse_params(params)?;
+                let result = comet_harness::installer::install_harness(p.harness).await;
+                RpcReply::value(&result)
             }
             methods::QUEUE_COMMAND => {
                 let p: QueueCommandParams = parse_params(params)?;

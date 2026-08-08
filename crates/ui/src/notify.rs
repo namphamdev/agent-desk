@@ -6,8 +6,9 @@
 //!   "Allow Notifications" in System Settings). Falls back to
 //!   `osascript display notification` if `terminal-notifier` isn't on `$PATH`.
 //! - Linux: `notify-send` (freedesktop.org); falls back silently if absent
-//! - Windows: PowerShell `BurntToast` if available, else a generic
-//!   `[System.Windows.Forms.MessageBox]`-free toast via `msg` (best-effort)
+//! - Windows: WinRT toast via `Windows.UI.Notifications` through PowerShell.
+//!   No third-party module needed — uses the built-in Windows Runtime that
+//!   ships with Windows 10+, so it works on every stock install.
 //!
 //! `COMET_DISABLE_NOTIFICATIONS` env kill-switch mirrors `COMET_DISABLE_SOUND`.
 //! Failures are logged and swallowed — a missing notifier must never disturb
@@ -141,36 +142,77 @@ fn dispatch(kind: NotificationKind) -> Result<(), String> {
 
 #[cfg(windows)]
 fn dispatch(kind: NotificationKind) -> Result<(), String> {
-    // Best-effort: BurntToast if installed, else silently skip (msg.exe is
-    // session-scoped and noisy). The notification feature still works on
-    // macOS/Linux; Windows users get the chime via `sound`.
+    // WinRT toast via the built-in Windows.UI.Notifications namespace — no
+    // third-party PowerShell module (BurntToast) required. Uses the AUMID of
+    // Windows PowerShell ({1AC14E77-...}\WindowsPowerShell\v1.0\powershell.exe),
+    // which is always registered on Windows 10+, so the toast surfaces in
+    // Action Center without the host app needing its own shortcut/AUMID.
+    //
+    // The script is passed via -EncodedCommand (Base64 UTF-16LE) to avoid
+    // quoting issues with embedded XML, single-quotes, and braces.
     let title = kind.title();
     let body = kind.body();
-    let script = format!(
-        "try {{ if (Get-Module -ListAvailable -Name BurntToast) {{ \
-            New-BurntToastNotification -Text '{}' , '{}' \
-        }} else {{ Write-Error 'BurntToast not installed' }} }} catch {{ exit 1 }}",
-        title.replace('\'', "''"),
-        body.replace('\'', "''"),
+    // Escape for XML text content: ampersand, angle brackets.
+    let esc = |s: &str| {
+        s.replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+    };
+    let xml = format!(
+        "<toast><visual><binding template=\"ToastText02\">\
+         <text id=\"1\">{}</text>\
+         <text id=\"2\">{}</text>\
+         </binding></visual></toast>",
+        esc(title),
+        esc(body),
     );
+    let script = format!(
+        "[void][Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime]; \
+         [void][Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime]; \
+         $xml = New-Object Windows.Data.Xml.Dom.XmlDocument; \
+         $xml.LoadXml('{xml_escaped}'); \
+         $toast = [Windows.UI.Notifications.ToastNotification]::new($xml); \
+         [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('{{1AC14E77-02E7-4E5C-B744-2EC4F3E11E6C}}\\WindowsPowerShell\\v1.0\\powershell.exe').Show($toast)",
+        xml_escaped = xml.replace('\'', "''"),
+    );
+    let encoded = encode_powerhell(&script)?;
     let output = std::process::Command::new("powershell.exe")
         .args([
             "-NoLogo",
             "-NoProfile",
             "-NonInteractive",
-            "-Command",
-            &script,
+            "-EncodedCommand",
+            &encoded,
         ])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .output()
         .map_err(|e| format!("powershell failed: {e}"))?;
     if output.status.success() {
         Ok(())
     } else {
-        Err(format!("powershell exited with {}", output.status))
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(format!(
+            "powershell exited with {}{}",
+            output.status,
+            if stderr.trim().is_empty() {
+                String::new()
+            } else {
+                format!(": {}", stderr.trim())
+            }
+        ))
     }
+}
+
+/// Encode a PowerShell script as Base64 UTF-16LE for -EncodedCommand.
+#[cfg(windows)]
+fn encode_powerhell(script: &str) -> Result<String, String> {
+    use base64::{engine::general_purpose, Engine as _};
+    let utf16: Vec<u16> = script.encode_utf16().collect();
+    let bytes: &[u8] =
+        unsafe { std::slice::from_raw_parts(utf16.as_ptr() as *const u8, utf16.len() * 2) };
+    Ok(general_purpose::STANDARD.encode(bytes))
 }
 
 /// Quote a string for an AppleScript string literal (double-quoted, with

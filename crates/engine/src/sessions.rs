@@ -656,6 +656,7 @@ impl SessionsEngine {
         harness: None,
                             seed_role: None,
                             acp_agent_id: None,
+        custom_provider: None,
                         })
                     });
                 let Some(mut request) = request else {
@@ -665,7 +666,7 @@ impl SessionsEngine {
                 request.prompt = prompt_text;
                 request.resume = None; // dispatch re-injects the remembered session
                 request.attachments = Vec::new();
-                let harness_id = host.harness_for(&chat_id);
+                let harness_id = host.harness_for_request(&chat_id, &request);
                 match sessions
                     .dispatch(&chat_id, harness_id, request, Some(user_id))
                     .await

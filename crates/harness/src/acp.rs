@@ -50,13 +50,190 @@ type InputRequester = dyn Fn(
     + Send
     + Sync;
 
-/// An ACP-compatible CLI configured through `COMET_ACP_AGENT`.
-#[derive(Default)]
+/// Per-agent configuration for the built-in ACP harness variants.
+///
+/// `claude()` / `codex()` are the same shared ACP harness pointed at the
+/// org-maintained adapter binaries (`claude-agent-acp`, `codex-acp`). The spec
+/// carries the executable name, an npx-package fallback, the harness identity
+/// surfaced through the `Harness` trait, and a prompt transform (Claude's
+/// Ultrathink is a prompt-prefix convention, not a config option).
+#[derive(Clone, Copy)]
+struct AcpSpec {
+    id: HarnessId,
+    display_name: &'static str,
+    executable: &'static str,
+    env_override: &'static str,
+    /// `npx -y <package>` fallback when the binary isn't installed — pinned
+    /// so a cold launch is reproducible (npx caches after the first run).
+    npx_package: Option<&'static str>,
+    install_hint: &'static str,
+    reasoning_levels: &'static [ReasoningLevel],
+    /// Transform applied to the initial prompt and every steer.
+    prompt_transform: fn(Option<ReasoningLevel>, &str) -> String,
+}
+
+fn identity_transform(_reasoning: Option<ReasoningLevel>, text: &str) -> String {
+    text.to_owned()
+}
+
+fn claude_spec() -> AcpSpec {
+    AcpSpec {
+        id: HarnessId::ClaudeCode,
+        display_name: "Claude Code",
+        executable: "claude-agent-acp",
+        env_override: "CLAUDE_ACP_EXECUTABLE",
+        npx_package: Some("@agentclientprotocol/claude-agent-acp@0.66.0"),
+        install_hint: "claude-agent-acp (searched PATH, the login shell's PATH, npm \
+             global bins, and fnm/nvm/volta/pnpm/bun install dirs; falls back to \
+             `npx -y @agentclientprotocol/claude-agent-acp` when npx is available; \
+             install with `npm install -g @agentclientprotocol/claude-agent-acp`; \
+             set CLAUDE_ACP_EXECUTABLE to override)",
+        reasoning_levels: &[
+            ReasoningLevel::Low,
+            ReasoningLevel::Medium,
+            ReasoningLevel::High,
+            ReasoningLevel::XHigh,
+            ReasoningLevel::Max,
+        ],
+        prompt_transform: crate::claude::catalog::apply_ultrathink,
+    }
+}
+
+fn codex_spec() -> AcpSpec {
+    AcpSpec {
+        id: HarnessId::Codex,
+        display_name: "Codex",
+        executable: "codex-acp",
+        env_override: "CODEX_ACP_EXECUTABLE",
+        npx_package: Some("@agentclientprotocol/codex-acp@1.1.14"),
+        install_hint: "codex-acp (searched PATH, the login shell's PATH, npm global \
+             bins, and fnm/nvm/volta/pnpm/bun install dirs; falls back to \
+             `npx -y @agentclientprotocol/codex-acp` when npx is available; install \
+             with `npm install -g @agentclientprotocol/codex-acp`; set \
+             CODEX_ACP_EXECUTABLE to override)",
+        reasoning_levels: crate::codex::catalog::REASONING_LEVELS,
+        prompt_transform: identity_transform,
+    }
+}
+
+/// PATH + login-shell + node-version-manager scan for a binary.
+fn find_on_paths(exe: &str) -> Option<PathBuf> {
+    // On Windows, npm global installs create `.cmd` shims (and an extensionless
+    // bash script), not `.exe`. The extensionless file causes os error 193
+    // ("%1 is not a valid Win32 application") if spawned directly, so we
+    // generate the real executable extensions and filter to acceptable ones.
+    #[cfg(windows)]
+    const EXE_EXTS: &[&str] = &[".exe", ".cmd", ".bat"];
+    #[cfg(not(windows))]
+    const EXE_EXTS: &[&str] = &[""];
+
+    let exe_names: Vec<String> = if cfg!(windows)
+        && !EXE_EXTS.iter().any(|ext| exe.ends_with(ext))
+    {
+        EXE_EXTS.iter().map(|ext| format!("{exe}{ext}")).collect()
+    } else {
+        vec![exe.to_string()]
+    };
+    let mut candidates: Vec<PathBuf> = std::env::var_os("PATH")
+        .map(|path| {
+            std::env::split_paths(&path)
+                .filter(|d| !d.as_os_str().is_empty())
+                .flat_map(|d| exe_names.iter().map(|n| d.join(n)).collect::<Vec<_>>())
+                .collect()
+        })
+        .unwrap_or_default();
+    if let Some(shell_path) = crate::shell_env::login_shell_path() {
+        candidates.extend(
+            std::env::split_paths(shell_path)
+                .filter(|d| !d.as_os_str().is_empty())
+                .flat_map(|d| exe_names.iter().map(|n| d.join(n)).collect::<Vec<_>>()),
+        );
+    }
+    candidates.extend(crate::node_version_manager_bins().into_iter().flat_map(|d| {
+        exe_names.iter().map(|n| d.join(n)).collect::<Vec<_>>()
+    }));
+    candidates.into_iter().find(|p| {
+        if !p.exists() {
+            return false;
+        }
+        // On Windows the extensionless npm/npx files are bash scripts that
+        // cause os error 193 when spawned. Only accept real executables.
+        if cfg!(windows) {
+            p.extension()
+                .is_some_and(|ext| matches!(ext.to_str(), Some("exe" | "cmd" | "bat")))
+        } else {
+            true
+        }
+    })
+}
+
+/// Resolve what to spawn for a built-in spec: the adapter binary itself, or
+/// `npx -y <pinned>` when the binary isn't installed but npx is. Returns the
+/// command string the SDK's `AcpAgent::from_str` accepts.
+fn resolve_spec_command(spec: &AcpSpec) -> Result<String, HarnessError> {
+    if let Some(p) = std::env::var_os(spec.env_override)
+        && !p.is_empty()
+    {
+        return Ok(command_string_for_path(&PathBuf::from(p)));
+    }
+    if let Some(found) = find_on_paths(spec.executable) {
+        return Ok(command_string_for_path(&found));
+    }
+    if let Some(pkg) = spec.npx_package
+        && let Some(npx) = find_on_paths("npx")
+    {
+        return Ok(format!(
+            "{} -y {}",
+            npx.display(),
+            pkg
+        ));
+    }
+    Err(HarnessError::NotInstalled(spec.install_hint.into()))
+}
+
+/// Convert a resolved binary path into the command string `AcpAgent::from_str`
+/// accepts. On Windows, `.cmd` and `.bat` files are batch scripts, not real
+/// executables — spawning them directly fails with "program not found" or OS
+/// error 193. Wrapping them in a JSON config makes the SDK spawn them through
+/// `cmd.exe /C`, which handles batch scripts correctly. Real `.exe` files
+/// (and all Unix paths) are passed through as bare strings.
+#[cfg(windows)]
+fn command_string_for_path(path: &Path) -> String {
+    let is_batch = path
+        .extension()
+        .is_some_and(|ext| matches!(ext.to_str(), Some("cmd" | "bat")));
+    if is_batch {
+        serde_json::json!({ "command": path }).to_string()
+    } else {
+        path.display().to_string()
+    }
+}
+
+#[cfg(not(windows))]
+fn command_string_for_path(path: &Path) -> String {
+    path.display().to_string()
+}
+
+/// An ACP-compatible CLI configured through `COMET_ACP_AGENT`, or one of the
+/// built-in specs (`claude()`, `codex()`).
 pub struct AcpHarness {
+    spec: Option<AcpSpec>,
     command: Option<String>,
     config_file: Option<PathBuf>,
     mcp_server_url: Option<String>,
     discovered_models: tokio::sync::Mutex<HashMap<String, Vec<Model>>>,
+}
+
+impl Default for AcpHarness {
+    fn default() -> Self {
+        Self {
+            spec: None,
+            command: None,
+            config_file: None,
+            mcp_server_url: None,
+            discovered_models: tokio::sync::Mutex::new(HashMap::new()),
+        }
+    }
 }
 
 impl AcpHarness {
@@ -64,14 +241,42 @@ impl AcpHarness {
         Self::default()
     }
 
-    /// Use a fixed SDK command/config instead of `COMET_ACP_AGENT`.
-    pub fn with_command(command: impl Into<String>) -> Self {
+    /// Claude Code over ACP — the org-maintained `claude-agent-acp` adapter
+    /// on the Claude Agent SDK.
+    pub fn claude() -> Self {
         Self {
-            command: Some(command.into()),
-            config_file: None,
-            mcp_server_url: None,
-            discovered_models: tokio::sync::Mutex::new(HashMap::new()),
+            spec: Some(claude_spec()),
+            ..Self::default()
         }
+    }
+
+    /// Codex over ACP — the org-maintained `codex-acp` adapter wrapping the
+    /// codex app-server.
+    pub fn codex() -> Self {
+        Self {
+            spec: Some(codex_spec()),
+            ..Self::default()
+        }
+    }
+
+    /// Test seam: the program `run` would spawn (the adapter binary, or npx
+    /// for the pinned-package fallback).
+    #[doc(hidden)]
+    pub fn launch_program(&self) -> Result<PathBuf, HarnessError> {
+        let spec = self.spec.ok_or_else(|| {
+            HarnessError::Protocol("launch_program is only for spec-backed harnesses".into())
+        })?;
+        let command = resolve_spec_command(&spec)?;
+        // The command is either a bare path or "npx -y <pkg>"; the program is
+        // the first token.
+        let program = command.split_whitespace().next().unwrap_or(&command);
+        Ok(PathBuf::from(program))
+    }
+
+    /// Use a fixed SDK command/config instead of `COMET_ACP_AGENT`.
+    pub fn with_command(mut self, command: impl Into<String>) -> Self {
+        self.command = Some(command.into());
+        self
     }
 
     /// Read the active agent command from Comet's device-local ACP settings.
@@ -88,8 +293,16 @@ impl AcpHarness {
 
     /// Resolve the launch command for a specific ACP agent id. When `agent_id`
     /// is `None` (or not found among installed agents), falls back to the
-    /// device's active agent.
+    /// device's active agent. Spec-backed harnesses (`claude()`, `codex()`)
+    /// resolve their adapter binary through this path instead.
     fn command_for(&self, agent_id: Option<&str>) -> Result<String, HarnessError> {
+        if let Some(spec) = &self.spec {
+            // An explicit command override (tests) wins over spec resolution.
+            if let Some(cmd) = &self.command {
+                return Ok(cmd.clone());
+            }
+            return resolve_spec_command(spec);
+        }
         self.command
             .clone()
             .or_else(|| std::env::var(ENV_AGENT).ok())
@@ -158,11 +371,11 @@ fn normalize_acp_command(command: String) -> String {
 #[async_trait]
 impl Harness for AcpHarness {
     fn id(&self) -> HarnessId {
-        HarnessId::Acp
+        self.spec.map(|s| s.id).unwrap_or(HarnessId::Acp)
     }
 
     fn display_name(&self) -> &str {
-        "ACP Agent"
+        self.spec.map(|s| s.display_name).unwrap_or("ACP Agent")
     }
 
     fn supports_steering(&self) -> bool {
@@ -175,7 +388,9 @@ impl Harness for AcpHarness {
     }
 
     fn reasoning_levels(&self) -> &[ReasoningLevel] {
-        REASONING_LEVELS
+        self.spec
+            .map(|s| s.reasoning_levels)
+            .unwrap_or(REASONING_LEVELS)
     }
 
     async fn models(&self, acp_agent_id: Option<&str>) -> Result<Vec<Model>, HarnessError> {
@@ -259,10 +474,28 @@ impl Harness for AcpHarness {
         let permission_input = request_input.clone();
         let permission_mode = request.effective_permission_mode();
         let mcp_server_url = self.mcp_server_url.clone();
+        let prompt_transform = self
+            .spec
+            .map(|s| s.prompt_transform)
+            .unwrap_or(identity_transform);
+        let harness_id = self.id();
+
+        // When the selected model belongs to a custom provider, build the
+        // provider-specific env vars to inject into the codex-acp subprocess.
+        let extra_env = if self.spec.is_some_and(|s| s.id == HarnessId::Codex) {
+            request
+                .custom_provider
+                .as_ref()
+                .map(|provider| codex_custom_provider_env(provider, request.model.as_deref()))
+        } else {
+            None
+        };
 
         tokio::spawn(async move {
             let (agent, pid_file) = instrument_agent_for_memory(agent);
-            let agent = TokioAcpAgent::new(agent).with_pid_file(pid_file.clone());
+            let agent = TokioAcpAgent::new(agent)
+                .with_pid_file(pid_file.clone())
+                .with_extra_env(extra_env.unwrap_or_default());
             let memory_stop = crate::CancellationToken::new();
             let memory_reporter: Arc<dyn Fn(Option<u64>) + Send + Sync> = report_memory.into();
             let memory_task = pid_file.clone().map(|path| {
@@ -306,6 +539,8 @@ impl Harness for AcpHarness {
                         interrupt,
                         connection_tx,
                         mcp_server_url,
+                        prompt_transform,
+                        harness_id,
                     )
                     .await
                 })
@@ -369,6 +604,20 @@ impl TokioAcpAgent {
 
     fn with_pid_file(mut self, pid_file: Option<PathBuf>) -> Self {
         self.pid_file = pid_file;
+        self
+    }
+
+    /// Merge additional env vars into the subprocess environment. Later calls
+    /// to the same key overwrite earlier ones; values from the original
+    /// command config are preserved unless overridden.
+    fn with_extra_env(mut self, extra: HashMap<String, String>) -> Self {
+        let mut env = self.config.environment().clone();
+        for (key, value) in extra {
+            env.insert(key, value);
+        }
+        self.config = AcpAgentConfig::new(self.config.command())
+            .args(self.config.arguments().to_vec())
+            .envs(env);
         self
     }
 }
@@ -538,6 +787,69 @@ fn mcp_servers(url: Option<&str>) -> Vec<McpServer> {
         .map(|url| McpServer::Http(McpServerHttp::new(CODE_CONTEXT_MCP_NAME, url)))
         .into_iter()
         .collect()
+}
+
+/// Build the codex-acp env vars that configure a custom provider inline,
+/// mirroring the old native harness's `-c model_provider="custom" ...` flags.
+/// codex-acp reads `MODEL_PROVIDER`, `CODEX_CONFIG` (merged into the session
+/// config), and `CODEX_API_KEY`. The selected model id is included so codex-acp
+/// uses it directly without needing a `session/setConfigOption` round-trip
+/// that the adapter would reject for an unknown model.
+fn codex_custom_provider_env(
+    provider: &comet_proto::CustomProviderEnv,
+    model: Option<&str>,
+) -> HashMap<String, String> {
+    // Prefer Responses (codex native), fall back to chat_completions.
+    let wire_api = if provider
+        .formats
+        .contains(&comet_proto::CustomProviderFormat::Responses)
+    {
+        "responses"
+    } else if provider
+        .formats
+        .contains(&comet_proto::CustomProviderFormat::ChatCompletions)
+    {
+        "chat_completions"
+    } else {
+        "responses"
+    };
+
+    // codex appends "/responses" or "/chat/completions" directly to base_url,
+    // so ensure it ends with "/v1" (matching the OpenAI convention). Users
+    // typically enter "https://api.example.com" without the version segment.
+    let base_url = {
+        let trimmed = provider.base_url.trim_end_matches('/');
+        if trimmed.ends_with("/v1") {
+            trimmed.to_string()
+        } else {
+            format!("{trimmed}/v1")
+        }
+    };
+
+    let mut config = serde_json::json!({
+        "model_provider": "custom",
+        "model_providers": {
+            "custom": {
+                "name": provider.name,
+                "base_url": base_url,
+                "wire_api": wire_api,
+            }
+        }
+    });
+    if let Some(model) = model.filter(|model| !model.is_empty()) {
+        config["model"] = serde_json::json!(model);
+    }
+    if let Some(subagent) = &provider.codex_subagent_model {
+        config["agents"] = serde_json::json!({
+            "default_subagent_model": subagent
+        });
+    }
+
+    let mut env = HashMap::new();
+    env.insert("MODEL_PROVIDER".into(), "custom".into());
+    env.insert("CODEX_CONFIG".into(), config.to_string());
+    env.insert("CODEX_API_KEY".into(), provider.api_key.clone());
+    env
 }
 
 async fn poll_process_memory(
@@ -713,6 +1025,8 @@ async fn run_connection(
     interrupt: crate::CancellationToken,
     event_tx: mpsc::Sender<Result<AgentEvent, HarnessError>>,
     mcp_server_url: Option<String>,
+    prompt_transform: fn(Option<ReasoningLevel>, &str) -> String,
+    harness_id: HarnessId,
 ) -> agent_client_protocol::Result<()> {
     initialize(&connection).await?;
 
@@ -789,7 +1103,7 @@ async fn run_connection(
     let mut assistant_message_id = uuid::Uuid::new_v4().to_string();
     if event_tx
         .send(Ok(AgentEvent::SessionStarted {
-            harness: HarnessId::Acp,
+            harness: harness_id,
             model: request.model.clone().unwrap_or_else(|| "default".into()),
             tools: vec![],
             cwd: cwd.display().to_string(),
@@ -802,7 +1116,7 @@ async fn run_connection(
         return Ok(());
     }
 
-    let mut prompts = VecDeque::from([prompt_content(&request)]);
+    let mut prompts = VecDeque::from([prompt_content(&request, prompt_transform)]);
 
     loop {
         let Some(content) = prompts.pop_front() else {
@@ -823,7 +1137,9 @@ async fn run_connection(
                         {
                             return Ok(());
                         }
-                        prompts.push_back(vec![ContentBlock::Text(TextContent::new(steer.prompt))]);
+                        prompts.push_back(vec![ContentBlock::Text(TextContent::new(
+                            prompt_transform(request.reasoning, &steer.prompt),
+                        ))]);
                     }
                     None => return Ok(()),
                 },
@@ -841,7 +1157,9 @@ async fn run_connection(
                 response = &mut prompt => break response,
                 steer = steering.recv() => {
                     if let Some(steer) = steer {
-                        prompts.push_back(vec![ContentBlock::Text(TextContent::new(steer.prompt))]);
+                        prompts.push_back(vec![ContentBlock::Text(TextContent::new(
+                            prompt_transform(request.reasoning, &steer.prompt),
+                        ))]);
                     }
                 }
                 _ = interrupt.cancelled() => {
@@ -1096,6 +1414,18 @@ async fn set_session_model(
             );
             Ok(None)
         }
+        // codex-acp rejects unknown model ids (custom-provider models not in
+        // its own catalog) with "Invalid params". The model is already
+        // configured via CODEX_CONFIG env, so this is non-fatal.
+        Err(error) if is_invalid_params_response(&error) => {
+            tracing::debug!(
+                target: "comet_harness::acp",
+                %error,
+                model,
+                "ACP agent rejected model config option; relying on env-configured model"
+            );
+            Ok(None)
+        }
         Err(error) => Err(error),
     }
 }
@@ -1177,6 +1507,13 @@ fn is_legacy_config_option_response(error: &agent_client_protocol::Error) -> boo
         || error.contains("missing field `configOptions`")
 }
 
+/// JSON-RPC -32602 "Invalid params": codex-acp rejects `setConfigOption` calls
+/// for model ids it doesn't know about (custom-provider models).
+fn is_invalid_params_response(error: &agent_client_protocol::Error) -> bool {
+    use agent_client_protocol::schema::v1::ErrorCode;
+    error.code == ErrorCode::InvalidParams
+}
+
 fn absolute_cwd(cwd: &str) -> PathBuf {
     let path = PathBuf::from(cwd);
     if path.is_absolute() {
@@ -1188,8 +1525,12 @@ fn absolute_cwd(cwd: &str) -> PathBuf {
     }
 }
 
-fn prompt_content(request: &RunRequest) -> Vec<ContentBlock> {
-    let mut content = vec![ContentBlock::Text(TextContent::new(request.prompt.clone()))];
+fn prompt_content(
+    request: &RunRequest,
+    prompt_transform: fn(Option<ReasoningLevel>, &str) -> String,
+) -> Vec<ContentBlock> {
+    let transformed = prompt_transform(request.reasoning, &request.prompt);
+    let mut content = vec![ContentBlock::Text(TextContent::new(transformed))];
     for attachment in &request.attachments {
         if let Some(image) = image_content(Path::new(attachment)) {
             content.push(image);
@@ -1774,5 +2115,17 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&command).unwrap();
         assert!(parsed.get("type").is_none());
         assert_eq!(parsed["command"], "/usr/local/bin/agent");
+    }
+
+    #[test]
+    fn new_session_request_serializes_mcp_servers_array() {
+        let request = NewSessionRequest::new("/tmp");
+        let json = serde_json::to_value(&request).unwrap();
+        // mcpServers must be present (even if empty) so strict agents like
+        // pi-acp don't reject session/new with "expected array, received undefined".
+        assert!(
+            json.get("mcpServers").is_some(),
+            "NewSessionRequest must include mcpServers in JSON output, got: {json}"
+        );
     }
 }
