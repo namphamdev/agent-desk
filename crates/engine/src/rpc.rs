@@ -276,6 +276,16 @@ struct AddCustomAcpAgentParams {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct UpdateCustomAcpAgentParams {
+    agent_id: String,
+    name: String,
+    command: String,
+    #[serde(default)]
+    icon: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct UpsertCustomProviderParams {
     id: String,
     name: String,
@@ -1641,6 +1651,15 @@ impl RpcService for EngineRpc {
                 let snapshot = self
                     .acp_agents
                     .add_custom(&p.name, &p.command, p.icon.as_deref())
+                    .await
+                    .map_err(|error| RpcError::Failed(error.to_string()))?;
+                RpcReply::value(&snapshot)
+            }
+            methods::UPDATE_CUSTOM_ACP_AGENT => {
+                let p: UpdateCustomAcpAgentParams = parse_params(params)?;
+                let snapshot = self
+                    .acp_agents
+                    .update_custom(&p.agent_id, &p.name, &p.command, p.icon.as_deref())
                     .await
                     .map_err(|error| RpcError::Failed(error.to_string()))?;
                 RpcReply::value(&snapshot)

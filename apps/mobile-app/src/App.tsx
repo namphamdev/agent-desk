@@ -28,7 +28,8 @@ import { DeviceSettingsView } from './views/DeviceSettingsView';
 import { NotificationSettingsView } from './views/NotificationSettingsView';
 import { ActivityView } from './views/ActivityView';
 import { MenuView } from './views/MenuView';
-
+import { useEasUpdate } from './lib/useEasUpdate';
+import { UpdateModal } from './components/UpdateModal';
 // Keep the splash screen visible while we restore session.
 void SplashScreen.preventAutoHideAsync();
 
@@ -106,6 +107,15 @@ export default function App() {
 
   useAppModel(model);
 
+  // EAS OTA update check — looks for a newer bundle on launch, prompts via modal.
+  const eas = useEasUpdate();
+  useEffect(() => {
+    if (!restored) return;
+    const t = setTimeout(() => { void eas.checkForUpdate(); }, 800);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [restored]);
+
   // Demo mode shortcut for development.
   useEffect(() => {
     const handler = (url: string) => {
@@ -140,6 +150,13 @@ export default function App() {
           )}
         </NavigationContainer>
       </GestureHandlerRootView>
+      <UpdateModal
+        info={eas.available}
+        downloading={eas.downloading}
+        error={eas.error}
+        onInstall={() => { void eas.downloadAndReload(); }}
+        onDismiss={eas.dismiss}
+      />
     </SafeAreaProvider>
   );
 }

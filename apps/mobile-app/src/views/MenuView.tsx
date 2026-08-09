@@ -1,7 +1,6 @@
 // MenuView — RN port of MenuView.swift. The app's settings / about / sign-out
 // drawer. Simple list of rows.
-
-import React from 'react';
+import React, { useState } from 'react';
 import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { version } from '../../package.json';
@@ -11,6 +10,8 @@ import { useForceUpdateOnNotify } from '../lib/hooks';
 import { Fonts, Theme } from '../theme/Theme';
 import { withAlpha, whiteAlpha } from '../theme/color';
 import { AgentDeskiMark } from '../theme/AgentDeskiMark';
+import { useEasUpdate } from '../lib/useEasUpdate';
+import { UpdateModal } from '../components/UpdateModal';
 
 interface Props {
   model: AppModel;
@@ -20,7 +21,8 @@ interface Props {
 }
 
 export function MenuView({ model, onBack, onNotifications }: Props) {
-  useForceUpdateOnNotify(model);
+  const eas = useEasUpdate();
+  const [checkedRecently, setCheckedRecently] = useState(false);
   const devices = model.demo?.devices ?? model.workspace?.devices ?? [];
   const connected = model.connected;
 
@@ -43,6 +45,29 @@ export function MenuView({ model, onBack, onNotifications }: Props) {
             </Text>
           </View>
         </View>
+        <Section title="Update">
+          <Row
+            label={eas.checking ? 'Checking for updates…' : 'Check for updates'}
+            subText={
+              eas.error
+                ? eas.error
+                : checkedRecently && !eas.available && !eas.checking
+                  ? 'Up to date'
+                  : undefined
+            }
+            onPress={async () => {
+              try {
+                const found = await eas.checkForUpdate();
+                setCheckedRecently(true);
+                if (!found) {
+                  Alert.alert('Up to date', 'You are running the latest version of AgentDeski.');
+                }
+              } catch {
+                // error surfaced in the row subText via eas.error
+              }
+            }}
+          />
+        </Section>
 
         <Section title="Notifications">
           <Row label="Notification settings" onPress={onNotifications} />
@@ -80,6 +105,13 @@ export function MenuView({ model, onBack, onNotifications }: Props) {
           />
         </Section>
       </ScrollView>
+      <UpdateModal
+        info={eas.available}
+        downloading={eas.downloading}
+        error={eas.error}
+        onInstall={() => { void eas.downloadAndReload(); }}
+        onDismiss={eas.dismiss}
+      />
     </SafeAreaView>
   );
 }

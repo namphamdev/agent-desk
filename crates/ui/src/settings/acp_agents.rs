@@ -29,6 +29,9 @@ pub struct AcpAgentsPage {
 }
 
 struct CustomAgentEditor {
+    /// `None` when adding a new agent; `Some(id)` when editing an existing
+    /// custom agent in place (the id is preserved on save).
+    agent_id: Option<String>,
     name: Entity<ComposerInput>,
     command: Entity<ComposerInput>,
     logo: Entity<ComposerInput>,
@@ -165,13 +168,48 @@ impl AcpAgentsPage {
         cx.notify();
     }
 
-    fn open_editor(&mut self, cx: &mut Context<Self>) {
-        let name = cx.new(|cx| ComposerInput::new("My agent", cx));
-        let command = cx.new(|cx| {
+    /// Open the custom-agent editor. `agent = None` adds a new agent;
+    /// `Some(agent)` edits an existing custom agent, pre-filling its fields.
+    fn open_editor_for(
+        &mut self,
+        agent: Option<&InstalledAcpAgent>,
+        cx: &mut Context<Self>,
+    ) {
+        let (agent_id, name, command, logo) = match agent {
+            Some(agent) => (
+                Some(agent.id.clone()),
+                agent.name.clone(),
+                agent.command.clone(),
+                agent.icon.clone().unwrap_or_default(),
+            ),
+            None => (
+                None,
+                String::new(),
+                String::new(),
+                String::new(),
+            ),
+        };
+        let name_input = cx.new(|cx| ComposerInput::new("My agent", cx));
+        name_input.update(cx, |input, cx| {
+            if !name.is_empty() {
+                input.set_text(&name, cx);
+            }
+        });
+        let command_input = cx.new(|cx| {
             ComposerInput::new("e.g. npx -y @my-org/my-agent or /usr/local/bin/agent", cx)
         });
-        let logo = cx.new(|cx| ComposerInput::new("https://example.com/icon.svg (optional)", cx));
-        let _inputs = [&name, &command, &logo]
+        command_input.update(cx, |input, cx| {
+            if !command.is_empty() {
+                input.set_text(&command, cx);
+            }
+        });
+        let logo_input = cx.new(|cx| ComposerInput::new("https://example.com/icon.svg (optional)", cx));
+        logo_input.update(cx, |input, cx| {
+            if !logo.is_empty() {
+                input.set_text(&logo, cx);
+            }
+        });
+        let _inputs = [&name_input, &command_input, &logo_input]
             .into_iter()
             .map(|input| {
                 cx.subscribe(input, |_, _, event: &ComposerInputEvent, cx| {
@@ -182,14 +220,16 @@ impl AcpAgentsPage {
             })
             .collect();
         self.editor = Some(CustomAgentEditor {
-            name,
-            command,
-            logo,
+            agent_id,
+            name: name_input,
+            command: command_input,
+            logo: logo_input,
             _inputs,
         });
         self.error = None;
         cx.notify();
     }
+
 
     fn cancel_editor(&mut self, cx: &mut Context<Self>) {
         self.editor = None;
@@ -201,6 +241,7 @@ impl AcpAgentsPage {
         let Some(editor) = self.editor.as_ref() else {
             return;
         };
+        let agent_id = editor.agent_id.clone();
         let name = editor.name.read(cx).text().trim().to_string();
         let command = editor.command.read(cx).text().trim().to_string();
         let logo = editor.logo.read(cx).text().trim().to_string();
@@ -224,14 +265,30 @@ impl AcpAgentsPage {
         };
         self.busy_agent = Some("__custom__".into());
         self.error = None;
+        let editing = agent_id.clone();
         self.action_task = Some(cx.spawn(async move |this, cx| {
-            let result = engine
-                .client()
-                .call(
-                    methods::ADD_CUSTOM_ACP_AGENT,
-                    serde_json::json!({ "name": name, "command": command, "icon": icon }),
-                )
-                .await;
+            let result = if let Some(agent_id) = editing {
+                engine
+                    .client()
+                    .call(
+                        methods::UPDATE_CUSTOM_ACP_AGENT,
+                        serde_json::json!({
+                            "agentId": agent_id,
+                            "name": name,
+                            "command": command,
+                            "icon": icon
+                        }),
+                    )
+                    .await
+            } else {
+                engine
+                    .client()
+                    .call(
+                        methods::ADD_CUSTOM_ACP_AGENT,
+                        serde_json::json!({ "name": name, "command": command, "icon": icon }),
+                    )
+                    .await
+            };
             this.update(cx, |page, cx| {
                 page.busy_agent = None;
                 match result {
@@ -251,6 +308,7 @@ impl AcpAgentsPage {
         cx.notify();
     }
 
+
     fn editor_panel(&self, theme: &Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let Some(editor) = self.editor.as_ref() else {
             return Vec::new();
@@ -259,6 +317,7 @@ impl AcpAgentsPage {
         let command_valid = !editor.command.read(cx).text().trim().is_empty();
         let valid = name_valid && command_valid;
         let saving = self.busy_agent.as_deref() == Some("__custom__");
+        let editing = editor.agent_id.is_some();
         vec![
             div()
                 .mt(px(16.0))
@@ -267,7 +326,16 @@ impl AcpAgentsPage {
                 .border_color(theme.border)
                 .bg(theme.surface)
                 .p(px(20.0))
-                .child(widgets::row_title(theme, "Add custom ACP agent"))
+                .child(
+                    widgets::row_title(
+                        theme,
+                        if editing {
+                            "Edit custom ACP agent"
+                        } else {
+                            "Add custom ACP agent"
+                        },
+                    ),
+                )
                 .child(
                     div()
                         .mt(px(6.0))
@@ -365,6 +433,23 @@ impl AcpAgentsPage {
                             }
                         }))
                         .child("Set default"),
+                )
+            })
+            .when(agent.distribution == "custom", |row| {
+                row.child(
+                    widgets::ghost_action(theme)
+                        .id(SharedString::from(format!("edit-acp-{id}")))
+                        .when(busy, |button| button.opacity(0.5))
+                        .hover(|s| widgets::ghost_hover(&theme, s))
+                        .on_click({
+                            let agent = agent.clone();
+                            cx.listener(move |this, _, _, cx| {
+                                if this.busy_agent.is_none() && this.action_task.is_none() {
+                                    this.open_editor_for(Some(&agent), cx);
+                                }
+                            })
+                        })
+                        .child("Edit"),
                 )
             })
             .child(
@@ -818,7 +903,7 @@ impl gpui::Render for AcpAgentsPage {
                                     .hover(|s| widgets::ghost_hover(&theme, s))
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         if this.editor.is_none() && this.busy_agent.is_none() {
-                                            this.open_editor(cx);
+                                            this.open_editor_for(None, cx);
                                         }
                                     }))
                                     .child(

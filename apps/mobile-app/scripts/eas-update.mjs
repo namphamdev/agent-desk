@@ -3,9 +3,12 @@
 // Loads EXPO_TOKEN from the app's .env so the CLI authenticates as the project
 // owner (namcyeon) regardless of any locally-logged-in EAS session.
 //
+// The --message is shown to users in the in-app update modal as the changelog,
+// so write it like release notes (what changed / fixed), not a raw commit hash.
+//
 // Usage:
-//   npm run update                    # auto message from last git commit
-//   npm run update -- "custom msg"    # explicit message
+//   npm run update                          # auto message from last git commit
+//   npm run update -- "fix: crash on launch"
 
 import { readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
@@ -13,7 +16,7 @@ import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const appDir = resolve(here, '..', 'apps', 'mobile-app');
+const appDir = resolve(here, '..')
 const envFile = resolve(appDir, '.env');
 
 // --- Load .env (only sets vars not already present in process.env) ----------

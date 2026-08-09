@@ -119,6 +119,8 @@ pub mod methods {
     /// Add a user-defined ACP agent by name + launch command, bypassing the
     /// registry (for agents not listed in the official catalog).
     pub const ADD_CUSTOM_ACP_AGENT: &str = "AddCustomAcpAgent";
+    /// Update a user-defined ACP agent in place (keeps its id).
+    pub const UPDATE_CUSTOM_ACP_AGENT: &str = "UpdateCustomAcpAgent";
     // Custom providers (ControlRpc, relay-forwardable and device-local).
     pub const GET_CUSTOM_PROVIDERS: &str = "GetCustomProviders";
     pub const UPSERT_CUSTOM_PROVIDER: &str = "UpsertCustomProvider";

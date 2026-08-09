@@ -7,8 +7,8 @@
     "android": "expo run:android",
     "ios": "expo run:ios",
     "typecheck": "tsc --noEmit",
-    "update": "node ../../scripts/eas-update.mjs",
-    "lint": "eslint . --ext .ts,.tsx",
+    "build": "node ./scripts/eas-build.mjs",
+    "update": "node ./scripts/eas-update.mjs",
     "postinstall": "patch-package"
   },
   "dependencies": {

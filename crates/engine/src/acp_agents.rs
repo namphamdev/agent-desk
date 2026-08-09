@@ -234,6 +234,55 @@ impl AcpAgents {
         }
     }
 
+    /// Update a user-defined ACP agent in place (keeps its id).
+    ///
+    /// Only agents with distribution `"custom"` are editable; registry-installed
+    /// agents (binary/npx/uvx) are managed by install/remove. Returns the
+    /// refreshed snapshot. Errors if the agent is missing or not custom.
+    pub async fn update_custom(
+        &self,
+        agent_id: &str,
+        name: &str,
+        command: &str,
+        icon: Option<&str>,
+    ) -> anyhow::Result<AcpAgentsSnapshot> {
+        let name = name.trim();
+        let command = command.trim();
+        if name.is_empty() {
+            bail!("ACP agent name is required");
+        }
+        if command.is_empty() {
+            bail!("ACP agent command is required");
+        }
+        let icon = icon
+            .map(str::trim)
+            .filter(|icon| !icon.is_empty())
+            .map(str::to_string);
+
+        let _guard = self.mutation.lock().await;
+        let mut config = self.load_config()?;
+
+        let agent = config
+            .agents
+            .iter_mut()
+            .find(|agent| agent.id == agent_id)
+            .ok_or_else(|| anyhow!("ACP agent is not installed: {agent_id}"))?;
+        if agent.distribution != "custom" {
+            bail!("Only custom ACP agents can be edited");
+        }
+        agent.name = name.to_string();
+        agent.command = normalize_custom_command(command);
+        agent.icon = icon;
+
+        config.agents.sort_by(|a, b| a.name.cmp(&b.name));
+        self.save_config(&config)?;
+
+        match self.fetch_registry().await {
+            Ok(entries) => Ok(snapshot(config, entries, None)),
+            Err(error) => Ok(snapshot(config, vec![], Some(format!("{error:#}")))),
+        }
+    }
+
     async fn fetch_registry(&self) -> anyhow::Result<Vec<RegistryEntry>> {
         let response = self
             .client
@@ -899,6 +948,84 @@ mod tests {
         assert_eq!(second.active_agent_id.as_deref(), Some("custom:Agent-2"));
         // The first snapshot only had the original id.
         assert_eq!(first.installed[0].id, "custom:Agent");
+    }
+
+    #[tokio::test]
+    async fn update_custom_rewrites_fields_in_place() {
+        let temp = tempfile::tempdir().unwrap();
+        let agents = AcpAgents::new(temp.path());
+        let created = agents
+            .add_custom("My Agent", "/usr/local/bin/agent", None)
+            .await
+            .unwrap();
+        let agent_id = created.installed[0].id.clone();
+        let original_active = created.active_agent_id.clone();
+
+        let updated = agents
+            .update_custom(
+                &agent_id,
+                "Renamed Agent",
+                "/usr/local/bin/other --acp",
+                Some("https://example.test/icon.svg"),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(updated.installed.len(), 1);
+        let agent = &updated.installed[0];
+        // The id is preserved; only the editable fields change.
+        assert_eq!(agent.id, agent_id);
+        assert_eq!(agent.name, "Renamed Agent");
+        assert_eq!(agent.command, "/usr/local/bin/other --acp");
+        assert_eq!(agent.icon.as_deref(), Some("https://example.test/icon.svg"));
+        assert_eq!(agent.distribution, "custom");
+        // Editing does not change the active selection.
+        assert_eq!(updated.active_agent_id, original_active);
+
+        // Persisted to disk.
+        let reloaded = agents.load_config().unwrap();
+        assert_eq!(reloaded.agents.len(), 1);
+        assert_eq!(reloaded.agents[0].name, "Renamed Agent");
+        assert_eq!(reloaded.agents[0].command, "/usr/local/bin/other --acp");
+    }
+
+    #[tokio::test]
+    async fn update_custom_rejects_empty_fields() {
+        let temp = tempfile::tempdir().unwrap();
+        let agents = AcpAgents::new(temp.path());
+        let created = agents.add_custom("Agent", "/bin/a", None).await.unwrap();
+        let agent_id = created.installed[0].id.clone();
+        assert!(agents.update_custom(&agent_id, "", "/bin/a", None).await.is_err());
+        assert!(agents.update_custom(&agent_id, "Agent", "   ", None).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn update_custom_rejects_missing_and_non_custom_agents() {
+        let temp = tempfile::tempdir().unwrap();
+        let agents = AcpAgents::new(temp.path());
+        // Missing agent id.
+        assert!(agents
+            .update_custom("custom:Ghost", "Agent", "/bin/a", None)
+            .await
+            .is_err());
+
+        // A non-custom (registry-style) agent is not editable via update_custom.
+        let config = AcpConfig {
+            active_agent_id: Some("registry-agent".into()),
+            agents: vec![InstalledAcpAgent {
+                id: "registry-agent".into(),
+                name: "Registry Agent".into(),
+                version: "1.0.0".into(),
+                command: r#"{"command":"/usr/local/bin/agent"}"#.into(),
+                distribution: "binary".into(),
+                icon: None,
+            }],
+        };
+        agents.save_config(&config).unwrap();
+        assert!(agents
+            .update_custom("registry-agent", "Agent", "/bin/a", None)
+            .await
+            .is_err());
     }
 
     #[test]

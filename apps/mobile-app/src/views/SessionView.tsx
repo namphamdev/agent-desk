@@ -143,12 +143,16 @@ function SessionHeader({
   })();
   return (
     <View style={headerStyles.bar}>
-      <Pressable onPress={onBack} hitSlop={12}>
+      <Pressable
+        onPress={onBack}
+        hitSlop={{ top: 16, bottom: 16, left: 16, right: 8 }}
+        style={headerStyles.backButton}
+      >
         <Text style={{ color: Theme.text, fontSize: 22 }}>‹</Text>
       </Pressable>
       <Pressable
         onPress={onOpenConfig}
-        style={{ flex: 1, alignItems: 'center' }}
+        style={headerStyles.configButton}
       >
         <Text style={{ fontFamily: Fonts.sansMedium, fontSize: 13, color: Theme.text }} numberOfLines={1}>
           {harnessLabel(harness)} · {chatDisplayTitle(chat)} ▾
@@ -201,6 +205,20 @@ const headerStyles = StyleSheet.create({
     paddingVertical: 8,
     borderBottomWidth: 1,
     borderBottomColor: Theme.border,
+  },
+  // Fixed-width back affordance with its own padding so the config button
+  // (flex:1) can't steal edge taps meant for back. The 44pt width matches
+  // Apple's minimum hit target; hitSlop adds a guard band beyond that.
+  backButton: {
+    width: 44,
+    height: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  configButton: {
+    flex: 1,
+    alignItems: 'center',
+    marginLeft: 4,
   },
 });
 

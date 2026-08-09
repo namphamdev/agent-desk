@@ -8,6 +8,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use agent_client_protocol::schema::ProtocolVersion;
@@ -567,6 +568,15 @@ impl Harness for AcpHarness {
         let notification_tx = event_tx.clone();
         let completed_tools = Arc::new(Mutex::new(HashSet::new()));
         let notification_tools = completed_tools.clone();
+        // Gate that suppresses `session/update` notifications until the live
+        // turn has started. ACP agents (e.g. OMP, Pi) replay the entire prior
+        // conversation as `session/update` notifications while servicing
+        // `session/load` on a resumed session; forwarding those to the engine
+        // would append the whole previous turn's history into the new assistant
+        // entry. Flipped to `true` right after `SessionStarted` is emitted, so
+        // only updates from the actual prompt flow reach the transcript.
+        let live_updates = Arc::new(AtomicBool::new(false));
+        let notification_live_updates = live_updates.clone();
         let RunControls {
             request_input,
             steering,
@@ -613,6 +623,13 @@ impl Harness for AcpHarness {
                 .builder()
                 .on_receive_notification(
                     async move |notification: SessionNotification, _cx| {
+                        // Drop `session/update` notifications that arrive before
+                        // the live turn starts (the load-time replay of a
+                        // resumed session's history). Only updates from the
+                        // actual prompt flow reach the transcript.
+                        if !notification_live_updates.load(Ordering::Relaxed) {
+                            return Ok(());
+                        }
                         for event in normalize_update(notification.update, &notification_tools) {
                             if notification_tx.send(Ok(event)).await.is_err() {
                                 break;
@@ -644,6 +661,7 @@ impl Harness for AcpHarness {
                         mcp_server_url,
                         prompt_transform,
                         harness_id,
+                        live_updates.clone(),
                     )
                     .await
                 })
@@ -1130,6 +1148,7 @@ async fn run_connection(
     mcp_server_url: Option<String>,
     prompt_transform: fn(Option<ReasoningLevel>, &str) -> String,
     harness_id: HarnessId,
+    live_updates: Arc<AtomicBool>,
 ) -> agent_client_protocol::Result<()> {
     initialize(&connection).await?;
 
@@ -1218,7 +1237,9 @@ async fn run_connection(
     {
         return Ok(());
     }
-
+    // Session setup (including any session/load replay) is complete. Open the
+    // gate so only prompt-flow updates reach the transcript from here on.
+    live_updates.store(true, Ordering::Relaxed);
     let mut prompts = VecDeque::from([prompt_content(&request, prompt_transform)]);
 
     loop {
