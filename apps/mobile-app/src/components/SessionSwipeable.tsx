@@ -3,6 +3,7 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { Swipeable } from 'react-native-gesture-handler';
 
 import { Fonts, Theme } from '../theme/Theme';
+import { fs, useThemedStyles } from '../theme/Appearance';
 
 interface Props {
   children: React.ReactNode;
@@ -10,6 +11,7 @@ interface Props {
 }
 
 export function SessionSwipeable({ children, onDelete }: Props) {
+  const styles = useThemedStyles(() => makeStyles(), []);
   return (
     <Swipeable
       renderRightActions={() => (
@@ -34,7 +36,8 @@ export function SessionSwipeable({ children, onDelete }: Props) {
   );
 }
 
-const styles = StyleSheet.create({
+function makeStyles() {
+  return StyleSheet.create({
   actionContainer: {
     justifyContent: 'center',
     marginVertical: 1,
@@ -52,6 +55,7 @@ const styles = StyleSheet.create({
   deleteText: {
     color: Theme.bg,
     fontFamily: Fonts.sansMedium,
-    fontSize: 12,
+    fontSize: fs(12),
   },
-});
+  });
+}

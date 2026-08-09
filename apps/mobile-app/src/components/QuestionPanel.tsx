@@ -12,8 +12,9 @@ import {
 } from 'react-native';
 import * as Haptics from 'expo-haptics';
 
-import { Fonts, Theme } from '../theme/Theme';
-import { whiteAlpha, withAlpha } from '../theme/color';
+import { Fonts, overlay, Theme } from '../theme/Theme';
+import { fs, useThemedStyles } from '../theme/Appearance';
+import { withAlpha } from '../theme/color';
 import type { UserInputAnswer, UserInputQuestion } from '../models/Entities';
 
 interface Props {
@@ -23,6 +24,7 @@ interface Props {
 }
 
 export function QuestionPanel({ requestId, questions, onRespond }: Props) {
+  const styles = useThemedStyles(() => makeStyles(), []);
   const [page, setPage] = useState(0);
   const [picked, setPicked] = useState<Record<string, Set<string>>>({});
   const [typed, setTyped] = useState<Record<string, string>>({});
@@ -103,8 +105,8 @@ export function QuestionPanel({ requestId, questions, onRespond }: Props) {
               style={({ pressed }) => [
                 styles.optionRow,
                 {
-                  backgroundColor: isPicked ? whiteAlpha(0.09) : pressed ? whiteAlpha(0.05) : whiteAlpha(0.025),
-                  borderColor: isPicked ? whiteAlpha(0.16) : 'transparent',
+                  backgroundColor: isPicked ? overlay(0.09) : pressed ? overlay(0.05) : overlay(0.025),
+                  borderColor: isPicked ? overlay(0.16) : 'transparent',
                 },
               ]}
             >
@@ -147,7 +149,7 @@ export function QuestionPanel({ requestId, questions, onRespond }: Props) {
             justifyContent: 'center',
           })}
         >
-          <Text style={{ color: Theme.bg, fontFamily: Fonts.sansSemiBold, fontSize: 13 }}>
+          <Text style={{ color: Theme.bg, fontFamily: Fonts.sansSemiBold, fontSize: fs(13) }}>
             {safePage < questions.length - 1 ? 'Next' : 'Submit'}
           </Text>
         </Pressable>
@@ -156,35 +158,36 @@ export function QuestionPanel({ requestId, questions, onRespond }: Props) {
   );
 }
 
-const styles = StyleSheet.create({
+function makeStyles() {
+  return StyleSheet.create({
   shell: {
     paddingHorizontal: 16,
     paddingVertical: 16,
     marginHorizontal: 12,
-    backgroundColor: whiteAlpha(0.04),
-    borderColor: whiteAlpha(0.05),
+    backgroundColor: overlay(0.04),
+    borderColor: overlay(0.05),
     borderWidth: 1,
     borderRadius: 26,
     gap: 12,
   },
   header: {
     fontFamily: Fonts.sansMedium,
-    fontSize: 10.5,
+    fontSize: fs(10.5),
     letterSpacing: 1,
     color: withAlpha(Theme.textMuted, 0.6),
   },
   question: {
     fontFamily: Fonts.sansSemiBold,
-    fontSize: 15,
+    fontSize: fs(15),
     color: Theme.text,
   },
   hint: {
     fontFamily: Fonts.sans,
-    fontSize: 12,
+    fontSize: fs(12),
     color: Theme.textMuted,
   },
   pageBadge: {
-    backgroundColor: whiteAlpha(0.06),
+    backgroundColor: overlay(0.06),
     borderRadius: 6,
     paddingHorizontal: 6,
     height: 20,
@@ -192,7 +195,7 @@ const styles = StyleSheet.create({
   },
   pageBadgeText: {
     fontFamily: Fonts.sans,
-    fontSize: 10,
+    fontSize: fs(10),
     color: Theme.textMuted,
   },
   optionRow: {
@@ -206,38 +209,39 @@ const styles = StyleSheet.create({
   optionText: {
     flex: 1,
     fontFamily: Fonts.sansSemiBold,
-    fontSize: 13.5,
+    fontSize: fs(13.5),
     color: Theme.text,
   },
   optionNumBadge: {
     width: 22,
     height: 22,
     borderRadius: 6,
-    backgroundColor: whiteAlpha(0.06),
+    backgroundColor: overlay(0.06),
     alignItems: 'center',
     justifyContent: 'center',
   },
   optionNum: {
     fontFamily: Fonts.sans,
-    fontSize: 11,
+    fontSize: fs(11),
     color: Theme.textMuted,
   },
   divider: {
     height: 1,
-    backgroundColor: whiteAlpha(0.06),
+    backgroundColor: overlay(0.06),
     marginTop: 6,
   },
   ownAnswerInput: {
     fontFamily: Fonts.sans,
-    fontSize: 13,
+    fontSize: fs(13),
     color: Theme.text,
     paddingVertical: 6,
     paddingHorizontal: 0,
   },
   backText: {
     fontFamily: Fonts.sansMedium,
-    fontSize: 13,
+    fontSize: fs(13),
     color: Theme.textMuted,
   },
-});
+  });
+}
 

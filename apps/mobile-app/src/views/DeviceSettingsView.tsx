@@ -18,8 +18,9 @@ import {
   AcpAgentsSnapshot,
   CustomProviderSnapshot,
 } from '../models/Entities';
-import { Fonts, Theme } from '../theme/Theme';
-import { withAlpha, whiteAlpha } from '../theme/color';
+import { Fonts, overlay, Theme } from '../theme/Theme';
+import { fs, useThemedStyles } from '../theme/Appearance';
+import { withAlpha } from '../theme/color';
 
 interface Props {
   model: AppModel;
@@ -29,6 +30,7 @@ interface Props {
 
 export function DeviceSettingsView({ model, deviceId, onBack }: Props) {
   useForceUpdateOnNotify(model);
+  const styles = useThemedStyles(() => makeStyles(), []);
   const [acp, setAcp] = useState<AcpAgentsSnapshot | null>(null);
   const [providers, setProviders] = useState<CustomProviderSnapshot | null>(null);
   const [loading, setLoading] = useState(true);
@@ -52,7 +54,7 @@ export function DeviceSettingsView({ model, deviceId, onBack }: Props) {
     <SafeAreaView style={{ flex: 1, backgroundColor: Theme.surface }} edges={['top']}>
       <View style={styles.header}>
         <Pressable onPress={onBack} hitSlop={12}>
-          <Text style={{ color: Theme.text, fontSize: 22 }}>‹</Text>
+          <Text style={{ color: Theme.text, fontSize: fs(22) }}>‹</Text>
         </Pressable>
         <Text style={styles.title}>{device?.name ?? deviceId}</Text>
         <View style={{ width: 28 }} />
@@ -80,7 +82,7 @@ export function DeviceSettingsView({ model, deviceId, onBack }: Props) {
                     </View>
                   ))}
                   {acp.registry.length > 0 ? (
-                    <View style={[styles.row, { borderTopWidth: acp.installed.length > 0 ? 1 : 0, borderTopColor: 'rgba(255,255,255,0.05)' }]}>
+                    <View style={[styles.row, { borderTopWidth: acp.installed.length > 0 ? 1 : 0, borderTopColor: overlay(0.05) }]}>
                       <Text style={[styles.rowSub, { flex: 1 }]}>
                         {acp.registry.length} agents available in registry
                       </Text>
@@ -113,6 +115,7 @@ export function DeviceSettingsView({ model, deviceId, onBack }: Props) {
 }
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
+  const styles = useThemedStyles(() => makeStyles(), []);
   return (
     <View style={{ marginBottom: 24 }}>
       <Text style={styles.sectionHeader}>{title}</Text>
@@ -121,60 +124,62 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   );
 }
 
-const styles = StyleSheet.create({
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderBottomWidth: 1,
-    borderBottomColor: Theme.border,
-  },
-  title: {
-    fontFamily: Fonts.sansMedium,
-    fontSize: 14,
-    color: Theme.text,
-  },
-  sectionHeader: {
-    fontFamily: Fonts.sansMedium,
-    fontSize: 11,
-    color: withAlpha(Theme.textMuted, 0.6),
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-    marginBottom: 8,
-  },
-  card: {
-    backgroundColor: whiteAlpha(0.04),
-    borderRadius: 16,
-    overflow: 'hidden',
-  },
-  row: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: whiteAlpha(0.05),
-  },
-  rowTitle: {
-    fontFamily: Fonts.sans,
-    fontSize: 14,
-    color: Theme.text,
-  },
-  rowSub: {
-    fontFamily: Fonts.sans,
-    fontSize: 12,
-    color: Theme.textMuted,
-    marginTop: 2,
-  },
-  empty: {
-    fontFamily: Fonts.sans,
-    fontSize: 13,
-    color: Theme.textFaint,
-    paddingHorizontal: 16,
-    paddingVertical: 16,
-  },
-});
+function makeStyles() {
+  return StyleSheet.create({
+    header: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      paddingHorizontal: 12,
+      paddingVertical: 8,
+      borderBottomWidth: 1,
+      borderBottomColor: Theme.border,
+    },
+    title: {
+      fontFamily: Fonts.sansMedium,
+      fontSize: fs(14),
+      color: Theme.text,
+    },
+    sectionHeader: {
+      fontFamily: Fonts.sansMedium,
+      fontSize: fs(11),
+      color: withAlpha(Theme.textMuted, 0.6),
+      textTransform: 'uppercase',
+      letterSpacing: 0.5,
+      marginBottom: 8,
+    },
+    card: {
+      backgroundColor: overlay(0.04),
+      borderRadius: 16,
+      overflow: 'hidden',
+    },
+    row: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      paddingHorizontal: 16,
+      paddingVertical: 12,
+      borderBottomWidth: 1,
+      borderBottomColor: overlay(0.05),
+    },
+    rowTitle: {
+      fontFamily: Fonts.sans,
+      fontSize: fs(14),
+      color: Theme.text,
+    },
+    rowSub: {
+      fontFamily: Fonts.sans,
+      fontSize: fs(12),
+      color: Theme.textMuted,
+      marginTop: 2,
+    },
+    empty: {
+      fontFamily: Fonts.sans,
+      fontSize: fs(13),
+      color: Theme.textFaint,
+      paddingHorizontal: 16,
+      paddingVertical: 16,
+    },
+  });
+}
 
 

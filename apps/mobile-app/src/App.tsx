@@ -3,7 +3,7 @@
 // main Home stack. Deep-link handler routes agentdeski://callback back to signIn.
 
 import React, { useEffect, useMemo, useState } from 'react';
-import { Linking, Pressable, StatusBar, Text, View } from 'react-native';
+import { Linking, Pressable, StatusBar, Text, useColorScheme, View } from 'react-native';
 import {
   NavigationContainer,
   DarkTheme,
@@ -17,13 +17,15 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { AppModel } from './app/AppModel';
 import { useAppModel } from './lib/hooks';
-import { Theme } from './theme/Theme';
+import { getActiveScheme, setActiveScheme, Theme } from './theme/Theme';
+import { Appearance, fs, useAppearance } from './theme/Appearance';
 import { SignInView, OrgPickerView } from './views/SignInView';
 import { HomeView } from './views/HomeView';
 import { SpaceView } from './views/SpaceView';
 import { SessionView } from './views/SessionView';
 import { NewSessionView } from './views/NewSessionView';
 import { ChangesView } from './views/ChangesView';
+import { SpaceGitView } from './views/SpaceGitView';
 import { DeviceSettingsView } from './views/DeviceSettingsView';
 import { NotificationSettingsView } from './views/NotificationSettingsView';
 import { ActivityView } from './views/ActivityView';
@@ -44,6 +46,7 @@ export type RootStackParamList = {
   NewSession: { spaceId: string };
   NewSpace: undefined;
   Changes: { chatId: string };
+  SpaceGit: { spaceId: string };
   DeviceSettings: { deviceId: string };
   NotificationSettings: undefined;
   Activity: undefined;
@@ -52,15 +55,18 @@ export type RootStackParamList = {
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
 
+/** Build a react-navigation theme that mirrors the active palette. The
+ * getter-based Theme resolves colors at call time, so this object always
+ * reads the current scheme when consumed by the navigator. */
 const navTheme = {
   ...DarkTheme,
   colors: {
     ...DarkTheme.colors,
-    background: Theme.bg,
-    card: Theme.surface,
-    text: Theme.text,
-    border: Theme.border,
-    primary: Theme.text,
+    get background() { return Theme.bg; },
+    get card() { return Theme.surface; },
+    get text() { return Theme.text; },
+    get border() { return Theme.border; },
+    get primary() { return Theme.text; },
   },
 };
 
@@ -76,17 +82,29 @@ const linking: LinkingOptions<RootStackParamList> = {
 export default function App() {
   const model = useMemo(() => new AppModel(), []);
   const [restored, setRestored] = useState(false);
+  const systemColorScheme = useColorScheme();
+  // Subscribe to appearance changes so the tree re-renders when the user
+  // switches theme mode or adjusts the minimum font size.
+  useAppearance();
 
   useEffect(() => {
     void (async () => {
       try {
-        await model.restore();
+        await Promise.all([Appearance.hydrate(), model.restore()]);
       } finally {
         setRestored(true);
         void SplashScreen.hideAsync();
       }
     })();
   }, [model]);
+
+  // Sync the active palette whenever the user's mode preference or the
+  // system color scheme changes. setActiveScheme mutates the module-level
+  // variable that Theme getters read, so the next render picks it up.
+  useEffect(() => {
+    const scheme = Appearance.effectiveScheme(systemColorScheme === 'light' ? 'light' : 'dark');
+    setActiveScheme(scheme);
+  }, [systemColorScheme, Appearance.themeMode]);
 
   // Periodically scan session statuses for notification transitions.
   useEffect(() => {
@@ -134,7 +152,10 @@ export default function App() {
 
   return (
     <SafeAreaProvider>
-      <StatusBar barStyle="light-content" backgroundColor={Theme.bg} />
+      <StatusBar
+        barStyle={getActiveScheme() === 'light' ? 'dark-content' : 'light-content'}
+        backgroundColor={Theme.bg}
+      />
       <GestureHandlerRootView style={{ flex: 1 }}>
         <NavigationContainer ref={navigationRef} theme={navTheme} linking={linking}>
           {model.phase.kind === 'signedOut' ? (
@@ -181,6 +202,9 @@ function MainStack({ model }: { model: AppModel }) {
             onNewSession={() =>
               props.navigation.navigate('NewSession', { spaceId: props.route.params.spaceId })
             }
+            onOpenGit={() =>
+              props.navigation.navigate('SpaceGit', { spaceId: props.route.params.spaceId })
+            }
           />
         )}
       </Stack.Screen>
@@ -222,6 +246,15 @@ function MainStack({ model }: { model: AppModel }) {
           if (!chat) return <View style={{ flex: 1, backgroundColor: Theme.bg }} />;
           return <ChangesView model={model} chat={chat} />;
         }}
+      </Stack.Screen>
+      <Stack.Screen name="SpaceGit" options={{ title: 'Git' }}>
+        {(props) => (
+          <SpaceGitView
+            model={model}
+            spaceId={props.route.params.spaceId}
+            onBack={() => props.navigation.goBack()}
+          />
+        )}
       </Stack.Screen>
       <Stack.Screen name="DeviceSettings" options={{ title: 'Device' }}>
         {(props) => (
@@ -269,7 +302,7 @@ function NewSpaceView({ model, onDone }: { model: AppModel; onDone: () => void }
     <View style={{ flex: 1, backgroundColor: Theme.bg, alignItems: 'center', justifyContent: 'center' }}>
       <View style={{ flex: 1 }} />
       <View style={{ alignItems: 'center', gap: 12 }}>
-        <Text style={{ fontFamily: 'Geist', fontSize: 15, color: Theme.textFaint }}>
+        <Text style={{ fontFamily: 'Geist', fontSize: fs(15), color: Theme.textFaint }}>
           To add a space, pair a desktop device running AgentDeski.
         </Text>
       </View>
@@ -284,7 +317,7 @@ function PressableText({ onPress, label }: { onPress: () => void; label: string 
     <View style={{ paddingBottom: 32 }}>
       <Text
         onPress={onPress}
-        style={{ fontFamily: 'Geist', fontSize: 14, color: Theme.text, padding: 12 }}
+        style={{ fontFamily: 'Geist', fontSize: fs(14), color: Theme.text, padding: 12 }}
       >
         {label}
       </Text>

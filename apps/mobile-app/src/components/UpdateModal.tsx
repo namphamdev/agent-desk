@@ -17,8 +17,8 @@ import {
 } from 'react-native';
 
 import type { EasUpdateInfo } from '../lib/useEasUpdate';
-import { Fonts, Theme } from '../theme/Theme';
-import { whiteAlpha } from '../theme/color';
+import { Fonts, overlay, Theme } from '../theme/Theme';
+import { fs, useThemedStyles } from '../theme/Appearance';
 
 interface Props {
   info: EasUpdateInfo | null;
@@ -32,6 +32,7 @@ interface Props {
 
 export function UpdateModal({ info, downloading, error, onInstall, onDismiss }: Props) {
   const visible = info !== null;
+  const styles = useThemedStyles(() => makeStyles(), []);
   return (
     <Modal
       visible={visible}
@@ -64,7 +65,7 @@ export function UpdateModal({ info, downloading, error, onInstall, onDismiss }: 
               disabled={downloading}
               style={({ pressed }) => [
                 styles.secondaryBtn,
-                pressed && { backgroundColor: whiteAlpha(0.06) },
+                pressed && { backgroundColor: overlay(0.06) },
                 downloading && styles.disabled,
               ]}
             >
@@ -93,7 +94,8 @@ export function UpdateModal({ info, downloading, error, onInstall, onDismiss }: 
   );
 }
 
-const styles = StyleSheet.create({
+function makeStyles() {
+  return StyleSheet.create({
   overlay: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.6)',
@@ -112,12 +114,12 @@ const styles = StyleSheet.create({
   },
   title: {
     fontFamily: Fonts.sansSemiBold,
-    fontSize: 17,
+    fontSize: fs(17),
     color: Theme.text,
   },
   meta: {
     fontFamily: Fonts.sans,
-    fontSize: 12,
+    fontSize: fs(12),
     color: Theme.textFaint,
     marginTop: 4,
   },
@@ -127,13 +129,13 @@ const styles = StyleSheet.create({
   },
   changelog: {
     fontFamily: Fonts.sans,
-    fontSize: 14,
+    fontSize: fs(14),
     lineHeight: 20,
     color: Theme.textMuted,
   },
   error: {
     fontFamily: Fonts.sans,
-    fontSize: 12,
+    fontSize: fs(12),
     color: Theme.danger,
     marginTop: 12,
   },
@@ -150,7 +152,7 @@ const styles = StyleSheet.create({
   },
   secondaryText: {
     fontFamily: Fonts.sansMedium,
-    fontSize: 14,
+    fontSize: fs(14),
     color: Theme.textMuted,
   },
   primaryBtn: {
@@ -164,10 +166,11 @@ const styles = StyleSheet.create({
   },
   primaryText: {
     fontFamily: Fonts.sansSemiBold,
-    fontSize: 14,
+    fontSize: fs(14),
     color: Theme.bg,
   },
   disabled: {
     opacity: 0.5,
   },
-});
+  });
+}

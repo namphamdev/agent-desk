@@ -15,8 +15,9 @@ import {
   ChatIndicatorValue,
   nowMs,
 } from '../models/Entities';
-import { Fonts, Theme } from '../theme/Theme';
-import { withAlpha, whiteAlpha } from '../theme/color';
+import { Fonts, overlay, Theme } from '../theme/Theme';
+import { fs, useThemedStyles } from '../theme/Appearance';
+import { withAlpha } from '../theme/color';
 import { SessionSwipeable } from '../components/SessionSwipeable';
 import { StatusRail, indicatorDotColor } from '../components/Loaders';
 import { BrandMark } from '../theme/BrandMark';
@@ -27,10 +28,12 @@ interface Props {
   spaceId: string;
   onOpenChat: (chatId: string) => void;
   onNewSession: () => void;
+  onOpenGit: () => void;
 }
 
-export function SpaceView({ model, spaceId, onOpenChat, onNewSession }: Props) {
+export function SpaceView({ model, spaceId, onOpenChat, onNewSession, onOpenGit }: Props) {
   useForceUpdateOnNotify(model);
+  const styles = useThemedStyles(() => makeStyles(), []);
   const space = model.spaces.find((s) => s.id === spaceId);
   const chats = model.chatsIn(spaceId);
 
@@ -55,6 +58,17 @@ export function SpaceView({ model, spaceId, onOpenChat, onNewSession }: Props) {
           ) : null}
         </View>
         <Pressable
+          onPress={onOpenGit}
+          hitSlop={12}
+          style={({ pressed }) => [
+            styles.newButton,
+            pressed && styles.newButtonPressed,
+          ]}
+        >
+          <LineIcon icon="gitBranch" size={16} color={Theme.text} />
+        </Pressable>
+        <View style={{ width: 6 }} />
+        <Pressable
           onPress={onNewSession}
           hitSlop={12}
           style={({ pressed }) => [
@@ -68,7 +82,7 @@ export function SpaceView({ model, spaceId, onOpenChat, onNewSession }: Props) {
       {chats.length === 0 ? (
         <View style={styles.empty}>
           <View style={styles.emptyIconWrap}>
-            <Text style={{ fontSize: 32 }}>💬</Text>
+            <Text style={{ fontSize: fs(32) }}>💬</Text>
           </View>
           <Text style={styles.emptyTitle}>No sessions yet</Text>
           <Text style={styles.emptySub}>
@@ -117,6 +131,7 @@ function SessionCard({
   onPress: () => void;
   onArchive: () => void;
 }) {
+  const styles = useThemedStyles(() => makeStyles(), []);
   const unseen = chatUnseen(chat);
   const time = relativeTime(chat.lastMessageAt ?? chat.createdAt);
   const hasPreview = chat.lastMessagePreview && chat.lastMessagePreview.trim().length > 0;
@@ -228,173 +243,175 @@ function relativeTime(ms: number): string {
 
 // MARK: - Styles
 
-const styles = StyleSheet.create({
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: Theme.border,
-  },
-  title: {
-    fontFamily: Fonts.sansSemiBold,
-    fontSize: 15,
-    color: Theme.text,
-  },
-  subtitle: {
-    fontFamily: Fonts.sans,
-    fontSize: 11,
-    color: withAlpha(Theme.textMuted, 0.6),
-    marginTop: 3,
-  },
-  newButton: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: whiteAlpha(0.08),
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  newButtonPressed: {
-    backgroundColor: whiteAlpha(0.14),
-  },
-  newButtonText: {
-    color: Theme.text,
-    fontSize: 16,
-    fontFamily: Fonts.sansMedium,
-  },
+function makeStyles() {
+  return StyleSheet.create({
+    header: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      paddingHorizontal: 16,
+      paddingVertical: 12,
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      borderBottomColor: Theme.border,
+    },
+    title: {
+      fontFamily: Fonts.sansSemiBold,
+      fontSize: fs(15),
+      color: Theme.text,
+    },
+    subtitle: {
+      fontFamily: Fonts.sans,
+      fontSize: fs(11),
+      color: withAlpha(Theme.textMuted, 0.6),
+      marginTop: 3,
+    },
+    newButton: {
+      width: 32,
+      height: 32,
+      borderRadius: 16,
+      backgroundColor: overlay(0.08),
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    newButtonPressed: {
+      backgroundColor: overlay(0.14),
+    },
+    newButtonText: {
+      color: Theme.text,
+      fontSize: fs(16),
+      fontFamily: Fonts.sansMedium,
+    },
 
-  // Empty state
-  empty: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 10,
-    paddingVertical: 48,
-    paddingHorizontal: 32,
-  },
-  emptyIconWrap: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
-    backgroundColor: whiteAlpha(0.05),
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 4,
-  },
-  emptyTitle: {
-    fontFamily: Fonts.sansSemiBold,
-    fontSize: 15,
-    color: Theme.text,
-  },
-  emptySub: {
-    fontFamily: Fonts.sans,
-    fontSize: 12.5,
-    color: Theme.textFaint,
-    textAlign: 'center',
-    lineHeight: 18,
-  },
-  emptyCta: {
-    marginTop: 12,
-    paddingHorizontal: 20,
-    height: 38,
-    borderRadius: 19,
-    backgroundColor: Theme.text,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  emptyCtaPressed: {
-    backgroundColor: withAlpha(Theme.text, 0.85),
-  },
-  emptyCtaText: {
-    fontFamily: Fonts.sansSemiBold,
-    fontSize: 13,
-    color: Theme.bg,
-  },
+    // Empty state
+    empty: {
+      flex: 1,
+      alignItems: 'center',
+      justifyContent: 'center',
+      gap: 10,
+      paddingVertical: 48,
+      paddingHorizontal: 32,
+    },
+    emptyIconWrap: {
+      width: 64,
+      height: 64,
+      borderRadius: 32,
+      backgroundColor: overlay(0.05),
+      alignItems: 'center',
+      justifyContent: 'center',
+      marginBottom: 4,
+    },
+    emptyTitle: {
+      fontFamily: Fonts.sansSemiBold,
+      fontSize: fs(15),
+      color: Theme.text,
+    },
+    emptySub: {
+      fontFamily: Fonts.sans,
+      fontSize: fs(12.5),
+      color: Theme.textFaint,
+      textAlign: 'center',
+      lineHeight: 18,
+    },
+    emptyCta: {
+      marginTop: 12,
+      paddingHorizontal: 20,
+      height: 38,
+      borderRadius: 19,
+      backgroundColor: Theme.text,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    emptyCtaPressed: {
+      backgroundColor: withAlpha(Theme.text, 0.85),
+    },
+    emptyCtaText: {
+      fontFamily: Fonts.sansSemiBold,
+      fontSize: fs(13),
+      color: Theme.bg,
+    },
 
-  // Session cards
-  separator: {
-    height: StyleSheet.hairlineWidth,
-    backgroundColor: Theme.border,
-    marginHorizontal: 14,
-  },
-  card: {
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    marginVertical: 2,
-    borderRadius: Theme.panelRadius,
-  },
-  cardPressed: {
-    backgroundColor: Theme.elementHover,
-  },
-  cardTop: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 5,
-  },
-  statusWrap: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  statusLabel: {
-    fontFamily: Fonts.sansMedium,
-    fontSize: 10.5,
-    letterSpacing: 0.2,
-  },
-  timeText: {
-    fontFamily: Fonts.sans,
-    fontSize: 11,
-    color: Theme.textFaint,
-  },
-  cardTitle: {
-    fontFamily: Fonts.sans,
-    fontSize: 13.5,
-    color: Theme.textMuted,
-  },
-  cardTitleUnseen: {
-    fontFamily: Fonts.sansMedium,
-    color: Theme.text,
-  },
-  previewText: {
-    fontFamily: Fonts.sans,
-    fontSize: 12,
-    color: Theme.textFaint,
-    marginTop: 3,
-  },
-  metaRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    marginTop: 7,
-  },
-  harnessBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-  },
-  harnessAcpIcon: {
-    fontSize: 11,
-    color: Theme.textMuted,
-  },
-  branchBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    flexShrink: 1,
-  },
-  metaText: {
-    fontFamily: Fonts.sans,
-    fontSize: 11,
-    color: withAlpha(Theme.textMuted, 0.6),
-  },
-  unseenDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: Theme.accent,
-    marginLeft: 'auto',
-  },
-});
+    // Session cards
+    separator: {
+      height: StyleSheet.hairlineWidth,
+      backgroundColor: Theme.border,
+      marginHorizontal: 14,
+    },
+    card: {
+      paddingHorizontal: 14,
+      paddingVertical: 12,
+      marginVertical: 2,
+      borderRadius: Theme.panelRadius,
+    },
+    cardPressed: {
+      backgroundColor: Theme.elementHover,
+    },
+    cardTop: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      marginBottom: 5,
+    },
+    statusWrap: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 6,
+    },
+    statusLabel: {
+      fontFamily: Fonts.sansMedium,
+      fontSize: fs(10.5),
+      letterSpacing: 0.2,
+    },
+    timeText: {
+      fontFamily: Fonts.sans,
+      fontSize: fs(11),
+      color: Theme.textFaint,
+    },
+    cardTitle: {
+      fontFamily: Fonts.sans,
+      fontSize: fs(13.5),
+      color: Theme.textMuted,
+    },
+    cardTitleUnseen: {
+      fontFamily: Fonts.sansMedium,
+      color: Theme.text,
+    },
+    previewText: {
+      fontFamily: Fonts.sans,
+      fontSize: fs(12),
+      color: Theme.textFaint,
+      marginTop: 3,
+    },
+    metaRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 10,
+      marginTop: 7,
+    },
+    harnessBadge: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 4,
+    },
+    harnessAcpIcon: {
+      fontSize: fs(11),
+      color: Theme.textMuted,
+    },
+    branchBadge: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 4,
+      flexShrink: 1,
+    },
+    metaText: {
+      fontFamily: Fonts.sans,
+      fontSize: fs(11),
+      color: withAlpha(Theme.textMuted, 0.6),
+    },
+    unseenDot: {
+      width: 6,
+      height: 6,
+      borderRadius: 3,
+      backgroundColor: Theme.accent,
+      marginLeft: 'auto',
+    },
+  });
+}

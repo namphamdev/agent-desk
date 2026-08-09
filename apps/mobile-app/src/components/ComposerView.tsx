@@ -17,8 +17,8 @@ import {
 import * as Haptics from 'expo-haptics';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { Fonts, Theme } from '../theme/Theme';
-import { whiteAlpha } from '../theme/color';
+import { Fonts, overlay, Theme } from '../theme/Theme';
+import { fs, useThemedStyles } from '../theme/Appearance';
 import type { Chat } from '../models/Entities';
 import type { SessionStore } from '../sync/SessionStore';
 
@@ -46,6 +46,7 @@ export function ComposerShell({
   chips,
 }: ShellProps) {
   const [focused, setFocused] = useState(false);
+  const styles = useThemedStyles(() => makeStyles(), []);
   const expanded = chips !== undefined || draft.includes('\n') || draft.length > 26;
 
   // Compact↔expanded flip uses a layout animation so the row transition is
@@ -82,7 +83,7 @@ export function ComposerShell({
       multiline
       style={{
         fontFamily: Fonts.sans,
-        fontSize: 16,
+        fontSize: fs(16),
         color: Theme.text,
         paddingHorizontal: 0,
         paddingVertical: 0,
@@ -104,7 +105,7 @@ export function ComposerShell({
         borderRadius: 18,
         backgroundColor: buttonActive
           ? (showStop && draft.trim().length === 0 ? Theme.text : Theme.text)
-          : whiteAlpha(0.1),
+          : overlay(0.1),
         opacity: buttonActive ? (pressed ? 0.85 : 1) : 1,
         alignItems: 'center',
         justifyContent: 'center',
@@ -122,7 +123,7 @@ export function ComposerShell({
           }}
         />
       ) : (
-        <Text style={{ color: buttonActive ? Theme.bg : Theme.textFaint, fontSize: 16, fontWeight: '700' }}>
+        <Text style={{ color: buttonActive ? Theme.bg : Theme.textFaint, fontSize: fs(16), fontWeight: '700' }}>
           ↑
         </Text>
       )}
@@ -170,15 +171,16 @@ export function ComposerShell({
   );
 }
 
-const styles = StyleSheet.create({
-  shell: {
-    gap: 12,
-    backgroundColor: whiteAlpha(0.04),
-    borderColor: whiteAlpha(0.05),
-    borderWidth: 1,
-    borderRadius: 28,
-    overflow: 'hidden',
-  },
+function makeStyles() {
+  return StyleSheet.create({
+    shell: {
+      gap: 12,
+      backgroundColor: overlay(0.04),
+      borderColor: overlay(0.05),
+      borderWidth: 1,
+      borderRadius: 28,
+      overflow: 'hidden',
+    },
   compactActionSlot: {
     paddingLeft: 4,
   },
@@ -189,7 +191,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingVertical: 10,
   },
-});
+  });
+}
 
 interface ComposerViewProps {
   store: SessionStore;

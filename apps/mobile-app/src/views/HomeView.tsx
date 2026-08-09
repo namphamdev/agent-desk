@@ -26,8 +26,9 @@ import {
   Space,
   spaceDisplayName,
 } from '../models/Entities';
-import { Fonts, Theme } from '../theme/Theme';
-import { withAlpha, whiteAlpha } from '../theme/color';
+import { Fonts, overlay, Theme } from '../theme/Theme';
+import { fs, useThemedStyles } from '../theme/Appearance';
+import { withAlpha } from '../theme/color';
 import { BrandMark } from '../theme/BrandMark';
 import {
   indicatorDotColor,
@@ -45,6 +46,7 @@ interface Props {
 
 export function HomeView({ model, navigation }: Props) {
   useForceUpdateOnNotify(model);
+  const styles = useThemedStyles(() => makeStyles(), []);
 
   useEffect(() => {
     model.preloadSessions();
@@ -89,13 +91,13 @@ export function HomeView({ model, navigation }: Props) {
             onPress={() => navigation.navigate('Activity')}
             hitSlop={8}
           >
-            <Text style={{ color: Theme.text, fontSize: 14 }}>🔔</Text>
+            <Text style={{ color: Theme.text, fontSize: fs(14) }}>🔔</Text>
           </Pressable>
           <Pressable onPress={() => navigation.navigate('NewSpace')} hitSlop={8}>
-            <Text style={{ color: Theme.text, fontSize: 18 }}>＋</Text>
+            <Text style={{ color: Theme.text, fontSize: fs(18) }}>＋</Text>
           </Pressable>
           <Pressable onPress={() => navigation.navigate('Menu')} hitSlop={8}>
-            <Text style={{ color: Theme.text, fontSize: 14 }}>⋯</Text>
+            <Text style={{ color: Theme.text, fontSize: fs(14) }}>⋯</Text>
           </Pressable>
         </View>
       </View>
@@ -113,7 +115,7 @@ export function HomeView({ model, navigation }: Props) {
             case 'placeholder':
               return (
                 <View style={{ paddingHorizontal: 16, paddingVertical: 8 }}>
-                  <Text style={{ fontFamily: Fonts.sans, fontSize: 12, color: Theme.textFaint }}>
+                  <Text style={{ fontFamily: Fonts.sans, fontSize: fs(12), color: Theme.textFaint }}>
                     {item.text}
                   </Text>
                 </View>
@@ -144,6 +146,7 @@ export function HomeView({ model, navigation }: Props) {
 }
 
 function SectionHeader({ title }: { title: string }) {
+  const styles = useThemedStyles(() => makeStyles(), []);
   return (
     <View style={{ paddingHorizontal: 16, paddingTop: 14, paddingBottom: 4 }}>
       <Text style={styles.sectionHeaderText}>{title}</Text>
@@ -158,8 +161,9 @@ function SpaceRow({ model, space, onPress }: {
   space: Space;
   onPress: () => void;
 }) {
+  const styles = useThemedStyles(() => makeStyles(), []);
   const agg = model.spaceIndicator(space.id);
-  const aggColor = agg ? indicatorDotColor(agg) : whiteAlpha(0.14);
+  const aggColor = agg ? indicatorDotColor(agg) : overlay(0.14);
   const online = model.deviceOnline(space.deviceId);
   const deviceName = model.deviceNameFor(space.deviceId);
   return (
@@ -197,6 +201,7 @@ function ChatCard({ model, chat, onPress, onArchive }: {
   onPress: () => void;
   onArchive: () => void;
 }) {
+  const styles = useThemedStyles(() => makeStyles(), []);
   const indicator = model.indicatorFor(chat);
   const unseen = chatUnseen(chat);
   const time = relativeTime(chat.lastMessageAt ?? chat.createdAt);
@@ -301,144 +306,146 @@ function relativeTime(ms: number): string {
 
 // MARK: - Styles
 
-const styles = StyleSheet.create({
-  headerBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-  },
-  sectionHeaderText: {
-    fontFamily: Fonts.sansMedium,
-    fontSize: 11,
-    color: withAlpha(Theme.textMuted, 0.6),
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-  },
+function makeStyles() {
+  return StyleSheet.create({
+    headerBar: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      paddingHorizontal: 16,
+      paddingVertical: 10,
+    },
+    sectionHeaderText: {
+      fontFamily: Fonts.sansMedium,
+      fontSize: fs(11),
+      color: withAlpha(Theme.textMuted, 0.6),
+      textTransform: 'uppercase',
+      letterSpacing: 0.5,
+    },
 
-  // Space row
-  spaceRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    marginHorizontal: 14,
-    marginVertical: 2,
-    borderRadius: Theme.panelRadius,
-  },
-  spaceRowPressed: {
-    backgroundColor: Theme.elementHover,
-  },
-  spaceDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-  },
-  spaceIcon: {
-    fontSize: 13,
-    color: Theme.textMuted,
-  },
-  spaceName: {
-    flex: 1,
-    fontFamily: Fonts.sansMedium,
-    fontSize: 13,
-    color: Theme.text,
-  },
-  spaceDevice: {
-    fontFamily: Fonts.sans,
-    fontSize: 12,
-  },
-  chevron: {
-    color: withAlpha(Theme.textFaint, 0.6),
-    fontSize: 10,
-  },
+    // Space row
+    spaceRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 8,
+      paddingHorizontal: 14,
+      paddingVertical: 10,
+      marginHorizontal: 14,
+      marginVertical: 2,
+      borderRadius: Theme.panelRadius,
+    },
+    spaceRowPressed: {
+      backgroundColor: Theme.elementHover,
+    },
+    spaceDot: {
+      width: 6,
+      height: 6,
+      borderRadius: 3,
+    },
+    spaceIcon: {
+      fontSize: fs(13),
+      color: Theme.textMuted,
+    },
+    spaceName: {
+      flex: 1,
+      fontFamily: Fonts.sansMedium,
+      fontSize: fs(13),
+      color: Theme.text,
+    },
+    spaceDevice: {
+      fontFamily: Fonts.sans,
+      fontSize: fs(12),
+    },
+    chevron: {
+      color: withAlpha(Theme.textFaint, 0.6),
+      fontSize: fs(10),
+    },
 
-  // Session card
-  card: {
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    marginHorizontal: 14,
-    marginVertical: 2,
-    borderRadius: Theme.panelRadius,
-  },
-  cardPressed: {
-    backgroundColor: Theme.elementHover,
-  },
-  cardTop: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 5,
-  },
-  statusWrap: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  statusLabel: {
-    fontFamily: Fonts.sansMedium,
-    fontSize: 10.5,
-    letterSpacing: 0.2,
-  },
-  timeText: {
-    fontFamily: Fonts.sans,
-    fontSize: 11,
-    color: Theme.textFaint,
-  },
-  cardTitle: {
-    fontFamily: Fonts.sans,
-    fontSize: 13.5,
-    color: Theme.textMuted,
-  },
-  cardTitleUnseen: {
-    fontFamily: Fonts.sansMedium,
-    color: Theme.text,
-  },
-  previewText: {
-    fontFamily: Fonts.sans,
-    fontSize: 12,
-    color: Theme.textFaint,
-    marginTop: 3,
-  },
-  metaRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    marginTop: 7,
-  },
-  locationText: {
-    flexShrink: 1,
-    fontFamily: Fonts.sans,
-    fontSize: 11,
-    color: withAlpha(Theme.textMuted, 0.5),
-  },
-  harnessBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-  },
-  harnessAcpIcon: {
-    fontSize: 11,
-    color: Theme.textMuted,
-  },
-  branchBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    flexShrink: 1,
-  },
-  branchText: {
-    fontFamily: Fonts.sans,
-    fontSize: 11,
-    color: withAlpha(Theme.textMuted, 0.6),
-  },
-  unseenDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: Theme.accent,
-    marginLeft: 'auto',
-  },
-});
+    // Session card
+    card: {
+      paddingHorizontal: 14,
+      paddingVertical: 12,
+      marginHorizontal: 14,
+      marginVertical: 2,
+      borderRadius: Theme.panelRadius,
+    },
+    cardPressed: {
+      backgroundColor: Theme.elementHover,
+    },
+    cardTop: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      marginBottom: 5,
+    },
+    statusWrap: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 6,
+    },
+    statusLabel: {
+      fontFamily: Fonts.sansMedium,
+      fontSize: fs(10.5),
+      letterSpacing: 0.2,
+    },
+    timeText: {
+      fontFamily: Fonts.sans,
+      fontSize: fs(11),
+      color: Theme.textFaint,
+    },
+    cardTitle: {
+      fontFamily: Fonts.sans,
+      fontSize: fs(13.5),
+      color: Theme.textMuted,
+    },
+    cardTitleUnseen: {
+      fontFamily: Fonts.sansMedium,
+      color: Theme.text,
+    },
+    previewText: {
+      fontFamily: Fonts.sans,
+      fontSize: fs(12),
+      color: Theme.textFaint,
+      marginTop: 3,
+    },
+    metaRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 8,
+      marginTop: 7,
+    },
+    locationText: {
+      flexShrink: 1,
+      fontFamily: Fonts.sans,
+      fontSize: fs(11),
+      color: withAlpha(Theme.textMuted, 0.5),
+    },
+    harnessBadge: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 4,
+    },
+    harnessAcpIcon: {
+      fontSize: fs(11),
+      color: Theme.textMuted,
+    },
+    branchBadge: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 4,
+      flexShrink: 1,
+    },
+    branchText: {
+      fontFamily: Fonts.sans,
+      fontSize: fs(11),
+      color: withAlpha(Theme.textMuted, 0.6),
+    },
+    unseenDot: {
+      width: 6,
+      height: 6,
+      borderRadius: 3,
+      backgroundColor: Theme.accent,
+      marginLeft: 'auto',
+    },
+  });
+}

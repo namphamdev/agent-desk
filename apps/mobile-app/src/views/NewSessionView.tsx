@@ -1,7 +1,7 @@
 // New session — RN port of NewSessionView.swift. A composer page with picker
 // chips for harness/model, permission mode, workflow, checkout, and ref.
 
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   KeyboardAvoidingView,
   Platform,
@@ -12,7 +12,6 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import { LegendList } from '@legendapp/list/react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Haptics from 'expo-haptics';
@@ -20,11 +19,13 @@ import * as Haptics from 'expo-haptics';
 import { AppModel } from '../app/AppModel';
 import { useForceUpdateOnNotify } from '../lib/hooks';
 import { ComposerShell } from '../components/ComposerView';
+import { ModelConfigSheet, ConfigChipButton } from '../components/ModelConfigSheet';
 import { BrandMark } from '../theme/BrandMark';
 import { AgentDeskiMark } from '../theme/AgentDeskiMark';
 import { LineIcon } from '../theme/LineIcon';
-import { Fonts, Theme } from '../theme/Theme';
-import { withAlpha, whiteAlpha } from '../theme/color';
+import { Fonts, overlay, Theme } from '../theme/Theme';
+import { fs, useThemedStyles } from '../theme/Appearance';
+import { withAlpha } from '../theme/color';
 import {
   baseName,
   ChatConfig,
@@ -32,13 +33,11 @@ import {
   effectivePermissionMode,
   PermissionModeValue,
   permissionModeMeta,
-  PERMISSION_MODES,
   RepoRef,
   Space,
   InstalledAcpAgent,
 } from '../models/Entities';
 import { HarnessCatalog, ModelInfo } from '../models/HarnessCatalog';
-import type { HarnessInfo } from '../models/HarnessCatalog';
 import { WorkflowCatalog, WorkflowDefinition } from '../models/WorkflowCatalog';
 
 interface Props {
@@ -50,6 +49,9 @@ interface Props {
 
 export function NewSessionView({ model, spaceId, onOpenChat, onBack }: Props) {
   useForceUpdateOnNotify(model);
+  const styles = useThemedStyles(() => makeStyles(), []);
+  const headerStyles = useThemedStyles(() => makeHeaderStyles(), []);
+  const sheetStyles = useThemedStyles(() => makeSheetStyles(), []);
   const space = model.spaces.find((s) => s.id === spaceId);
 
   const [draft, setDraft] = useState('');
@@ -242,12 +244,12 @@ export function NewSessionView({ model, spaceId, onOpenChat, onBack }: Props) {
       >
         <View style={headerStyles.bar}>
           <Pressable onPress={onBack} hitSlop={12}>
-            <Text style={{ color: Theme.text, fontSize: 22 }}>‹</Text>
+            <Text style={{ color: Theme.text, fontSize: fs(22) }}>‹</Text>
           </Pressable>
           <View style={{ flex: 1, alignItems: 'center' }}>
-            <Text style={{ fontFamily: Fonts.sansMedium, fontSize: 13, color: Theme.text }}>New session</Text>
+            <Text style={{ fontFamily: Fonts.sansMedium, fontSize: fs(13), color: Theme.text }}>New session</Text>
             {space ? (
-              <Text style={{ fontFamily: Fonts.sans, fontSize: 10.5, color: withAlpha(Theme.textMuted, 0.6) }} numberOfLines={1}>
+              <Text style={{ fontFamily: Fonts.sans, fontSize: fs(10.5), color: withAlpha(Theme.textMuted, 0.6) }} numberOfLines={1}>
                 {spaceDisplayName(space)} · {model.deviceNameFor(space.deviceId)}
               </Text>
             ) : null}
@@ -257,14 +259,14 @@ export function NewSessionView({ model, spaceId, onOpenChat, onBack }: Props) {
 
         <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
           <AgentDeskiMark size={84} color={withAlpha(Theme.text, 0.22)} />
-          <Text style={{ marginTop: 24, fontFamily: Fonts.sans, fontSize: 15, color: Theme.textFaint }}>
+          <Text style={{ marginTop: 24, fontFamily: Fonts.sans, fontSize: fs(15), color: Theme.textFaint }}>
             What are we building?
           </Text>
         </View>
 
         {space && !model.deviceOnline(space.deviceId) && model.demo === undefined ? (
           <View style={styles.offlineNotice}>
-            <Text style={{ fontFamily: Fonts.sans, fontSize: 12, color: withAlpha(Theme.warning, 0.9) }}>
+            <Text style={{ fontFamily: Fonts.sans, fontSize: fs(12), color: withAlpha(Theme.warning, 0.9) }}>
               {model.deviceNameFor(space.deviceId)} is offline — the run will start when it reconnects.
             </Text>
           </View>
@@ -281,34 +283,34 @@ export function NewSessionView({ model, spaceId, onOpenChat, onBack }: Props) {
             onSend={() => void send()}
             chips={
               <>
-                <ChipButton
+                <ConfigChipButton
                   onPress={() => setShowPicker(true)}
-                  leading={<BrandMark harness={HarnessCatalog.isAcpAgentHarness(harness) ? HarnessCatalog.ACP_WIRE : harness} size={15} color={Theme.text} />}
+                  leading={<BrandMark harness={HarnessCatalog.isAcpAgentHarness(harness) ? HarnessCatalog.ACP_WIRE : harness} size={13} color={Theme.text} />}
                   label={HarnessCatalog.isAcpAgentHarness(harness) && selectedAcpAgent
                     ? `${selectedAcpAgent.name} · ${selectedModel.label}`
                     : selectedModel.label}
                   trailing={reasoning ? HarnessCatalog.reasoningLabel(reasoning) : undefined}
                 />
-                <ChipButton
+                <ConfigChipButton
                   onPress={() => setShowPicker(true)}
-                  systemIcon="🛡"
+                  leading={<Text style={{ fontSize: fs(12) }}>🛡</Text>}
                   label={permissionModeMeta(storedPermissionMode).label}
                 />
-                <ChipButton
+                <ConfigChipButton
                   onPress={() => setShowWorkflowPicker(true)}
-                  systemIcon="⛓"
+                  leading={<Text style={{ fontSize: fs(12) }}>⛓</Text>}
                   label={workflow?.label ?? 'Workflow'}
                 />
                 {space?.gitDetected === true ? (
                   <>
-                    <ChipButton
+                    <ConfigChipButton
                       onPress={() => setShowCheckoutPicker(true)}
-                      systemIcon={checkoutKind === 'local' && !selectedRefRow?.worktreePath ? '📁' : '📂'}
+                      leading={<Text style={{ fontSize: fs(12) }}>{checkoutKind === 'local' && !selectedRefRow?.worktreePath ? '📁' : '📂'}</Text>}
                       label={checkoutLabel(checkoutKind, selectedRefRow)}
                     />
-                    <ChipButton
+                    <ConfigChipButton
                       onPress={() => setShowRefPicker(true)}
-                      systemIcon="⎇"
+                      leading={<Text style={{ fontSize: fs(12) }}>⎇</Text>}
                       label={refLabel(checkoutKind, selectedRef)}
                     />
                   </>
@@ -320,19 +322,19 @@ export function NewSessionView({ model, spaceId, onOpenChat, onBack }: Props) {
       </KeyboardAvoidingView>
 
       {showPicker ? (
-        <ModelPickerSheet
+        <ModelConfigSheet
+          model={model}
+          space={space}
+          title="Select model"
           harness={harness}
           modelId={storedModel}
           reasoning={reasoning}
           permissionMode={storedPermissionMode}
-          lockedHarness={false}
-          catalogs={catalogs}
-          acpAgents={acpAgents}
-          onClose={() => setShowPicker(false)}
           onHarnessChange={(h) => void persistHarness(h)}
           onModelChange={(m) => void persistModel(m)}
           onReasoningChange={(r) => void persistReasoning(r)}
           onPermissionModeChange={(m) => void persistPermissionMode(m)}
+          onClose={() => setShowPicker(false)}
         />
       ) : null}
       {showRefPicker ? (
@@ -418,50 +420,10 @@ async function pickRef(
   return error;
 }
 
-function ChipButton({
-  onPress,
-  label,
-  leading,
-  trailing,
-  systemIcon,
-}: {
-  onPress: () => void;
-  label: string;
-  leading?: React.ReactNode;
-  trailing?: string;
-  systemIcon?: string;
-}) {
-  return (
-    <Pressable
-      onPress={onPress}
-      style={({ pressed }) => ({
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 6,
-        paddingHorizontal: 13,
-        height: 36,
-        borderRadius: 18,
-        backgroundColor: pressed ? whiteAlpha(0.16) : whiteAlpha(0.1),
-      })}
-    >
-      {leading}
-      {systemIcon ? <Text style={{ fontSize: 12 }}>{systemIcon}</Text> : null}
-      <Text
-        style={{ fontFamily: Fonts.sansMedium, fontSize: 13, color: withAlpha(Theme.text, 0.9) }}
-        numberOfLines={1}
-      >
-        {label}
-      </Text>
-      {trailing ? (
-        <Text style={{ fontFamily: Fonts.sans, fontSize: 12, color: Theme.textMuted }}>
-          {trailing}
-        </Text>
-      ) : null}
-    </Pressable>
-  );
-}
-
-// ---- Sheets ----
+// ChipButton and ModelPickerSheet moved to the shared
+// components/ModelConfigSheet module. NewSessionView now imports
+// ConfigChipButton and ModelConfigSheet from there. SheetShell is retained
+// here because the Ref/Checkout/Workflow pickers below still use it.
 
 interface SheetShellProps {
   title: string;
@@ -470,6 +432,7 @@ interface SheetShellProps {
 }
 
 function SheetShell({ title, onClose, children }: SheetShellProps) {
+  const sheetStyles = useThemedStyles(() => makeSheetStyles(), []);
   return (
     <View style={sheetStyles.backdrop}>
       <Pressable style={sheetStyles.scrim} onPress={onClose} />
@@ -477,7 +440,7 @@ function SheetShell({ title, onClose, children }: SheetShellProps) {
         <View style={sheetStyles.header}>
           <Text style={sheetStyles.title}>{title}</Text>
           <Pressable onPress={onClose} hitSlop={12}>
-            <Text style={{ color: Theme.text, fontSize: 13 }}>✕</Text>
+            <Text style={{ color: Theme.text, fontSize: fs(13) }}>✕</Text>
           </Pressable>
         </View>
         <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 20 }}>
@@ -488,185 +451,13 @@ function SheetShell({ title, onClose, children }: SheetShellProps) {
   );
 }
 
-interface ModelPickerProps {
-  harness: string;
-  modelId: string;
-  reasoning?: string;
-  permissionMode: PermissionModeValue;
-  lockedHarness: boolean;
-  catalogs: Record<string, ModelInfo[]>;
-  acpAgents: InstalledAcpAgent[];
-  onClose: () => void;
-  onHarnessChange: (h: string) => void;
-  onModelChange: (m: string) => void;
-  onReasoningChange: (r: string | undefined) => void;
-  onPermissionModeChange: (m: PermissionModeValue) => void;
-}
-
-function ModelPickerSheet(props: ModelPickerProps) {
-  const models = props.catalogs[props.harness] ?? HarnessCatalog.modelsFor(props.harness);
-  const selected = models.find((m) => m.id === props.modelId) ?? models[0];
-  const [activeTab, setActiveTab] = useState<'Models' | 'Reasoning' | 'Permission'>('Models');
-  const [search, setSearch] = useState('');
-  const filteredModels = models.filter((m) => {
-    const query = search.trim().toLowerCase();
-    return query.length === 0 || `${m.label} ${m.id} ${m.description ?? ''}`.toLowerCase().includes(query);
-  });
-
-  // Build the dynamic harness list: built-in harnesses + one entry per
-  // installed ACP agent.
-  const allHarnesses: HarnessInfo[] = [
-    ...HarnessCatalog.harnesses,
-    ...props.acpAgents.map((agent) => ({
-      id: HarnessCatalog.acpAgentHarnessId(agent.id),
-      label: agent.name,
-    })),
-  ];
-
-  const renderModelItem = useCallback(({ item: m }: { item: ModelInfo }) => {
-    const sel = m.id === props.modelId;
-    return (
-      <Pressable
-        onPress={() => {
-          void Haptics.selectionAsync();
-          props.onModelChange(m.id);
-          if (!m.reasoningLevels.includes(props.reasoning ?? '')) {
-            props.onReasoningChange(HarnessCatalog.defaultReasoningFor(m) ?? undefined);
-          }
-        }}
-        style={({ pressed }) => [sheetStyles.option, { backgroundColor: pressed ? whiteAlpha(0.06) : 'transparent' }]}
-      >
-        <View style={{ flex: 1 }}>
-          <Text style={sheetStyles.optionTitle}>{m.label}</Text>
-          {m.description ? <Text style={sheetStyles.optionDescription}>{m.description}</Text> : null}
-        </View>
-        <Text style={[sheetStyles.checkmark, { opacity: sel ? 1 : 0 }]}>✓</Text>
-      </Pressable>
-    );
-  }, [props]);
-
-  const ModelSeparator = useCallback(() => <View style={sheetStyles.separator} />, []);
-
-  return (
-    <SheetShell title="Select model" onClose={props.onClose}>
-      {!props.lockedHarness ? (
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={sheetStyles.harnesses}>
-          {allHarnesses.map((h) => {
-            const sel = h.id === props.harness;
-            const wireHarness = HarnessCatalog.isAcpAgentHarness(h.id)
-              ? HarnessCatalog.ACP_WIRE
-              : h.id;
-            return (
-              <Pressable
-                key={h.id}
-                onPress={() => {
-                  if (h.id === props.harness) return;
-                  void Haptics.selectionAsync();
-                  props.onHarnessChange(h.id);
-                  const fallback = HarnessCatalog.defaultModelFor(h.id);
-                  props.onModelChange(fallback.id);
-                  props.onReasoningChange(HarnessCatalog.defaultReasoningFor(fallback) ?? undefined);
-                }}
-                style={[sheetStyles.harness, { backgroundColor: sel ? whiteAlpha(0.15) : whiteAlpha(0.05) }]}
-              >
-                <BrandMark harness={wireHarness} size={15} color={Theme.text} dimmed={!sel} />
-                <Text style={[sheetStyles.harnessText, { color: sel ? Theme.text : Theme.textMuted }]}>{h.label}</Text>
-              </Pressable>
-            );
-          })}
-        </ScrollView>
-      ) : null}
-
-      <View style={sheetStyles.tabs}>
-        {(['Models', 'Reasoning', 'Permission'] as const).map((tab) => {
-          const active = activeTab === tab;
-          return (
-            <Pressable key={tab} onPress={() => setActiveTab(tab)} style={sheetStyles.tab}>
-              <Text style={[sheetStyles.tabText, active && sheetStyles.tabTextActive]}>{tab}</Text>
-              {active ? <View style={sheetStyles.tabIndicator} /> : null}
-            </Pressable>
-          );
-        })}
-      </View>
-
-      {activeTab === 'Models' ? (
-        <>
-          <Text style={sheetStyles.label}>Model</Text>
-          <View style={sheetStyles.searchBox}>
-            <Text style={sheetStyles.searchIcon}>⌕</Text>
-            <TextInput
-              value={search}
-              onChangeText={setSearch}
-              placeholder="Search models"
-              placeholderTextColor={Theme.textFaint}
-              autoCapitalize="none"
-              autoCorrect={false}
-              style={sheetStyles.searchInput}
-            />
-          </View>
-          <View style={sheetStyles.modelList}>
-            <LegendList
-              data={filteredModels}
-              renderItem={renderModelItem}
-              keyExtractor={(m) => m.id}
-              ItemSeparatorComponent={ModelSeparator}
-              ListEmptyComponent={<Text style={sheetStyles.emptyText}>No models found.</Text>}
-              keyboardShouldPersistTaps="handled"
-              recycleItems
-              contentContainerStyle={{ paddingVertical: 4 }}
-            />
-          </View>
-        </>
-      ) : activeTab === 'Reasoning' ? (
-        <>
-          <Text style={sheetStyles.label}>Reasoning</Text>
-          <View style={sheetStyles.card}>
-            {selected?.reasoningLevels.length ? selected.reasoningLevels.map((level, ix) => (
-              <React.Fragment key={level}>
-                <Pressable onPress={() => props.onReasoningChange(level)} style={({ pressed }) => [sheetStyles.option, { backgroundColor: pressed ? whiteAlpha(0.06) : 'transparent' }]}>
-                  <View style={{ flex: 1 }}>
-                    <Text style={sheetStyles.optionTitle}>{HarnessCatalog.reasoningLabel(level)}</Text>
-                    {HarnessCatalog.effortHint(level) ? <Text style={sheetStyles.optionDescription}>{HarnessCatalog.effortHint(level)}</Text> : null}
-                  </View>
-                  <Text style={[sheetStyles.checkmark, { opacity: props.reasoning === level ? 1 : 0 }]}>✓</Text>
-                </Pressable>
-                {ix < selected.reasoningLevels.length - 1 ? <View style={sheetStyles.separator} /> : null}
-              </React.Fragment>
-            )) : <Text style={sheetStyles.emptyText}>No reasoning options for this model.</Text>}
-          </View>
-        </>
-      ) : (
-        <>
-          <Text style={sheetStyles.label}>Permission mode</Text>
-          <View style={sheetStyles.card}>
-            {PERMISSION_MODES.map((mode, ix) => {
-              const sel = mode.value === props.permissionMode;
-              return (
-                <React.Fragment key={mode.value}>
-                  <Pressable onPress={() => props.onPermissionModeChange(mode.value)} style={({ pressed }) => [sheetStyles.option, { backgroundColor: pressed ? whiteAlpha(0.06) : 'transparent' }]}>
-                    <View style={{ flex: 1 }}>
-                      <Text style={sheetStyles.optionTitle}>{mode.label}</Text>
-                      <Text style={sheetStyles.optionDescription}>{mode.description}</Text>
-                    </View>
-                    <Text style={[sheetStyles.checkmark, { opacity: sel ? 1 : 0 }]}>✓</Text>
-                  </Pressable>
-                  {ix < PERMISSION_MODES.length - 1 ? <View style={sheetStyles.separator} /> : null}
-                </React.Fragment>
-              );
-            })}
-          </View>
-        </>
-      )}
-    </SheetShell>
-  );
-}
-
 function RefPickerSheet({ refs, selected, onPick, onClose }: {
   refs: RepoRef[];
   selected?: string;
   onPick: (ref: RepoRef) => Promise<string | null>;
   onClose: () => void;
 }) {
+  const sheetStyles = useThemedStyles(() => makeSheetStyles(), []);
   const [switching, setSwitching] = useState<string | undefined>();
   const [error, setError] = useState<string | null>(null);
 
@@ -674,7 +465,7 @@ function RefPickerSheet({ refs, selected, onPick, onClose }: {
     <SheetShell title="Select ref" onClose={onClose}>
       <Text style={sheetStyles.label}>Ref</Text>
       {refs.length === 0 ? (
-        <Text style={{ fontFamily: Fonts.sans, fontSize: 13, color: Theme.textFaint, paddingVertical: 20 }}>
+        <Text style={{ fontFamily: Fonts.sans, fontSize: fs(13), color: Theme.textFaint, paddingVertical: 20 }}>
           Loading refs from the device…
         </Text>
       ) : (
@@ -699,25 +490,25 @@ function RefPickerSheet({ refs, selected, onPick, onClose }: {
                     gap: 12,
                     paddingHorizontal: 16,
                     paddingVertical: 11,
-                    backgroundColor: pressed ? whiteAlpha(0.06) : 'transparent',
+                    backgroundColor: pressed ? overlay(0.06) : 'transparent',
                   })}
                 >
                   <LineIcon icon="gitBranch" size={15} color={Theme.textMuted} />
                   <View style={{ flex: 1 }}>
-                    <Text style={{ fontFamily: Fonts.sans, fontSize: 15, color: Theme.text }}>{ref.name}</Text>
+                    <Text style={{ fontFamily: Fonts.sans, fontSize: fs(15), color: Theme.text }}>{ref.name}</Text>
                     {ref.current ? (
-                      <Text style={{ fontFamily: Fonts.sans, fontSize: 12.5, color: Theme.textMuted }}>
+                      <Text style={{ fontFamily: Fonts.sans, fontSize: fs(12.5), color: Theme.textMuted }}>
                         Current checkout
                       </Text>
                     ) : ref.worktreePath ? (
-                      <Text style={{ fontFamily: Fonts.sans, fontSize: 12.5, color: Theme.textMuted }}>
+                      <Text style={{ fontFamily: Fonts.sans, fontSize: fs(12.5), color: Theme.textMuted }}>
                         Checked out in a worktree
                       </Text>
                     ) : null}
                   </View>
                   <Text style={{
                     fontFamily: Fonts.sansSemiBold,
-                    fontSize: 14,
+                    fontSize: fs(14),
                     color: Theme.text,
                     opacity: sel ? 1 : 0,
                   }}>✓</Text>
@@ -729,7 +520,7 @@ function RefPickerSheet({ refs, selected, onPick, onClose }: {
         </View>
       )}
       {error ? (
-        <Text style={{ fontFamily: Fonts.sans, fontSize: 12.5, color: Theme.danger, marginTop: 8 }}>
+        <Text style={{ fontFamily: Fonts.sans, fontSize: fs(12.5), color: Theme.danger, marginTop: 8 }}>
           {error}
         </Text>
       ) : null}
@@ -743,6 +534,7 @@ function CheckoutPickerSheet({ kind, selectedRefHasWorktree, onPick, onClose }: 
   onPick: (k: CheckoutKind) => void;
   onClose: () => void;
 }) {
+  const sheetStyles = useThemedStyles(() => makeSheetStyles(), []);
   return (
     <SheetShell title="Checkout" onClose={onClose}>
       <Text style={sheetStyles.label}>Checkout</Text>
@@ -752,13 +544,13 @@ function CheckoutPickerSheet({ kind, selectedRefHasWorktree, onPick, onClose }: 
           style={({ pressed }) => ({
             paddingHorizontal: 16,
             paddingVertical: 11,
-            backgroundColor: pressed ? whiteAlpha(0.06) : 'transparent',
+            backgroundColor: pressed ? overlay(0.06) : 'transparent',
           })}
         >
-          <Text style={{ fontFamily: Fonts.sans, fontSize: 15, color: Theme.text }}>
+          <Text style={{ fontFamily: Fonts.sans, fontSize: fs(15), color: Theme.text }}>
             {selectedRefHasWorktree ? 'Current worktree' : 'Current checkout'}
           </Text>
-          <Text style={{ fontFamily: Fonts.sans, fontSize: 12.5, color: Theme.textMuted }}>
+          <Text style={{ fontFamily: Fonts.sans, fontSize: fs(12.5), color: Theme.textMuted }}>
             {selectedRefHasWorktree ? "Reuse the picked ref's existing worktree" : "Run in the space's folder as-is"}
           </Text>
         </Pressable>
@@ -768,11 +560,11 @@ function CheckoutPickerSheet({ kind, selectedRefHasWorktree, onPick, onClose }: 
           style={({ pressed }) => ({
             paddingHorizontal: 16,
             paddingVertical: 11,
-            backgroundColor: pressed ? whiteAlpha(0.06) : 'transparent',
+            backgroundColor: pressed ? overlay(0.06) : 'transparent',
           })}
         >
-          <Text style={{ fontFamily: Fonts.sans, fontSize: 15, color: Theme.text }}>New worktree</Text>
-          <Text style={{ fontFamily: Fonts.sans, fontSize: 12.5, color: Theme.textMuted }}>
+          <Text style={{ fontFamily: Fonts.sans, fontSize: fs(15), color: Theme.text }}>New worktree</Text>
+          <Text style={{ fontFamily: Fonts.sans, fontSize: fs(12.5), color: Theme.textMuted }}>
             A fresh isolated worktree created off the picked base ref
           </Text>
         </Pressable>
@@ -788,6 +580,7 @@ function WorkflowPickerSheet({ selectedId, prRef, onSelect, onPrRefChange, onClo
   onPrRefChange: (v: string) => void;
   onClose: () => void;
 }) {
+  const sheetStyles = useThemedStyles(() => makeSheetStyles(), []);
   return (
     <SheetShell title="Workflow" onClose={onClose}>
       <Text style={sheetStyles.label}>Workflow</Text>
@@ -799,11 +592,11 @@ function WorkflowPickerSheet({ selectedId, prRef, onSelect, onPrRefChange, onClo
               style={({ pressed }) => ({
                 paddingHorizontal: 16,
                 paddingVertical: 11,
-                backgroundColor: pressed ? whiteAlpha(0.06) : 'transparent',
+                backgroundColor: pressed ? overlay(0.06) : 'transparent',
               })}
             >
-              <Text style={{ fontFamily: Fonts.sans, fontSize: 15, color: Theme.text }}>{wf.label}</Text>
-              <Text style={{ fontFamily: Fonts.sans, fontSize: 12.5, color: Theme.textMuted }}>{wf.description}</Text>
+              <Text style={{ fontFamily: Fonts.sans, fontSize: fs(15), color: Theme.text }}>{wf.label}</Text>
+              <Text style={{ fontFamily: Fonts.sans, fontSize: fs(12.5), color: Theme.textMuted }}>{wf.description}</Text>
             </Pressable>
             {ix < WorkflowCatalog.all.length - 1 ? <View style={sheetStyles.separator} /> : null}
           </React.Fragment>
@@ -823,18 +616,21 @@ function WorkflowPickerSheet({ selectedId, prRef, onSelect, onPrRefChange, onClo
   );
 }
 
-const styles = StyleSheet.create({
-  offlineNotice: {
-    marginHorizontal: 12,
-    marginBottom: 8,
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    backgroundColor: withAlpha(Theme.warning, 0.1),
-    borderRadius: 12,
-  },
-});
+function makeStyles() {
+  return StyleSheet.create({
+    offlineNotice: {
+      marginHorizontal: 12,
+      marginBottom: 8,
+      paddingHorizontal: 14,
+      paddingVertical: 8,
+      backgroundColor: withAlpha(Theme.warning, 0.1),
+      borderRadius: 12,
+    },
+  });
+}
 
-const headerStyles = StyleSheet.create({
+function makeHeaderStyles() {
+  return StyleSheet.create({
   bar: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -843,9 +639,11 @@ const headerStyles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: Theme.border,
   },
-});
+  });
+}
 
-const sheetStyles = StyleSheet.create({
+function makeSheetStyles() {
+  return StyleSheet.create({
   backdrop: {
     position: 'absolute',
     top: 0, left: 0, right: 0, bottom: 0,
@@ -858,7 +656,7 @@ const sheetStyles = StyleSheet.create({
   },
   panel: {
     height: '80%',
-    backgroundColor: '#141414',
+    backgroundColor: Theme.surface,
     borderTopLeftRadius: 32,
     borderTopRightRadius: 32,
     overflow: 'hidden',
@@ -874,7 +672,7 @@ const sheetStyles = StyleSheet.create({
   },
   title: {
     fontFamily: Fonts.sansMedium,
-    fontSize: 14,
+    fontSize: fs(14),
     color: Theme.text,
   },
   tabs: {
@@ -890,7 +688,7 @@ const sheetStyles = StyleSheet.create({
   },
   tabText: {
     fontFamily: Fonts.sansMedium,
-    fontSize: 13,
+    fontSize: fs(13),
     color: Theme.textMuted,
   },
   tabTextActive: {
@@ -919,7 +717,7 @@ const sheetStyles = StyleSheet.create({
   },
   harnessText: {
     fontFamily: Fonts.sansMedium,
-    fontSize: 13,
+    fontSize: fs(13),
   },
   searchBox: {
     flexDirection: 'row',
@@ -928,27 +726,27 @@ const sheetStyles = StyleSheet.create({
     paddingHorizontal: 12,
     marginBottom: 10,
     borderRadius: 12,
-    backgroundColor: whiteAlpha(0.06),
+    backgroundColor: overlay(0.06),
     borderWidth: 1,
     borderColor: Theme.border,
   },
   searchIcon: {
     color: Theme.textMuted,
-    fontSize: 22,
+    fontSize: fs(22),
     marginRight: 8,
   },
   searchInput: {
     flex: 1,
     padding: 0,
     fontFamily: Fonts.sans,
-    fontSize: 14,
+    fontSize: fs(14),
     color: Theme.text,
   },
   modelList: {
     height: 280,
     borderRadius: 20,
-    backgroundColor: whiteAlpha(0.045),
-    borderColor: whiteAlpha(0.06),
+    backgroundColor: overlay(0.045),
+    borderColor: overlay(0.06),
     borderWidth: 1,
     overflow: 'hidden',
   },
@@ -961,48 +759,49 @@ const sheetStyles = StyleSheet.create({
   },
   optionTitle: {
     fontFamily: Fonts.sans,
-    fontSize: 15,
+    fontSize: fs(15),
     color: Theme.text,
   },
   optionDescription: {
     fontFamily: Fonts.sans,
-    fontSize: 12.5,
+    fontSize: fs(12.5),
     color: Theme.textMuted,
     marginTop: 2,
   },
   checkmark: {
     fontFamily: Fonts.sansSemiBold,
-    fontSize: 14,
+    fontSize: fs(14),
     color: Theme.text,
   },
   emptyText: {
     fontFamily: Fonts.sans,
-    fontSize: 13,
+    fontSize: fs(13),
     color: Theme.textFaint,
     padding: 20,
     textAlign: 'center',
   },
   label: {
     fontFamily: Fonts.sansMedium,
-    fontSize: 11,
+    fontSize: fs(11),
     color: withAlpha(Theme.textMuted, 0.6),
     textTransform: 'uppercase',
     letterSpacing: 1,
     marginBottom: 8,
   },
   card: {
-    backgroundColor: whiteAlpha(0.045),
-    borderColor: whiteAlpha(0.06),
+    backgroundColor: overlay(0.045),
+    borderColor: overlay(0.06),
     borderWidth: 1,
     borderRadius: 20,
     overflow: 'hidden',
   },
   separator: {
     height: 1,
-    backgroundColor: whiteAlpha(0.06),
+    backgroundColor: overlay(0.06),
     marginLeft: 16,
   },
-});
+  });
+}
 
 // Silence unused imports
 void effectivePermissionMode;

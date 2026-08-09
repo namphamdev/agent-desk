@@ -6,7 +6,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Animated, Easing, View } from 'react-native';
 
 import { Motion } from '../theme/Motion';
-import { Theme } from '../theme/Theme';
+import { Theme, overlay } from '../theme/Theme';
 import { withAlpha } from '../theme/color';
 
 const ROW_TINTS = [
@@ -155,7 +155,7 @@ export function indicatorDotColor(indicator: 'working' | 'awaitingInput' | 'erro
     case 'awaitingInput': return withAlpha(Theme.accent, 0.9);
     case 'errored': return Theme.danger;
     case 'completed': return withAlpha(Theme.statusCompleted, 0.9);
-    case 'idle': return 'rgba(255,255,255,0.14)';
+    case 'idle': return overlay(0.14);
   }
 }
 

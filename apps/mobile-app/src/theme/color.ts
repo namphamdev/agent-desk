@@ -65,6 +65,11 @@ export function whiteAlpha(alpha: number): string {
   return `rgba(255, 255, 255, ${alpha})`;
 }
 
+/** Mix alpha into black — the light-mode hairline/wash primitive. */
+export function blackAlpha(alpha: number): string {
+  return `rgba(0, 0, 0, ${alpha})`;
+}
+
 export function parseHex(hex: string): { r: number; g: number; b: number } {
   let h = hex.replace('#', '');
   if (h.length === 3) {

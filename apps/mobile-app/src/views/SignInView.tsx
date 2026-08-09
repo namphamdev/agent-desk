@@ -10,7 +10,8 @@ import { Pressable, StyleSheet, Text, View } from "react-native";
 import { AppModel } from "../app/AppModel";
 import { AuthOrg, AuthTokens } from "../auth/AuthClient";
 import { AgentDeskiMark } from "../theme/AgentDeskiMark";
-import { Fonts, Theme } from "../theme/Theme";
+import { Fonts, overlay, Theme } from "../theme/Theme";
+import { fs, useThemedStyles } from "../theme/Appearance";
 
 const EDGE_URL = process.env.EXPO_PUBLIC_EDGE_URL ?? "";
 const WORKOS_CLIENT_ID = process.env.EXPO_PUBLIC_WORKOS_CLIENT_ID ?? "";
@@ -33,6 +34,7 @@ interface SignInProps {
 }
 
 export function SignInView({ model }: SignInProps) {
+  const styles = useThemedStyles(() => makeStyles(), []);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -103,38 +105,40 @@ export function SignInView({ model }: SignInProps) {
   );
 }
 
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: Theme.bg,
-    paddingHorizontal: 32,
-    maxWidth: 480,
-    width: "100%",
-    alignSelf: "center",
-  },
+function makeStyles() {
+  return StyleSheet.create({
+    container: {
+      flex: 1,
+      backgroundColor: Theme.bg,
+      paddingHorizontal: 32,
+      maxWidth: 480,
+      width: "100%",
+      alignSelf: "center",
+    },
   title: {
     fontFamily: Fonts.sansSemiBold,
-    fontSize: 28,
+    fontSize: fs(28),
     color: Theme.text,
     letterSpacing: -0.5,
   },
   subtitle: {
     fontFamily: Fonts.sans,
-    fontSize: 15,
+    fontSize: fs(15),
     color: Theme.textMuted,
   },
   buttonText: {
     fontFamily: Fonts.sansSemiBold,
-    fontSize: 15,
+    fontSize: fs(15),
     color: Theme.bg,
   },
   error: {
     fontFamily: Fonts.sans,
-    fontSize: 13,
+    fontSize: fs(13),
     color: Theme.danger,
     textAlign: "center",
   },
-});
+  });
+}
 
 interface OrgPickerProps {
   model: AppModel;
@@ -143,6 +147,7 @@ interface OrgPickerProps {
 }
 
 export function OrgPickerView({ model, tokens, orgs }: OrgPickerProps) {
+  const styles = useThemedStyles(() => makeStyles(), []);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -163,7 +168,7 @@ export function OrgPickerView({ model, tokens, orgs }: OrgPickerProps) {
       <Text
         style={{
           fontFamily: Fonts.sansSemiBold,
-          fontSize: 16,
+          fontSize: fs(16),
           color: Theme.text,
         }}
       >
@@ -177,7 +182,7 @@ export function OrgPickerView({ model, tokens, orgs }: OrgPickerProps) {
             disabled={busy}
             style={({ pressed }) => ({
               opacity: pressed ? 0.85 : 1,
-              backgroundColor: "rgba(255,255,255,0.04)",
+              backgroundColor: overlay(0.04),
               height: 48,
               borderRadius: 14,
               paddingHorizontal: 16,
@@ -189,13 +194,13 @@ export function OrgPickerView({ model, tokens, orgs }: OrgPickerProps) {
               style={{
                 flex: 1,
                 fontFamily: Fonts.sansMedium,
-                fontSize: 14,
+                fontSize: fs(14),
                 color: Theme.text,
               }}
             >
               {org.name}
             </Text>
-            <Text style={{ color: Theme.textFaint, fontSize: 12 }}>›</Text>
+            <Text style={{ color: Theme.textFaint, fontSize: fs(12) }}>›</Text>
           </Pressable>
         ))}
       </View>
@@ -204,7 +209,7 @@ export function OrgPickerView({ model, tokens, orgs }: OrgPickerProps) {
         <Text
           style={{
             fontFamily: Fonts.sans,
-            fontSize: 13,
+            fontSize: fs(13),
             color: Theme.textMuted,
           }}
         >

@@ -344,6 +344,94 @@ export class WorkspaceStore {
     }
   }
 
+  async gitStage(deviceId: string, cwd: string, paths: string[]): Promise<string | null> {
+    try {
+      await this.relay(deviceId).call('GitStage', { cwd, paths });
+      return null;
+    } catch (err) {
+      return err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  async gitUnstage(deviceId: string, cwd: string, paths: string[]): Promise<string | null> {
+    try {
+      await this.relay(deviceId).call('GitUnstage', { cwd, paths });
+      return null;
+    } catch (err) {
+      return err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  async gitDiscard(deviceId: string, cwd: string, path: string, untracked: boolean): Promise<string | null> {
+    try {
+      await this.relay(deviceId).call('GitDiscard', { cwd, path, untracked });
+      return null;
+    } catch (err) {
+      return err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  async gitIgnore(deviceId: string, cwd: string, path: string): Promise<string | null> {
+    try {
+      await this.relay(deviceId).call('GitIgnore', { cwd, path });
+      return null;
+    } catch (err) {
+      return err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  async gitCommit(deviceId: string, cwd: string, subject: string, body?: string): Promise<string | null> {
+    try {
+      const params: Record<string, unknown> = { cwd, subject };
+      if (body && body.trim().length > 0) params.body = body;
+      const result = await this.relay(deviceId).call<{ hash?: string } | null>('GitCommit', params);
+      return result?.hash ?? null;
+    } catch (err) {
+      return err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  async gitFetch(deviceId: string, cwd: string): Promise<string | null> {
+    try {
+      const result = await this.relay(deviceId).call<{ summary?: string } | string | null>('GitFetch', { cwd });
+      if (typeof result === 'string') return result;
+      return result?.summary ?? null;
+    } catch (err) {
+      return err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  async gitPush(deviceId: string, cwd: string): Promise<string | null> {
+    try {
+      const result = await this.relay(deviceId).call<{ summary?: string } | string | null>('GitPush', { cwd });
+      if (typeof result === 'string') return result;
+      return result?.summary ?? null;
+    } catch (err) {
+      return err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  async gitGenerateCommitMessage(
+    deviceId: string,
+    cwd: string,
+    harness: string,
+    model?: string,
+  ): Promise<{ subject: string; body: string } | null> {
+    const agentId = HarnessCatalog.acpAgentIdFromHarness(harness);
+    const wireHarness = agentId ? HarnessCatalog.ACP_WIRE : harness;
+    const params: Record<string, unknown> = { cwd, harness: wireHarness };
+    if (model) params.model = model;
+    if (agentId) params.acpAgentId = agentId;
+    try {
+      return await this.relay(deviceId).call<{ subject: string; body: string } | null>(
+        'GitGenerateCommitMessage',
+        params,
+      );
+    } catch {
+      return null;
+    }
+  }
+
   async listAcpAgents(deviceId: string): Promise<AcpAgentsSnapshot | null> {
     try {
       return await this.relay(deviceId).call<AcpAgentsSnapshot>('ListAcpAgents', {});

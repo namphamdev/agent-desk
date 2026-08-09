@@ -344,6 +344,63 @@ export class AppModel {
     return (await this.workspace?.gitStatus(chat.deviceId, chat.cwd)) ?? null;
   }
 
+  async gitStatusFor(deviceId: string, cwd: string): Promise<GitStatus | null> {
+    if (this.demo) return { branch: undefined, ahead: 0, behind: 0, files: [], isRepo: true };
+    return (await this.workspace?.gitStatus(deviceId, cwd)) ?? null;
+  }
+
+  async gitStage(deviceId: string, cwd: string, paths: string[]): Promise<string | null> {
+    if (this.demo) return null;
+    if (!this.workspace) return 'Not connected';
+    return await this.workspace.gitStage(deviceId, cwd, paths);
+  }
+
+  async gitUnstage(deviceId: string, cwd: string, paths: string[]): Promise<string | null> {
+    if (this.demo) return null;
+    if (!this.workspace) return 'Not connected';
+    return await this.workspace.gitUnstage(deviceId, cwd, paths);
+  }
+
+  async gitDiscard(deviceId: string, cwd: string, path: string, untracked: boolean): Promise<string | null> {
+    if (this.demo) return null;
+    if (!this.workspace) return 'Not connected';
+    return await this.workspace.gitDiscard(deviceId, cwd, path, untracked);
+  }
+
+  async gitIgnore(deviceId: string, cwd: string, path: string): Promise<string | null> {
+    if (this.demo) return null;
+    if (!this.workspace) return 'Not connected';
+    return await this.workspace.gitIgnore(deviceId, cwd, path);
+  }
+
+  async gitCommit(deviceId: string, cwd: string, subject: string, body?: string): Promise<string | null> {
+    if (this.demo) return null;
+    if (!this.workspace) return 'Not connected';
+    return await this.workspace.gitCommit(deviceId, cwd, subject, body);
+  }
+
+  async gitFetch(deviceId: string, cwd: string): Promise<string | null> {
+    if (this.demo) return null;
+    if (!this.workspace) return 'Not connected';
+    return await this.workspace.gitFetch(deviceId, cwd);
+  }
+
+  async gitPush(deviceId: string, cwd: string): Promise<string | null> {
+    if (this.demo) return null;
+    if (!this.workspace) return 'Not connected';
+    return await this.workspace.gitPush(deviceId, cwd);
+  }
+
+  async gitGenerateCommitMessage(
+    deviceId: string,
+    cwd: string,
+    harness: string,
+    model?: string,
+  ): Promise<{ subject: string; body: string } | null> {
+    if (this.demo) return null;
+    return await this.workspace?.gitGenerateCommitMessage(deviceId, cwd, harness, model) ?? null;
+  }
+
   async acpAgents(deviceId: string): Promise<AcpAgentsSnapshot | null> {
     return (await this.workspace?.listAcpAgents(deviceId)) ?? null;
   }

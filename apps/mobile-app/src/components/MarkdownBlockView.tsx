@@ -13,7 +13,8 @@ import {
 } from '../markdown/MarkdownModel';
 import { MarkdownParser } from '../markdown/MarkdownModel';
 import { MD } from '../markdown/Metrics';
-import { Fonts, FontWeight, sansFont, Theme } from '../theme/Theme';
+import { Fonts, FontWeight, overlay, sansFont, Theme } from '../theme/Theme';
+import { fs } from '../theme/Appearance';
 import { VisualizationBlockView } from './VisualizationBlockView';
 
 interface InlineProps {
@@ -35,7 +36,7 @@ export function InlineRuns({ runs, size = MD.textSize, weight = 'regular', baseC
           key={`c-${i}`}
           style={{
             fontFamily: Fonts.mono,
-            fontSize: size - 1.5,
+            fontSize: size - fs(1.5),
             color: Theme.inlineCodeText,
             backgroundColor: Theme.inlineCodeWash,
             paddingHorizontal: 4,
@@ -127,10 +128,10 @@ const CodeBlock = memo(function CodeBlock({
   return (
     <View
       style={{
-        backgroundColor: 'rgba(255,255,255,0.035)',
+        backgroundColor: overlay(0.035),
         borderRadius: Theme.panelRadius,
         borderWidth: 1,
-        borderColor: 'rgba(255,255,255,0.06)',
+        borderColor: overlay(0.06),
         overflow: 'hidden',
       }}
     >
@@ -139,12 +140,12 @@ const CodeBlock = memo(function CodeBlock({
           style={{
             paddingHorizontal: 12,
             paddingVertical: 5,
-            backgroundColor: 'rgba(255,255,255,0.02)',
+            backgroundColor: overlay(0.02),
             borderBottomWidth: 1,
             borderBottomColor: Theme.border,
           }}
         >
-          <Text style={{ fontFamily: Fonts.sans, fontSize: 11, color: Theme.textMuted }}>
+          <Text style={{ fontFamily: Fonts.sans, fontSize: fs(11), color: Theme.textMuted }}>
             {language}
           </Text>
         </View>
@@ -278,7 +279,7 @@ const ListBlock = memo(function ListBlock({
         let marker: React.ReactNode;
         if (item.checked !== undefined) {
           marker = (
-            <Text style={{ fontFamily: Fonts.sans, fontSize: 12, lineHeight: MD.lineHeight, color: item.checked ? withOpacity(Theme.accent, 0.85) : Theme.textMuted }}>
+            <Text style={{ fontFamily: Fonts.sans, fontSize: fs(12), lineHeight: MD.lineHeight, color: item.checked ? withOpacity(Theme.accent, 0.85) : Theme.textMuted }}>
               {item.checked ? '☑' : '☐'}
             </Text>
           );
@@ -342,7 +343,7 @@ function TableBlock({ header, rows, align }: {
             </View>
           ))}
         </View>
-        <View style={{ height: 1, backgroundColor: 'rgba(255,255,255,0.10)' }} />
+        <View style={{ height: 1, backgroundColor: overlay(0.10) }} />
         {rows.map((row, ix) => (
           <View key={`r-${ix}`}>
             <View style={{ flexDirection: 'row' }}>
@@ -361,7 +362,7 @@ function TableBlock({ header, rows, align }: {
                 </View>
               ))}
             </View>
-            <View style={{ height: 1, backgroundColor: 'rgba(255,255,255,0.10)' }} />
+            <View style={{ height: 1, backgroundColor: overlay(0.10) }} />
           </View>
         ))}
       </View>

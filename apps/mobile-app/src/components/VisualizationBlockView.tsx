@@ -9,6 +9,7 @@ import { ScrollView, Text, View } from 'react-native';
 
 import { VizDocument, VizElement } from '../markdown/MarkdownModel';
 import { Fonts, sansFont, Theme } from '../theme/Theme';
+import { fs } from '../theme/Appearance';
 import { withAlpha } from '../theme/color';
 
 interface Props {
@@ -71,7 +72,7 @@ function renderElement(el: VizElement, doc: VizDocument, id: string): React.Reac
       return <VizTimeline key={id} props={el.props} />;
     default:
       return (
-        <Text key={id} style={{ fontFamily: Fonts.sans, fontSize: 12, color: Theme.textMuted }}>
+        <Text key={id} style={{ fontFamily: Fonts.sans, fontSize: fs(12), color: Theme.textMuted }}>
           [unknown: {el.type}]
         </Text>
       );
@@ -119,7 +120,7 @@ function VizText({ props }: { props: Record<string, unknown> }) {
     <Text
       style={{
         fontFamily: sansFont(bool(props.bold) ? 'semibold' : 'regular'),
-        fontSize: 14,
+        fontSize: fs(14),
         color: str(props.color, Theme.text),
       }}
     >
@@ -162,7 +163,7 @@ function VizCard({ props, children }: { props: Record<string, unknown>; children
       }}
     >
       {title.length > 0 ? (
-        <Text style={{ fontFamily: Fonts.sansSemiBold, fontSize: 14, color: Theme.text }}>
+        <Text style={{ fontFamily: Fonts.sansSemiBold, fontSize: fs(14), color: Theme.text }}>
           {title}
         </Text>
       ) : null}
@@ -205,7 +206,7 @@ function VizBarChart({ props }: { props: Record<string, unknown> }) {
         return (
           <View key={`bar-${ix}`} style={{ gap: 3 }}>
             <Text
-              style={{ fontFamily: Fonts.sans, fontSize: 11, color: Theme.textMuted }}
+              style={{ fontFamily: Fonts.sans, fontSize: fs(11), color: Theme.textMuted }}
               numberOfLines={1}
             >
               {item.label}
@@ -222,7 +223,7 @@ function VizBarChart({ props }: { props: Record<string, unknown> }) {
               <Text
                 style={{
                   fontFamily: Fonts.sansMedium,
-                  fontSize: 12,
+                  fontSize: fs(12),
                   color: Theme.text,
                 }}
               >
@@ -325,7 +326,7 @@ function VizTable({ props }: { props: Record<string, unknown> }) {
               <Text
                 style={{
                   fontFamily: Fonts.sansSemiBold,
-                  fontSize: 12,
+                  fontSize: fs(12),
                   color: Theme.text,
                 }}
                 numberOfLines={1}
@@ -357,7 +358,7 @@ function VizTable({ props }: { props: Record<string, unknown> }) {
                 <Text
                   style={{
                     fontFamily: Fonts.sans,
-                    fontSize: 12,
+                    fontSize: fs(12),
                     color: Theme.text,
                   }}
                   numberOfLines={1}
@@ -382,7 +383,7 @@ function VizDivider({ props }: { props: Record<string, unknown> }) {
   }
   return (
     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginVertical: 4 }}>
-      <Text style={{ fontFamily: Fonts.sansMedium, fontSize: 11, color: Theme.textMuted }}>
+      <Text style={{ fontFamily: Fonts.sansMedium, fontSize: fs(11), color: Theme.textMuted }}>
         {title}
       </Text>
       <View style={{ flex: 1, height: 1, backgroundColor: Theme.border }} />
@@ -404,10 +405,10 @@ function VizList({ props }: { props: Record<string, unknown> }) {
     <View style={{ gap: 4 }}>
       {items.map((item, ix) => (
         <View key={`li-${ix}`} style={{ flexDirection: 'row', gap: 8, alignItems: 'flex-start' }}>
-          <Text style={{ color: Theme.textMuted, fontSize: 13 }}>
+          <Text style={{ color: Theme.textMuted, fontSize: fs(13) }}>
             {ordered ? `${ix + 1}.` : '•'}
           </Text>
-          <Text style={{ fontFamily: Fonts.sans, fontSize: 13, color: Theme.text, flex: 1 }}>
+          <Text style={{ fontFamily: Fonts.sans, fontSize: fs(13), color: Theme.text, flex: 1 }}>
             {item}
           </Text>
         </View>
@@ -431,7 +432,7 @@ function VizStatusLine({ props }: { props: Record<string, unknown> }) {
   return (
     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
       <View style={{ width: 7, height: 7, borderRadius: 3.5, backgroundColor: color }} />
-      <Text style={{ fontFamily: Fonts.sans, fontSize: 13, color: Theme.text }}>
+      <Text style={{ fontFamily: Fonts.sans, fontSize: fs(13), color: Theme.text }}>
         {str(props.text)}
       </Text>
     </View>
@@ -443,10 +444,10 @@ function VizStatusLine({ props }: { props: Record<string, unknown> }) {
 function VizKeyValue({ props }: { props: Record<string, unknown> }) {
   return (
     <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-      <Text style={{ fontFamily: Fonts.sans, fontSize: 13, color: Theme.textMuted }}>
+      <Text style={{ fontFamily: Fonts.sans, fontSize: fs(13), color: Theme.textMuted }}>
         {str(props.label)}
       </Text>
-      <Text style={{ fontFamily: Fonts.sansMedium, fontSize: 13, color: Theme.text }}>
+      <Text style={{ fontFamily: Fonts.sansMedium, fontSize: fs(13), color: Theme.text }}>
         {str(props.value)}
       </Text>
     </View>
@@ -475,7 +476,7 @@ function VizBadge({ props }: { props: Record<string, unknown> }) {
       : Theme.accent;
   return (
     <View style={{ alignSelf: 'flex-start', backgroundColor: bg, borderRadius: 6, paddingHorizontal: 8, paddingVertical: 3 }}>
-      <Text style={{ fontFamily: Fonts.sansSemiBold, fontSize: 11, color: fg }}>
+      <Text style={{ fontFamily: Fonts.sansSemiBold, fontSize: fs(11), color: fg }}>
         {str(props.label)}
       </Text>
     </View>
@@ -490,7 +491,7 @@ function VizProgressBar({ props }: { props: Record<string, unknown> }) {
   return (
     <View style={{ gap: 4 }}>
       {label.length > 0 ? (
-        <Text style={{ fontFamily: Fonts.sans, fontSize: 11, color: Theme.textMuted }}>
+        <Text style={{ fontFamily: Fonts.sans, fontSize: fs(11), color: Theme.textMuted }}>
           {label}
         </Text>
       ) : null}
@@ -514,15 +515,15 @@ function VizMetric({ props }: { props: Record<string, unknown> }) {
   const trend = str(props.trend);
   return (
     <View style={{ gap: 2 }}>
-      <Text style={{ fontFamily: Fonts.sans, fontSize: 11, color: Theme.textMuted }}>
+      <Text style={{ fontFamily: Fonts.sans, fontSize: fs(11), color: Theme.textMuted }}>
         {str(props.label)}
       </Text>
       <View style={{ flexDirection: 'row', alignItems: 'baseline', gap: 4 }}>
-        <Text style={{ fontFamily: Fonts.sansSemiBold, fontSize: 18, color: Theme.text }}>
+        <Text style={{ fontFamily: Fonts.sansSemiBold, fontSize: fs(18), color: Theme.text }}>
           {str(props.value)}
         </Text>
         {trend === 'up' || trend === 'down' ? (
-          <Text style={{ fontSize: 12, color: trend === 'up' ? Theme.statusCompleted : Theme.danger }}>
+          <Text style={{ fontSize: fs(12), color: trend === 'up' ? Theme.statusCompleted : Theme.danger }}>
             {trend === 'up' ? '↑' : '↓'}
           </Text>
         ) : null}
@@ -557,12 +558,12 @@ function VizCallout({ props }: { props: Record<string, unknown> }) {
       }}
     >
       {title.length > 0 ? (
-        <Text style={{ fontFamily: Fonts.sansSemiBold, fontSize: 13, color: Theme.text }}>
+        <Text style={{ fontFamily: Fonts.sansSemiBold, fontSize: fs(13), color: Theme.text }}>
           {title}
         </Text>
       ) : null}
       {content.length > 0 ? (
-        <Text style={{ fontFamily: Fonts.sans, fontSize: 13, color: Theme.textMuted }}>
+        <Text style={{ fontFamily: Fonts.sans, fontSize: fs(13), color: Theme.textMuted }}>
           {content}
         </Text>
       ) : null}
@@ -613,11 +614,11 @@ function VizTimeline({ props }: { props: Record<string, unknown> }) {
               ) : null}
             </View>
             <View style={{ flex: 1, paddingBottom: isLast ? 0 : 0 }}>
-              <Text style={{ fontFamily: Fonts.sansMedium, fontSize: 13, color: Theme.text }}>
+              <Text style={{ fontFamily: Fonts.sansMedium, fontSize: fs(13), color: Theme.text }}>
                 {item.title}
               </Text>
               {item.description ? (
-                <Text style={{ fontFamily: Fonts.sans, fontSize: 12, color: Theme.textMuted, marginTop: 1 }}>
+                <Text style={{ fontFamily: Fonts.sans, fontSize: fs(12), color: Theme.textMuted, marginTop: 1 }}>
                   {item.description}
                 </Text>
               ) : null}

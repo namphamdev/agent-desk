@@ -56,7 +56,7 @@ const r =
   process.platform === 'win32'
     ? spawnSync(
         'cmd.exe',
-        ['/d', '/s', '/c', `npx eas-cli update --channel production --message "${message}" --non-interactive`],
+        ['/d', '/s', '/c', `npx eas-cli update --channel production --environment production --message "${message}" --non-interactive`],
         {
           cwd: appDir,
           stdio: 'inherit',
@@ -66,7 +66,7 @@ const r =
       )
     : spawnSync(
         'npx',
-        ['eas-cli', 'update', '--channel', 'production', '--message', message, '--non-interactive'],
+        ['eas-cli', 'update', '--channel', 'production', '--environment', 'production', '--message', message, '--non-interactive'],
         { cwd: appDir, stdio: 'inherit', env: { ...process.env, ...env } },
       );
 

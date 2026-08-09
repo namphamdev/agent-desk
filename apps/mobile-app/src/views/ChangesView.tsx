@@ -18,6 +18,7 @@ import { useForceUpdateOnNotify } from '../lib/hooks';
 import { Chat, GitStatus } from '../models/Entities';
 import { Fonts, Theme } from '../theme/Theme';
 import { LineIcon } from '../theme/LineIcon';
+import { fs, useThemedStyles } from '../theme/Appearance';
 import { withAlpha } from '../theme/color';
 
 interface Props {
@@ -27,6 +28,7 @@ interface Props {
 
 export function ChangesView({ model, chat }: Props) {
   useForceUpdateOnNotify(model);
+  const styles = useThemedStyles(() => makeStyles(), []);
   const [status, setStatus] = useState<GitStatus | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -52,13 +54,13 @@ export function ChangesView({ model, chat }: Props) {
         </View>
       ) : !status || !status.isRepo ? (
         <View style={{ alignItems: 'center', paddingTop: 40, paddingHorizontal: 24 }}>
-          <Text style={{ fontFamily: Fonts.sans, fontSize: 13, color: Theme.textFaint }}>
+          <Text style={{ fontFamily: Fonts.sans, fontSize: fs(13), color: Theme.textFaint }}>
             This session's folder is not a git repository.
           </Text>
         </View>
       ) : status.files.length === 0 ? (
         <View style={{ alignItems: 'center', paddingTop: 40 }}>
-          <Text style={{ fontFamily: Fonts.sans, fontSize: 13, color: Theme.textFaint }}>
+          <Text style={{ fontFamily: Fonts.sans, fontSize: fs(13), color: Theme.textFaint }}>
             No changes — working tree is clean.
           </Text>
         </View>
@@ -66,10 +68,10 @@ export function ChangesView({ model, chat }: Props) {
         <ScrollView contentContainerStyle={{ padding: 16 }}>
           {status.ahead > 0 || status.behind > 0 ? (
             <View style={{ flexDirection: 'row', gap: 12, marginBottom: 12 }}>
-              <Text style={{ fontFamily: Fonts.sans, fontSize: 12, color: Theme.textMuted }}>
+              <Text style={{ fontFamily: Fonts.sans, fontSize: fs(12), color: Theme.textMuted }}>
                 ↑ {status.ahead} ahead
               </Text>
-              <Text style={{ fontFamily: Fonts.sans, fontSize: 12, color: Theme.textMuted }}>
+              <Text style={{ fontFamily: Fonts.sans, fontSize: fs(12), color: Theme.textMuted }}>
                 ↓ {status.behind} behind
               </Text>
             </View>
@@ -86,11 +88,11 @@ export function ChangesView({ model, chat }: Props) {
                 borderBottomColor: withAlpha(Theme.border, 0.5),
               }}
             >
-              <Text style={{ fontFamily: Fonts.sans, fontSize: 13, color: deltaColor(f.kind) }}>
+              <Text style={{ fontFamily: Fonts.sans, fontSize: fs(13), color: deltaColor(f.kind) }}>
                 {deltaSymbol(f.kind)}
               </Text>
               <Text
-                style={{ flex: 1, fontFamily: Fonts.sans, fontSize: 13, color: Theme.text }}
+                style={{ flex: 1, fontFamily: Fonts.sans, fontSize: fs(13), color: Theme.text }}
                 numberOfLines={1}
               >
                 {f.path}
@@ -125,18 +127,20 @@ function deltaSymbol(kind: string): string {
   }
 }
 
-const styles = StyleSheet.create({
-  header: {
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: Theme.border,
-  },
-  title: {
-    fontFamily: Fonts.sansMedium,
-    fontSize: 14,
-    color: Theme.text,
-  },
-});
+function makeStyles() {
+  return StyleSheet.create({
+    header: {
+      paddingHorizontal: 16,
+      paddingVertical: 12,
+      borderBottomWidth: 1,
+      borderBottomColor: Theme.border,
+    },
+    title: {
+      fontFamily: Fonts.sansMedium,
+      fontSize: fs(14),
+      color: Theme.text,
+    },
+  });
+}
 
 void LineIcon;

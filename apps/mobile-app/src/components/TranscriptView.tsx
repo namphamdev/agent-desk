@@ -24,9 +24,9 @@ import { MarkdownBlockView } from '../components/MarkdownBlockView';
 import {
   CometPulse,
 } from '../components/Loaders';
-import { Fonts } from '../theme/Theme';
+import { Fonts, overlay, Theme } from '../theme/Theme';
+import { Appearance, fs, useAppearance } from '../theme/Appearance';
 import { MD } from '../markdown/Metrics';
-import { Theme } from '../theme/Theme';
 import { withAlpha } from '../theme/color';
 import { RowVeil } from '../transcript/Veil';
 import {
@@ -57,6 +57,8 @@ interface VeilCache {
 }
 
 export function TranscriptView({ store, chatId }: TranscriptProps) {
+  // Subscribe to appearance changes so font-size adjustments re-render.
+  useAppearance();
   // Subscribe to store mutations.
   const [, setBump] = useState(0);
   useEffect(() => store.subscribe(() => setBump((n) => n + 1)), [store]);
@@ -174,6 +176,7 @@ export function TranscriptView({ store, chatId }: TranscriptProps) {
   return (
     <View style={{ flex: 1, backgroundColor: Theme.bg, opacity: settled ? 1 : 0 }}>
       <FlatList
+        key={`transcript-${Appearance.minFontSize}`}
         ref={listRef}
         data={rows}
         keyExtractor={(item) => item.id}
@@ -223,7 +226,7 @@ export function TranscriptView({ store, chatId }: TranscriptProps) {
             justifyContent: 'center',
           }}
         >
-          <Text style={{ color: Theme.text, fontSize: 14 }}>↓</Text>
+          <Text style={{ color: Theme.text, fontSize: fs(14) }}>↓</Text>
         </Pressable>
       ) : null}
     </View>
@@ -347,10 +350,10 @@ function ToolGroupView({ tools, open, onToggle }: {
           paddingHorizontal: 4,
         })}
       >
-        <Text style={{ color: Theme.textMuted, fontSize: 9, fontWeight: '600' }}>
+        <Text style={{ color: Theme.textMuted, fontSize: fs(9), fontWeight: '600' }}>
           {open ? '▸' : '▷'}
         </Text>
-        <Text style={{ fontFamily: Fonts.sans, fontSize: 12, color: Theme.textMuted }} numberOfLines={1}>
+        <Text style={{ fontFamily: Fonts.sans, fontSize: fs(12), color: Theme.textMuted }} numberOfLines={1}>
           {toolGroupSummary(tools)}
         </Text>
       </Pressable>
@@ -375,17 +378,17 @@ function ToolChipRow({ tool }: { tool: ToolItem }) {
           alignItems: 'center',
           gap: 8,
           paddingHorizontal: 8,
-          backgroundColor: 'rgba(255,255,255,0.03)',
+          backgroundColor: overlay(0.03),
           borderRadius: 9,
           borderWidth: 1,
-          borderColor: 'rgba(255,255,255,0.05)',
+          borderColor: overlay(0.05),
         }}
       >
-        <Text style={{ color: Theme.textMuted, fontSize: 10 }}>▪</Text>
+        <Text style={{ color: Theme.textMuted, fontSize: fs(10) }}>▪</Text>
         <Text
           style={{
             fontFamily: Fonts.sansMedium,
-            fontSize: 12,
+            fontSize: fs(12),
             color: tool.isError ? Theme.danger : Theme.textMuted,
           }}
         >
@@ -394,7 +397,7 @@ function ToolChipRow({ tool }: { tool: ToolItem }) {
         <Text
           style={{
             fontFamily: Fonts.sans,
-            fontSize: 12,
+            fontSize: fs(12),
             color: tool.isError ? Theme.danger : withAlpha(Theme.text, 0.85),
             flex: 1,
           }}
@@ -416,15 +419,15 @@ function InputChipView({ header, resolved }: { header: string; resolved: boolean
         alignItems: 'center',
         gap: 8,
         paddingHorizontal: 8,
-        backgroundColor: 'rgba(255,255,255,0.045)',
+        backgroundColor: overlay(0.045),
         borderRadius: 10,
         borderWidth: 1,
-        borderColor: 'rgba(255,255,255,0.08)',
+        borderColor: overlay(0.08),
       }}
     >
-      <Text style={{ color: Theme.textMuted, fontSize: 10 }}>💬</Text>
-      <Text style={{ fontFamily: Fonts.sansMedium, fontSize: 12, color: Theme.text }}>Question</Text>
-      <Text style={{ fontFamily: Fonts.sans, fontSize: 12, color: Theme.textMuted, flex: 1 }} numberOfLines={1}>
+      <Text style={{ color: Theme.textMuted, fontSize: fs(10) }}>💬</Text>
+      <Text style={{ fontFamily: Fonts.sansMedium, fontSize: fs(12), color: Theme.text }}>Question</Text>
+      <Text style={{ fontFamily: Fonts.sans, fontSize: fs(12), color: Theme.textMuted, flex: 1 }} numberOfLines={1}>
         {resolved ? header : 'Awaiting your answer…'}
       </Text>
     </View>
@@ -446,9 +449,9 @@ function ErrorChipView({ message }: { message: string }) {
         borderColor: withAlpha(Theme.danger, 0.16),
       }}
     >
-      <Text style={{ color: withAlpha(Theme.dangerSoft, 0.8), fontSize: 10 }}>⚠</Text>
-      <Text style={{ fontFamily: Fonts.sansMedium, fontSize: 12, color: Theme.text }}>Error</Text>
-      <Text style={{ fontFamily: Fonts.sans, fontSize: 12, color: withAlpha(Theme.text, 0.8), flex: 1 }} numberOfLines={1}>
+      <Text style={{ color: withAlpha(Theme.dangerSoft, 0.8), fontSize: fs(10) }}>⚠</Text>
+      <Text style={{ fontFamily: Fonts.sansMedium, fontSize: fs(12), color: Theme.text }}>Error</Text>
+      <Text style={{ fontFamily: Fonts.sans, fontSize: fs(12), color: withAlpha(Theme.text, 0.8), flex: 1 }} numberOfLines={1}>
         {message}
       </Text>
     </View>

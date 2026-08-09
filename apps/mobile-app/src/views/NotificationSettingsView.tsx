@@ -8,7 +8,8 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { AppModel } from '../app/AppModel';
 import { NotificationManager } from '../notifications/NotificationManager';
-import { Fonts, Theme } from '../theme/Theme';
+import { Fonts, overlay, Theme } from '../theme/Theme';
+import { fs, useThemedStyles } from '../theme/Appearance';
 
 interface Props {
   model: AppModel;
@@ -16,6 +17,7 @@ interface Props {
 }
 
 export function NotificationSettingsView({ model, onBack }: Props) {
+  const styles = useThemedStyles(() => makeStyles(), []);
   const [done, setDone] = useState(true);
   const [input, setInput] = useState(true);
   const [perm, setPerm] = useState<boolean | null>(null);
@@ -43,14 +45,14 @@ export function NotificationSettingsView({ model, onBack }: Props) {
     <SafeAreaView style={{ flex: 1, backgroundColor: Theme.surface }} edges={['top']}>
       <View style={styles.header}>
         <Pressable onPress={onBack} hitSlop={12}>
-          <Text style={{ color: Theme.text, fontSize: 22 }}>‹</Text>
+          <Text style={{ color: Theme.text, fontSize: fs(22) }}>‹</Text>
         </Pressable>
         <Text style={styles.title}>Notifications</Text>
         <View style={{ width: 28 }} />
       </View>
       {perm === false ? (
         <View style={styles.banner}>
-          <Text style={{ fontFamily: Fonts.sans, fontSize: 12, color: Theme.warning }}>
+          <Text style={{ fontFamily: Fonts.sans, fontSize: fs(12), color: Theme.warning }}>
             Notifications are disabled in system settings.
           </Text>
         </View>
@@ -82,6 +84,7 @@ function ToggleRow({ icon, label, description, value, onValueChange }: {
   value: boolean;
   onValueChange: (v: boolean) => void;
 }) {
+  const styles = useThemedStyles(() => makeStyles(), []);
   return (
     <View style={styles.row}>
       <Text style={styles.icon}>{icon}</Text>
@@ -92,56 +95,58 @@ function ToggleRow({ icon, label, description, value, onValueChange }: {
       <Switch
         value={value}
         onValueChange={onValueChange}
-        trackColor={{ false: 'rgba(255,255,255,0.1)', true: 'rgba(255,255,255,0.25)' }}
-        thumbColor={value ? '#fff' : '#999'}
+        trackColor={{ false: overlay(0.1), true: overlay(0.25) }}
+        thumbColor={value ? Theme.text : Theme.textFaint}
       />
     </View>
   );
 }
 
-const styles = StyleSheet.create({
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderBottomWidth: 1,
-    borderBottomColor: Theme.border,
-  },
-  title: {
-    fontFamily: Fonts.sansMedium,
-    fontSize: 14,
-    color: Theme.text,
-  },
-  banner: {
-    margin: 12,
-    padding: 12,
-    backgroundColor: 'rgba(255,180,0,0.08)',
-    borderRadius: 12,
-  },
-  row: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    backgroundColor: 'rgba(255,255,255,0.04)',
-    borderRadius: 16,
-  },
-  icon: {
-    fontSize: 14,
-    color: Theme.textMuted,
-  },
-  label: {
-    fontFamily: Fonts.sans,
-    fontSize: 14,
-    color: Theme.text,
-  },
-  description: {
-    fontFamily: Fonts.sans,
-    fontSize: 12,
-    color: Theme.textMuted,
-    marginTop: 2,
-  },
-});
+function makeStyles() {
+  return StyleSheet.create({
+    header: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      paddingHorizontal: 12,
+      paddingVertical: 8,
+      borderBottomWidth: 1,
+      borderBottomColor: Theme.border,
+    },
+    title: {
+      fontFamily: Fonts.sansMedium,
+      fontSize: fs(14),
+      color: Theme.text,
+    },
+    banner: {
+      margin: 12,
+      padding: 12,
+      backgroundColor: 'rgba(255,180,0,0.08)',
+      borderRadius: 12,
+    },
+    row: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 12,
+      paddingHorizontal: 16,
+      paddingVertical: 12,
+      backgroundColor: overlay(0.04),
+      borderRadius: 16,
+    },
+    icon: {
+      fontSize: fs(14),
+      color: Theme.textMuted,
+    },
+    label: {
+      fontFamily: Fonts.sans,
+      fontSize: fs(14),
+      color: Theme.text,
+    },
+    description: {
+      fontFamily: Fonts.sans,
+      fontSize: fs(12),
+      color: Theme.textMuted,
+      marginTop: 2,
+    },
+  });
+}

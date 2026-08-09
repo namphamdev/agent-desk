@@ -7,7 +7,19 @@ import { Svg, Path, Circle } from 'react-native-svg';
 
 import { Theme } from './Theme';
 
-export type LineIconKind = 'gitBranch' | 'folder' | 'folderWithFiles';
+export type LineIconKind =
+  | 'gitBranch'
+  | 'gitCommit'
+  | 'folder'
+  | 'folderWithFiles'
+  | 'plus'
+  | 'minus'
+  | 'undo'
+  | 'check'
+  | 'upload'
+  | 'download'
+  | 'sparkles'
+  | 'ban';
 
 interface LineIconDef {
   paths: string[];
@@ -37,6 +49,56 @@ const LINE_ICONS: Record<LineIconKind, LineIconDef> = {
       'M2 6.95c0-.883 0-1.324.07-1.692A4 4 0 0 1 5.257 2.07C5.626 2 6.068 2 6.95 2c.386 0 .58 0 .766.017a4 4 0 0 1 2.18.904c.144.119.28.255.554.529L11 4c.816.816 1.224 1.224 1.712 1.495a4 4 0 0 0 .848.352C14.098 6 14.675 6 15.828 6h.374c2.632 0 3.949 0 4.804.77q.119.105.224.224c.77.855.77 2.172.77 4.804V14c0 3.771 0 5.657-1.172 6.828S17.771 22 14 22h-4c-3.771 0-5.657 0-6.828-1.172S2 17.771 2 14z',
     ],
     circles: [],
+  },
+  gitCommit: {
+    paths: ['M12 8v8', 'M5 12H2', 'M22 12h-3'],
+    circles: [{ cx: 12, cy: 12, r: 3 }],
+  },
+  plus: {
+    paths: ['M12 5v14', 'M5 12h14'],
+    circles: [],
+  },
+  minus: {
+    paths: ['M5 12h14'],
+    circles: [],
+  },
+  undo: {
+    paths: [
+      'M9 14L4 9l5-5',
+      'M4 9h11a5 5 0 0 1 5 5v0a5 5 0 0 1-5 5h-4',
+    ],
+    circles: [],
+  },
+  check: {
+    paths: ['M5 12.5l4.5 4.5L19 7.5'],
+    circles: [],
+  },
+  upload: {
+    paths: [
+      'M12 16V4',
+      'M7 9l5-5 5 5',
+      'M5 20h14',
+    ],
+    circles: [],
+  },
+  download: {
+    paths: [
+      'M12 4v12',
+      'M7 11l5 5 5-5',
+      'M5 20h14',
+    ],
+    circles: [],
+  },
+  sparkles: {
+    paths: [
+      'M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z',
+      'M19 15l.7 2 2 .7-2 .7-.7 2-.7-2-2-.7 2-.7z',
+    ],
+    circles: [],
+  },
+  ban: {
+    paths: ['M19 5L5 19'],
+    circles: [{ cx: 12, cy: 12, r: 9 }],
   },
 };
 

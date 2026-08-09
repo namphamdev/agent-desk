@@ -33,7 +33,7 @@ export default {
     orientation: 'default',
     icon: './assets/icon.png',
     scheme: 'agentdeski',
-    userInterfaceStyle: 'dark',
+    userInterfaceStyle: 'automatic',
     splash: {
       backgroundColor: '#060606',
       resizeMode: 'contain',

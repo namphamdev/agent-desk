@@ -16,6 +16,7 @@ import {
 } from '../models/Entities';
 import { Fonts, Theme } from '../theme/Theme';
 import { withAlpha } from '../theme/color';
+import { fs, useThemedStyles } from '../theme/Appearance';
 import { StatusRail, indicatorDotColor } from '../components/Loaders';
 import { SessionSwipeable } from '../components/SessionSwipeable';
 
@@ -27,6 +28,7 @@ interface Props {
 
 export function ActivityView({ model, onOpenChat, onBack }: Props) {
   useForceUpdateOnNotify(model);
+  const styles = useThemedStyles(() => makeStyles(), []);
   const chats = model.activityChats;
   const unseenCount = chats.filter((c) => chatUnseen(c)).length;
 
@@ -38,14 +40,14 @@ export function ActivityView({ model, onOpenChat, onBack }: Props) {
     <SafeAreaView style={{ flex: 1, backgroundColor: Theme.surface }} edges={['top']}>
       <View style={styles.header}>
         <Pressable onPress={onBack} hitSlop={12}>
-          <Text style={{ color: Theme.text, fontSize: 22 }}>‹</Text>
+          <Text style={{ color: Theme.text, fontSize: fs(22) }}>‹</Text>
         </Pressable>
         <Text style={styles.title}>Activity</Text>
         <View style={{ width: 28 }} />
       </View>
       {chats.length === 0 ? (
         <View style={styles.empty}>
-          <Text style={{ fontFamily: Fonts.sans, fontSize: 13, color: Theme.textFaint }}>
+          <Text style={{ fontFamily: Fonts.sans, fontSize: fs(13), color: Theme.textFaint }}>
             No active sessions
           </Text>
         </View>
@@ -70,12 +72,12 @@ export function ActivityView({ model, onOpenChat, onBack }: Props) {
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
                   <StatusRail indicator={model.indicatorFor(item)} />
                   <Text
-                    style={{ flex: 1, fontFamily: Fonts.sans, fontSize: 13, color: Theme.text }}
+                    style={{ flex: 1, fontFamily: Fonts.sans, fontSize: fs(13), color: Theme.text }}
                     numberOfLines={1}
                   >
                     {chatDisplayTitle(item)}
                   </Text>
-                  <Text style={{ fontFamily: Fonts.sans, fontSize: 11, color: withAlpha(Theme.textMuted, 0.5) }}>
+                  <Text style={{ fontFamily: Fonts.sans, fontSize: fs(11), color: withAlpha(Theme.textMuted, 0.5) }}>
                     {relativeTime(item.lastMessageAt ?? item.createdAt)}
                   </Text>
                 </View>
@@ -83,7 +85,7 @@ export function ActivityView({ model, onOpenChat, onBack }: Props) {
                   style={{
                     paddingLeft: 14,
                     fontFamily: Fonts.sans,
-                    fontSize: 11,
+                    fontSize: fs(11),
                     color: withAlpha(Theme.textMuted, 0.5),
                     marginTop: 2,
                   }}
@@ -109,26 +111,28 @@ function relativeTime(ms: number): string {
   return `${Math.floor(delta / 86_400)}d`;
 }
 
-const styles = StyleSheet.create({
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderBottomWidth: 1,
-    borderBottomColor: Theme.border,
-  },
-  title: {
-    fontFamily: Fonts.sansMedium,
-    fontSize: 14,
-    color: Theme.text,
-  },
-  empty: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-});
+function makeStyles() {
+  return StyleSheet.create({
+    header: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      paddingHorizontal: 12,
+      paddingVertical: 8,
+      borderBottomWidth: 1,
+      borderBottomColor: Theme.border,
+    },
+    title: {
+      fontFamily: Fonts.sansMedium,
+      fontSize: fs(14),
+      color: Theme.text,
+    },
+    empty: {
+      flex: 1,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+  });
+}
 
 void indicatorDotColor;
