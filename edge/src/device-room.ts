@@ -18,6 +18,10 @@ import { BytesReader, BytesWriter } from "loro-protocol";
 import { createBlobStore, getJsonBlob, putJsonBlob, type BlobStore } from "./blobs";
 import { AUTH_USER_HEADER, type Env } from "./env";
 
+/** Schema version stamp for the DeviceRoom init guard (see SessionRoom for
+ * rationale: skip CREATE TABLE on cold wakes past the first init). */
+const DEVICE_SCHEMA_VERSION = "1";
+
 export interface DeviceFrameHeader {
   /** Stream id, unique per (connId, logical stream). */
   s: string;
@@ -94,13 +98,30 @@ export class DeviceRoom implements DurableObject {
   constructor(ctx: DurableObjectState, env: Env) {
     this.ctx = ctx;
     void env;
-    ctx.storage.sql.exec(
-      "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
-    );
-    ctx.storage.sql.exec(
-      "CREATE TABLE IF NOT EXISTS pending_nudges (chat_id TEXT PRIMARY KEY, queued_at INTEGER NOT NULL)"
-    );
-    this.blobs = createBlobStore(ctx.storage.sql);
+    // Schema guard: skip CREATE TABLE on cold wakes where we already
+    // initialized — each CREATE TABLE counts as a rows_written charge.
+    let schemaReady = false;
+    try {
+      const schemaRow = [...ctx.storage.sql.exec("SELECT value FROM meta WHERE key = '__schema__'")][0];
+      schemaReady = schemaRow?.value === DEVICE_SCHEMA_VERSION;
+    } catch {
+      // First-ever instantiation: meta table doesn't exist yet.
+    }
+    if (schemaReady) {
+      this.blobs = createBlobStore(ctx.storage.sql, { skipInit: true });
+    } else {
+      ctx.storage.sql.exec(
+        "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+      );
+      ctx.storage.sql.exec(
+        "CREATE TABLE IF NOT EXISTS pending_nudges (chat_id TEXT PRIMARY KEY, queued_at INTEGER NOT NULL)"
+      );
+      this.blobs = createBlobStore(ctx.storage.sql);
+      ctx.storage.sql.exec(
+        "INSERT INTO meta (key, value) VALUES ('__schema__', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        DEVICE_SCHEMA_VERSION
+      );
+    }
     ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"));
   }
 

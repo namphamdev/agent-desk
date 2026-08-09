@@ -1,0 +1,3 @@
+comet-server.yourdomain.com {
+  reverse_proxy comet-server:3000
+}

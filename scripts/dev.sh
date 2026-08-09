@@ -33,7 +33,7 @@ run() {
   echo "▸ starting local $HARNESS engine on :$PORT"
   COMET_DATA_DIR="$DAEMON_DIR" COMET_IPC_PORT="$PORT" \
     COMET_EDGE_TOKEN="$TOKEN" COMET_HARNESS="$HARNESS" RUST_LOG="$LOG_LEVEL" \
-    "$ROOT/target/debug/comet" headless &
+    "$ROOT/target/debug/agent-deski" headless &
   local daemon_pid=$!
 
   cleanup() {
@@ -52,7 +52,7 @@ run() {
   echo "▸ opening Comet"
   COMET_DATA_DIR="$UI_DIR" COMET_IPC_PORT="$PORT" \
     COMET_EDGE_TOKEN="$TOKEN" RUST_LOG="$LOG_LEVEL" \
-    "$ROOT/target/debug/comet"
+    "$ROOT/target/debug/agent-deski"
 }
 
 watch() {

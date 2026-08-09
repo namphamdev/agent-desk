@@ -55,7 +55,7 @@ export function openSocket(
   return {
     send(data) {
       if (ws.readyState !== WebSocket.OPEN) return;
-      ws.send(data as unknown as string);
+      ws.send(data as string | ArrayBuffer);
     },
     close(code, reason) {
       try {

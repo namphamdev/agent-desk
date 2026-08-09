@@ -323,14 +323,8 @@ export class NotificationManager {
     const previous = this.lastStatus.get(chatId);
     this.lastStatus.set(chatId, rawStatus as SessionStatusValue);
     this.lastStatusDirty = true;
-    if (!rawStatus) {
-      console.info('[notify] observe', chatId.slice(0, 8), 'status=undefined, skipping');
-      return;
-    }
-    if (!previous) {
-      console.info('[notify] observe', chatId.slice(0, 8), `first-seen=${rawStatus} (no previous, no notification)`);
-      return;
-    }
+    if (!rawStatus) return;
+    if (!previous) return;
     if (previous === rawStatus) return;
 
     console.info('[notify] transition', chatId.slice(0, 8), `${previous} → ${rawStatus}, updatedAt=${updatedAt}, age=${updatedAt !== undefined ? now - updatedAt : '?'}ms`);

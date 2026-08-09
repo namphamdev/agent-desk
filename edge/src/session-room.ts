@@ -50,6 +50,14 @@ import {
 import { createBlobStore, getJsonBlob, putJsonBlob, type BlobStore } from "./blobs";
 import { AUTH_USER_HEADER, ROOM_KIND_HEADER, type Env } from "./env";
 
+/** Schema version stamp: once written, the constructor skips all CREATE TABLE
+ * statements on subsequent cold instantiations. Cloudflare counts every SQL
+ * statement that touches storage as rows_written — including idempotent
+ * CREATE TABLE IF NOT EXISTS — so this guard eliminates 3 writes per cold wake
+ * (the updates + meta + blobs tables). Critical for staying within the DO
+ * free-tier daily row-write budget. */
+const SCHEMA_VERSION = "1";
+
 const DAY_MS = 24 * 60 * 60 * 1000;
 const RETAIN_MS = RETAIN_DAYS * DAY_MS;
 /** Consecutive cold-replay deaths (CPU-limit kills mid-`ensureDoc`) before the
@@ -101,6 +109,9 @@ export class SessionRoom implements DurableObject {
   /** True when the dirty flags in memory are ahead of storage (need flush).
    * Batches meta writes into the flush cycle instead of one-per-update. */
   private metaDirty = false;
+  /** Individual keys that have changed since the last flushMeta — enables
+   * targeted UPSERTs instead of DELETE-all + re-INSERT-all. */
+  private readonly metaDirtyKeys = new Set<string>();
   /** In-memory total update-log bytes — avoids a meta read+write per flush. */
   private logBytesCached = 0;
   /** In-memory alarm-scheduled flag — avoids getAlarm (read) + setAlarm
@@ -113,13 +124,32 @@ export class SessionRoom implements DurableObject {
   constructor(ctx: DurableObjectState, env: Env) {
     this.ctx = ctx;
     this.env = env;
-    ctx.storage.sql.exec(
-      "CREATE TABLE IF NOT EXISTS updates (seq INTEGER PRIMARY KEY AUTOINCREMENT, bytes BLOB NOT NULL, received_at INTEGER NOT NULL)"
-    );
-    ctx.storage.sql.exec(
-      "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
-    );
-    this.blobs = createBlobStore(ctx.storage.sql);
+    // Schema guard: skip CREATE TABLE on cold wakes where we already
+    // initialized. Each CREATE TABLE counts as a rows_written charge, and
+    // hibernation means this constructor fires on every cold reconnect.
+    let schemaReady = false;
+    try {
+      const schemaRow = [...ctx.storage.sql.exec("SELECT value FROM meta WHERE key = '__schema__'")][0];
+      schemaReady = schemaRow?.value === SCHEMA_VERSION;
+    } catch {
+      // First-ever instantiation: meta table doesn't exist yet.
+    }
+    if (schemaReady) {
+      // Tables exist — just create the blob store wrapper (no SQL).
+      this.blobs = createBlobStore(ctx.storage.sql, { skipInit: true });
+    } else {
+      ctx.storage.sql.exec(
+        "CREATE TABLE IF NOT EXISTS updates (seq INTEGER PRIMARY KEY AUTOINCREMENT, bytes BLOB NOT NULL, received_at INTEGER NOT NULL)"
+      );
+      ctx.storage.sql.exec(
+        "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+      );
+      this.blobs = createBlobStore(ctx.storage.sql);
+      ctx.storage.sql.exec(
+        "INSERT INTO meta (key, value) VALUES ('__schema__', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        SCHEMA_VERSION
+      );
+    }
     // Protocol-designed hibernation keepalive: ping → pong without waking us.
     // NOTE (2026-07-30 incident): precisely BECAUSE the runtime answers these
     // itself, a pong is NOT evidence this DO can still run — a wedged room
@@ -148,30 +178,33 @@ export class SessionRoom implements DurableObject {
   }
 
   /** Write meta to the in-memory cache only; the value is persisted to SQLite
-   * on the next flush. This batches N setMeta calls into a single UPDATE
-   * statement per flush cycle instead of N individual UPSERTs. */
+   * on the next flush. This batches N setMeta calls into targeted UPSERTs per
+   * flush cycle — only keys that actually changed get written. */
   private setMeta(key: string, value: string): void {
     this.loadMeta();
     if (this.metaCache.get(key) === value) return; // no-op: value unchanged
     this.metaCache.set(key, value);
     this.metaDirty = true;
+    this.metaDirtyKeys.add(key);
   }
 
-  /** Persist any dirty meta keys to SQLite in a single batched transaction. */
+  /** Persist dirty meta keys to SQLite via targeted UPSERTs — one statement
+   * per changed key, unchanged keys are not touched. The old approach (DELETE
+   * all + re-INSERT all) wrote ~20 rows per flush; this writes only the 1-3
+   * keys that actually transitioned. */
   private async flushMeta(): Promise<void> {
     if (!this.metaDirty) return;
     this.metaDirty = false;
-    // Single-statement upsert of all meta keys. SQLite processes this as one
-    // transaction — one row_written charge regardless of how many keys changed.
-    // We rebuild the full meta table each time: the key set is tiny (<20).
-    this.ctx.storage.sql.exec("DELETE FROM meta");
-    for (const [key, value] of this.metaCache) {
+    for (const key of this.metaDirtyKeys) {
+      const value = this.metaCache.get(key);
+      if (value === undefined) continue;
       this.ctx.storage.sql.exec(
-        "INSERT INTO meta (key, value) VALUES (?, ?)",
+        "INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
         key,
         value
       );
     }
+    this.metaDirtyKeys.clear();
     await this.ctx.storage.sync();
   }
 
@@ -646,7 +679,6 @@ export class SessionRoom implements DurableObject {
     const replayMs = Date.now() - started;
     this.setMeta("lastReplayMs", String(replayMs));
     this.setMeta("lastReplayRows", String(rows));
-    this.metaDirty = true; // persist telemetry on next flush
     console.log(
       `cold replay: ${replayMs}ms, ${rows} rows, snapshot ${snapshot?.length ?? 0}B, attempt ${attempts + 1}`
     );

@@ -105,20 +105,34 @@ export const Keychain = {
   },
 };
 
-// JWT helpers — decode the payload's `exp` (60s early-refresh margin).
+// JWT helpers — decode the payload's `exp` (120s early-refresh margin).
+// The access token is baked into WS URLs at connect time and cannot be
+// refreshed mid-socket; with WorkOS's short access-token lifetimes the
+// margin must comfortably exceed the WS handshake RTT + WorkOS JWKS
+// verification latency on the edge, otherwise the edge's jwtVerify runs
+// past `exp` and rejects the upgrade (surfacing as RN close code 1006).
 // On any parse failure the token is treated as expired so the app refreshes
 // rather than trusting an unreadable JWT.
+const TOKEN_REFRESH_MARGIN_S = 120;
+
 export function isJwtExpired(jwt: string): boolean {
+  return jwtExpiresIn(jwt) <= 0;
+}
+
+/** Seconds until the token's `exp`, accounting for the early-refresh margin.
+ * Returns 0 (treat as expired) on any decode failure so the app refreshes
+ * rather than trusting an unreadable JWT. */
+export function jwtExpiresIn(jwt: string): number {
   const segments = jwt.split('.');
-  if (segments.length !== 3) return true;
+  if (segments.length !== 3) return 0;
   const payload = base64UrlDecode(segments[1]);
-  if (!payload) return true;
+  if (!payload) return 0;
   try {
     const obj = JSON.parse(payload) as { exp?: number };
-    if (typeof obj.exp !== 'number') return true;
-    return Date.now() / 1000 > obj.exp - 60;
+    if (typeof obj.exp !== 'number') return 0;
+    return obj.exp - TOKEN_REFRESH_MARGIN_S - Date.now() / 1000;
   } catch {
-    return true;
+    return 0;
   }
 }
 

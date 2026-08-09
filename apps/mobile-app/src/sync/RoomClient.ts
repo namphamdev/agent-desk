@@ -80,6 +80,7 @@ export class RoomClient {
   private probeIntervalMs = ROOM_PROBE_AFTER_MS;
   private lastProbeAt: number | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private errorHandled = false;
 
   constructor(
     public readonly roomId: string,
@@ -130,6 +131,7 @@ export class RoomClient {
     this.generation += 1;
     const gen = this.generation;
     this.joinedLor = false;
+    this.errorHandled = false;
     this.fullResyncRequested = false;
     this.fragments.clear();
     this.joinSentAt = null;
@@ -182,7 +184,8 @@ export class RoomClient {
   }
 
   private onSocketError(gen: number): void {
-    if (gen !== this.generation || this.closed) return;
+    if (gen !== this.generation || this.closed || this.errorHandled) return;
+    this.errorHandled = true;
     this.events('disconnected');
     this.scheduleReconnect(gen);
   }

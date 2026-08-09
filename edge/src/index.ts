@@ -143,7 +143,18 @@ export default {
     }
 
     const auth = await authenticate(env, request);
-    if (!auth) return json({ error: "unauthenticated" }, 401);
+    if (!auth) {
+      // A WS upgrade that fails auth surfaces on the client as close code
+      // 1006 (abnormal closure) — the 401 body is never readable from RN's
+      // WebSocket. Log it explicitly so token-expiry storms are visible in
+      // Workers Logs instead of appearing as mysterious 1006 disconnects.
+      if (request.headers.get("upgrade")?.toLowerCase() === "websocket") {
+        console.warn(
+          `[ws] auth failed for ${url.pathname}${url.search ? `?${url.searchParams.get("token") ? "token=…" : url.search}` : ""}`
+        );
+      }
+      return json({ error: "unauthenticated" }, 401);
+    }
 
     // ── session rooms ───────────────────────────────────────────────────────
     if (parts[0] === "session" && parts[1] && ID_RE.test(parts[1]) && parts[2] === "ws") {

@@ -2,7 +2,7 @@
 // room sockets (WS auth rides the URL query — sockets can't set headers), and
 // the durable-nudge POST.
 
-import { AuthClient, AuthError, AuthTokens, isJwtExpired, Keychain } from '../auth/AuthClient';
+import { AuthClient, AuthError, AuthTokens, isJwtExpired, jwtExpiresIn, Keychain } from '../auth/AuthClient';
 
 export type AppConfigMode = 'workos' | 'dev';
 
@@ -116,14 +116,48 @@ export class AppConfig {
     return this.edgeURL.replace(/^http:/, 'ws:').replace(/^https:/, 'wss:');
   }
 
+  /** Minimum seconds of remaining validity a token must have to be embedded
+   * in a WS URL. The token is baked into the URL at connect time and cannot
+   * be refreshed mid-socket, so it must outlast the handshake RTT + WorkOS
+   * JWKS verification on the edge plus a reasonable socket lifetime. If the
+   * cached token falls below this floor, force a refresh before building the
+   * URL. This is the defensive backstop behind isJwtExpired's margin: even
+   * if a redial races the refresh, it never ships an about-to-expire token. */
+  private static readonly SOCKET_TOKEN_MIN_VALIDITY_S = 90;
+
+  /** Token guaranteed to have at least SOCKET_TOKEN_MIN_VALIDITY_S of
+   * validity remaining (after the early-refresh margin), refreshing first if
+   * the cached token is too close to expiry. Use this for every WS URL
+   * builder; use currentToken() for short-lived HTTP requests. */
+  private async freshTokenForSocket(): Promise<string | null> {
+    const current = this.tokens;
+    if (current && !isJwtExpired(current.accessToken)) {
+      const remaining = jwtExpiresIn(current.accessToken);
+      if (remaining >= AppConfig.SOCKET_TOKEN_MIN_VALIDITY_S) {
+        return current.accessToken;
+      }
+      // Token is valid but won't outlive the minimum floor — refresh now so
+      // the WS URL gets a token with enough runway.
+      if (this.mode === 'dev') return this.devBearer ?? null;
+      if (this.refreshInFlight) return this.refreshInFlight;
+      this.refreshInFlight = this.doRefresh(current);
+      try {
+        return await this.refreshInFlight;
+      } finally {
+        this.refreshInFlight = null;
+      }
+    }
+    return this.currentToken();
+  }
+
   async workspaceSocketURL(): Promise<string | null> {
-    const token = await this.currentToken();
+    const token = await this.freshTokenForSocket();
     if (!token) return null;
     return `${this.wsBase}/workspace/${this.orgId}/ws?token=${encodeURIComponent(token)}`;
   }
 
   async sessionSocketURL(chatId: string): Promise<string | null> {
-    const token = await this.currentToken();
+    const token = await this.freshTokenForSocket();
     if (!token) return null;
     return `${this.wsBase}/session/${chatId}/ws?token=${encodeURIComponent(token)}`;
   }
@@ -162,7 +196,7 @@ export class AppConfig {
 
   deviceRelaySocketURL(deviceId: string, connId: string): Promise<string | null> {
     return (async () => {
-      const token = await this.currentToken();
+      const token = await this.freshTokenForSocket();
       if (!token) return null;
       const params = new URLSearchParams({
         role: 'client',
