@@ -2,30 +2,27 @@
 // the secret-bearing exchange delegated to the edge. The comet mark on black,
 // one white button.
 
-import React, { useState } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
-import * as WebBrowser from 'expo-web-browser';
-import { makeRedirectUri } from 'expo-auth-session';
+import { makeRedirectUri } from "expo-auth-session";
+import * as WebBrowser from "expo-web-browser";
+import { useState } from "react";
+import { Pressable, StyleSheet, Text, View } from "react-native";
 
-import { AgentDeskiMark } from '../theme/AgentDeskiMark';
-import { Fonts, Theme } from '../theme/Theme';
-import { AppModel } from '../app/AppModel';
-import { AuthOrg, AuthTokens } from '../auth/AuthClient';
+import { AppModel } from "../app/AppModel";
+import { AuthOrg, AuthTokens } from "../auth/AuthClient";
+import { AgentDeskiMark } from "../theme/AgentDeskiMark";
+import { Fonts, Theme } from "../theme/Theme";
 
-const EDGE_URL =
-  process.env.EXPO_PUBLIC_EDGE_URL ??
-  'https://comet-native-edge.nampham.workers.dev';
-const WORKOS_CLIENT_ID =
-  process.env.EXPO_PUBLIC_WORKOS_CLIENT_ID ?? 'client_01KYYC6CE7KXR50DMVMV47JTYD';
-const WORKOS_API_BASE = 'https://api.workos.com';
-const CALLBACK_SCHEME = 'agentdeski';
+const EDGE_URL = process.env.EXPO_PUBLIC_EDGE_URL ?? "";
+const WORKOS_CLIENT_ID = process.env.EXPO_PUBLIC_WORKOS_CLIENT_ID ?? "";
+const WORKOS_API_BASE = "https://api.workos.com";
+const CALLBACK_SCHEME = "agentdeski";
 
 function authorizeURL(state: string): string {
   const params = new URLSearchParams({
-    response_type: 'code',
+    response_type: "code",
     client_id: WORKOS_CLIENT_ID,
     redirect_uri: `${CALLBACK_SCHEME}://callback`,
-    provider: 'authkit',
+    provider: "authkit",
     state,
   });
   return `${WORKOS_API_BASE}/user_management/authorize?${params.toString()}`;
@@ -43,21 +40,24 @@ export function SignInView({ model }: SignInProps) {
     setBusy(true);
     setError(null);
     const state = Math.random().toString(36).slice(2);
-    const redirect = makeRedirectUri({ scheme: CALLBACK_SCHEME, path: 'callback' });
+    const redirect = makeRedirectUri({
+      scheme: CALLBACK_SCHEME,
+      path: "callback",
+    });
     const result = await WebBrowser.openAuthSessionAsync(
       authorizeURL(state),
       redirect,
     );
-    if (result.type !== 'success') {
+    if (result.type !== "success") {
       setBusy(false);
       return;
     }
-    const params = new URLSearchParams(result.url.split('?')[1] ?? '');
-    const code = params.get('code');
-    const cbState = params.get('state');
+    const params = new URLSearchParams(result.url.split("?")[1] ?? "");
+    const code = params.get("code");
+    const cbState = params.get("state");
     if (!code || cbState !== state) {
       setBusy(false);
-      setError('Callback missing code or state mismatch');
+      setError("Callback missing code or state mismatch");
       return;
     }
     try {
@@ -71,9 +71,9 @@ export function SignInView({ model }: SignInProps) {
   return (
     <View style={styles.container}>
       <View style={{ flex: 1 }} />
-      <View style={{ alignItems: 'center', gap: 24 }}>
+      <View style={{ alignItems: "center", gap: 24 }}>
         <AgentDeskiMark size={72} color={Theme.text} />
-        <View style={{ alignItems: 'center', gap: 6 }}>
+        <View style={{ alignItems: "center", gap: 6 }}>
           <Text style={styles.title}>AgentDeski</Text>
           <Text style={styles.subtitle}>Your coding agents, from anywhere</Text>
         </View>
@@ -88,11 +88,13 @@ export function SignInView({ model }: SignInProps) {
             backgroundColor: Theme.text,
             height: 50,
             borderRadius: 16,
-            alignItems: 'center',
-            justifyContent: 'center',
+            alignItems: "center",
+            justifyContent: "center",
           })}
         >
-          <Text style={styles.buttonText}>{busy ? 'Signing in…' : 'Log in to AgentDeski'}</Text>
+          <Text style={styles.buttonText}>
+            {busy ? "Signing in…" : "Log in to AgentDeski"}
+          </Text>
         </Pressable>
         {error ? <Text style={styles.error}>{error}</Text> : null}
       </View>
@@ -107,8 +109,8 @@ const styles = StyleSheet.create({
     backgroundColor: Theme.bg,
     paddingHorizontal: 32,
     maxWidth: 480,
-    width: '100%',
-    alignSelf: 'center',
+    width: "100%",
+    alignSelf: "center",
   },
   title: {
     fontFamily: Fonts.sansSemiBold,
@@ -130,7 +132,7 @@ const styles = StyleSheet.create({
     fontFamily: Fonts.sans,
     fontSize: 13,
     color: Theme.danger,
-    textAlign: 'center',
+    textAlign: "center",
   },
 });
 
@@ -158,7 +160,13 @@ export function OrgPickerView({ model, tokens, orgs }: OrgPickerProps) {
   return (
     <View style={[styles.container, { gap: 20 }]}>
       <View style={{ flex: 1 }} />
-      <Text style={{ fontFamily: Fonts.sansSemiBold, fontSize: 16, color: Theme.text }}>
+      <Text
+        style={{
+          fontFamily: Fonts.sansSemiBold,
+          fontSize: 16,
+          color: Theme.text,
+        }}
+      >
         Choose an organization
       </Text>
       <View style={{ gap: 8 }}>
@@ -169,15 +177,22 @@ export function OrgPickerView({ model, tokens, orgs }: OrgPickerProps) {
             disabled={busy}
             style={({ pressed }) => ({
               opacity: pressed ? 0.85 : 1,
-              backgroundColor: 'rgba(255,255,255,0.04)',
+              backgroundColor: "rgba(255,255,255,0.04)",
               height: 48,
               borderRadius: 14,
               paddingHorizontal: 16,
-              flexDirection: 'row',
-              alignItems: 'center',
+              flexDirection: "row",
+              alignItems: "center",
             })}
           >
-            <Text style={{ flex: 1, fontFamily: Fonts.sansMedium, fontSize: 14, color: Theme.text }}>
+            <Text
+              style={{
+                flex: 1,
+                fontFamily: Fonts.sansMedium,
+                fontSize: 14,
+                color: Theme.text,
+              }}
+            >
               {org.name}
             </Text>
             <Text style={{ color: Theme.textFaint, fontSize: 12 }}>›</Text>
@@ -186,7 +201,15 @@ export function OrgPickerView({ model, tokens, orgs }: OrgPickerProps) {
       </View>
       {error ? <Text style={styles.error}>{error}</Text> : null}
       <Pressable onPress={() => model.signOut()}>
-        <Text style={{ fontFamily: Fonts.sans, fontSize: 13, color: Theme.textMuted }}>Back</Text>
+        <Text
+          style={{
+            fontFamily: Fonts.sans,
+            fontSize: 13,
+            color: Theme.textMuted,
+          }}
+        >
+          Back
+        </Text>
       </Pressable>
       <View style={{ flex: 1 }} />
     </View>

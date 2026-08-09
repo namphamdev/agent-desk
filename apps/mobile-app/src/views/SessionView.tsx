@@ -2,7 +2,7 @@
 // composer (or question panel while input is requested).
 
 import React, { useEffect, useState } from 'react';
-import { KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { AppModel } from '../app/AppModel';
@@ -348,6 +348,8 @@ function SessionConfigSheet({
     cfg?.permissionMode ?? 'default',
   );
   const [acpAgents, setAcpAgents] = useState<import('../models/Entities').InstalledAcpAgent[]>([]);
+  const [catalogs, setCatalogs] = useState<Record<string, import('../models/HarnessCatalog').ModelInfo[]>>({});
+  const [modelSearch, setModelSearch] = useState('');
 
   useEffect(() => {
     if (!space) return;
@@ -357,7 +359,26 @@ function SessionConfigSheet({
     })();
   }, [space, model]);
 
-  const models = HarnessCatalog.modelsFor(harness);
+  // Fetch the model catalog from the device whenever the harness changes.
+  // ACP agents expose their own model lists via ListModels with acpAgentId.
+  useEffect(() => {
+    if (!space) return;
+    void (async () => {
+      const cat = await model.listModels(space, harness);
+      setCatalogs((prev) => ({ ...prev, [harness]: cat }));
+      // If the current model id isn't in the fetched catalog, snap to the
+      // first entry so the picker never shows a stale selection.
+      if (cat.length > 0 && !cat.some((m) => m.id === modelId)) {
+        setModelId(cat[0].id);
+      }
+    })();
+  }, [space, harness, model]);
+
+  const models = catalogs[harness] ?? HarnessCatalog.modelsFor(harness);
+  const filteredModels = models.filter((m) => {
+    const query = modelSearch.trim().toLowerCase();
+    return query.length === 0 || `${m.label} ${m.id} ${m.description ?? ''}`.toLowerCase().includes(query);
+  });
   const selectedModel = models.find((m) => m.id === modelId) ?? models[0];
   const effectiveReasoning = (() => {
     if (selectedModel.reasoningLevels.length === 0) return undefined;
@@ -452,32 +473,48 @@ function SessionConfigSheet({
           </View>
 
           <Text style={sheetStyles.label}>Model</Text>
-          <View style={sheetStyles.card}>
-            {models.map((m, ix) => {
-              const sel = m.id === (models.find((x) => x.id === modelId) ?? models[0]).id;
-              return (
-                <React.Fragment key={m.id}>
-                  <Pressable
-                    onPress={() => {
-                      setModelId(m.id);
-                      const nextReasoning = (!m.reasoningLevels.includes(effectiveReasoning ?? '')
-                        ? HarnessCatalog.defaultReasoningFor(m) ?? undefined
-                        : effectiveReasoning);
-                      setReasoning(nextReasoning);
-                      persist({ modelId: m.id, reasoning: nextReasoning });
-                    }}
-                    style={({ pressed }) => [sheetStyles.option, { backgroundColor: pressed ? whiteAlpha(0.06) : 'transparent' }]}
-                  >
-                    <View style={{ flex: 1 }}>
-                      <Text style={sheetStyles.optionTitle}>{m.label}</Text>
-                      {m.description ? <Text style={sheetStyles.optionDescription}>{m.description}</Text> : null}
-                    </View>
-                    <Text style={[sheetStyles.checkmark, { opacity: sel ? 1 : 0 }]}>✓</Text>
-                  </Pressable>
-                  {ix < models.length - 1 ? <View style={sheetStyles.separator} /> : null}
-                </React.Fragment>
-              );
-            })}
+          <View style={sheetStyles.searchBox}>
+            <Text style={sheetStyles.searchIcon}>⌕</Text>
+            <TextInput
+              value={modelSearch}
+              onChangeText={setModelSearch}
+              placeholder="Search models"
+              placeholderTextColor={Theme.textFaint}
+              autoCapitalize="none"
+              autoCorrect={false}
+              style={sheetStyles.searchInput}
+            />
+          </View>
+          <View style={sheetStyles.modelList}>
+            <ScrollView nestedScrollEnabled style={{ flex: 1 }} contentContainerStyle={{ paddingVertical: 4 }}>
+              {filteredModels.length === 0 ? (
+                <Text style={sheetStyles.emptyText}>No models found.</Text>
+              ) : filteredModels.map((m, ix) => {
+                const sel = m.id === (models.find((x) => x.id === modelId) ?? models[0]).id;
+                return (
+                  <React.Fragment key={m.id}>
+                    <Pressable
+                      onPress={() => {
+                        setModelId(m.id);
+                        const nextReasoning = (!m.reasoningLevels.includes(effectiveReasoning ?? '')
+                          ? HarnessCatalog.defaultReasoningFor(m) ?? undefined
+                          : effectiveReasoning);
+                        setReasoning(nextReasoning);
+                        persist({ modelId: m.id, reasoning: nextReasoning });
+                      }}
+                      style={({ pressed }) => [sheetStyles.option, { backgroundColor: pressed ? whiteAlpha(0.06) : 'transparent' }]}
+                    >
+                      <View style={{ flex: 1 }}>
+                        <Text style={sheetStyles.optionTitle}>{m.label}</Text>
+                        {m.description ? <Text style={sheetStyles.optionDescription}>{m.description}</Text> : null}
+                      </View>
+                      <Text style={[sheetStyles.checkmark, { opacity: sel ? 1 : 0 }]}>✓</Text>
+                    </Pressable>
+                    {ix < filteredModels.length - 1 ? <View style={sheetStyles.separator} /> : null}
+                  </React.Fragment>
+                );
+              })}
+            </ScrollView>
           </View>
 
           {selectedModel.reasoningLevels.length > 0 ? (
@@ -540,7 +577,7 @@ function SessionConfigSheet({
           <View style={sheetStyles.summary}>
             <Text style={sheetStyles.summaryLabel}>Saved for this session</Text>
             <Text style={sheetStyles.summaryValue}>
-              {selectedAcpAgent ? selectedAcpAgent.name : harnessLabel(wireHarness)}
+              {selectedAcpAgent ? selectedAcpAgent.name : harnessLabel(HarnessCatalog.isAcpAgentHarness(harness) ? HarnessCatalog.ACP_WIRE : harness)}
               {' · '}
               {selectedModel.label}
               {effectiveReasoning ? ` · ${HarnessCatalog.reasoningLabel(effectiveReasoning)}` : ''}
@@ -618,6 +655,45 @@ const sheetStyles = StyleSheet.create({
     borderRadius: 20,
     overflow: 'hidden',
     marginBottom: 8,
+  },
+  searchBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    height: 42,
+    paddingHorizontal: 12,
+    marginBottom: 10,
+    borderRadius: 12,
+    backgroundColor: whiteAlpha(0.06),
+    borderWidth: 1,
+    borderColor: Theme.border,
+  },
+  searchIcon: {
+    color: Theme.textMuted,
+    fontSize: 22,
+    marginRight: 8,
+  },
+  searchInput: {
+    flex: 1,
+    padding: 0,
+    fontFamily: Fonts.sans,
+    fontSize: 14,
+    color: Theme.text,
+  },
+  modelList: {
+    height: 280,
+    borderRadius: 20,
+    backgroundColor: whiteAlpha(0.045),
+    borderColor: whiteAlpha(0.06),
+    borderWidth: 1,
+    marginBottom: 8,
+    overflow: 'hidden',
+  },
+  emptyText: {
+    fontFamily: Fonts.sans,
+    fontSize: 13,
+    color: Theme.textFaint,
+    padding: 20,
+    textAlign: 'center',
   },
   option: {
     flexDirection: 'row',

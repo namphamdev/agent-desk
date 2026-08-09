@@ -317,10 +317,14 @@ export class WorkspaceStore {
     }
   }
 
-  async listModels(deviceId: string, harness: string): Promise<ModelInfo[] | null> {
+  async listModels(deviceId: string, harness: string, acpAgentId?: string): Promise<ModelInfo[] | null> {
     interface WireModel { id: string; label: string; description?: string; reasoningLevels?: string[] }
     try {
-      const wire = await this.relay(deviceId).call<WireModel[]>('ListModels', { harness });
+      // Server expects harness="acp" with acpAgentId as a separate field for
+      // ACP agents — never the synthetic "acp:<agentId>" picker id.
+      const params: Record<string, unknown> = { harness };
+      if (acpAgentId) params.acpAgentId = acpAgentId;
+      const wire = await this.relay(deviceId).call<WireModel[]>('ListModels', params);
       return wire.map((m) => ({
         id: m.id,
         label: m.label,

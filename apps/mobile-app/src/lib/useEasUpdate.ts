@@ -48,10 +48,13 @@ export function useEasUpdate(): UseEasUpdate {
     error: null,
   });
 
-  // expo-updates is only wired up in release builds; in dev / Expo Go the
-  // native module throws on checkForUpdateAsync. isEnabled is a build-time
-  // constant, safe to read once into a ref.
-  const enabledRef = useRef<boolean>(Updates.isEnabled);
+  // expo-updates is only wired up in release builds; in dev / Expo Go / dev
+  // clients the native module throws NotAvailableInDevClientException on
+  // checkForUpdateAsync. isEnabled is not a sufficient guard in dev client
+  // builds, so we also check __DEV__.
+  const enabledRef = useRef<boolean>(
+    Updates.isEnabled && typeof __DEV__ !== 'undefined' ? !__DEV__ : Updates.isEnabled,
+  );
 
   // Keep the latest available info accessible to downloadAndReload without a
   // stale-closure refetch.

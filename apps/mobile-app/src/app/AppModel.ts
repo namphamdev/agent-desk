@@ -102,7 +102,7 @@ export class AppModel {
     if (this.demo) return;
     await DocDisk.prune(80);
 
-    this.edgeURLString = (await AsyncStorage.getItem(KEY_EDGE_URL)) ?? DEFAULT_EDGE_URL;
+    this.edgeURLString = DEFAULT_EDGE_URL || ((await AsyncStorage.getItem(KEY_EDGE_URL)) ?? "");
     const mode = (await AsyncStorage.getItem(KEY_AUTH_MODE)) as AppConfigMode | null;
     this.authModeRaw = mode ?? 'workos';
     this.storedUserId = (await AsyncStorage.getItem(KEY_USER_ID)) ?? '';
@@ -319,7 +319,11 @@ export class AppModel {
       await delay(100);
       return HarnessCatalog.modelsFor(harness);
     }
-    const live = await this.workspace?.listModels(space.deviceId, harness);
+    // Translate the picker's synthetic "acp:<agentId>" harness into the wire
+    // format the server expects: harness="acp" + acpAgentId as a field.
+    const agentId = HarnessCatalog.acpAgentIdFromHarness(harness);
+    const wireHarness = agentId ? HarnessCatalog.ACP_WIRE : harness;
+    const live = await this.workspace?.listModels(space.deviceId, wireHarness, agentId ?? undefined);
     if (live && live.length > 0) return live;
     return HarnessCatalog.modelsFor(harness);
   }
@@ -569,9 +573,7 @@ function delay(ms: number): Promise<void> {
 
 // Default edge URL — populated from .env at build time. Falls back to the
 // production cloud URL baked into the iOS app's Generated/ header.
-const DEFAULT_EDGE_URL =
-  (process.env.EXPO_PUBLIC_EDGE_URL as string | undefined) ??
-  'https://comet-native-edge.nampham.workers.dev';
+const DEFAULT_EDGE_URL = process.env.EXPO_PUBLIC_EDGE_URL as string;
 
 // baseName is used by SpaceView; bind it here so it survives tree-shaking.
 void baseName;
