@@ -998,3 +998,283 @@ async fn acp_agent_id_injected_from_chat_config_when_missing() {
     );
     core.shutdown().await;
 }
+
+/// The exact "agent lost all history after an app restart" bug for ACP agents
+/// (Factory Droid, etc.): when the user closes the app, reopens it, and sends
+/// a new message into an existing ACP chat, the engine must re-inject BOTH
+/// the stored harness session id (`resume`) AND the chat's `acp_agent_id` into
+/// the `RunRequest`. If either is missing, the ACP harness spawns the wrong
+/// agent subprocess, `session/load` fails or targets the wrong agent, and a
+/// fresh session with no conversation history is silently started — exactly
+/// what the user observed.
+///
+/// This test runs the engine over one data dir in two phases (turn + restart
+/// + turn) and asserts the second dispatch carries BOTH fields.
+#[tokio::test]
+async fn restart_acp_session_re_injects_resume_and_agent_id_together() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("data");
+    let requests: RequestLog = Arc::new(Mutex::new(Vec::new()));
+
+    // --- Phase 1: create the chat pinned to a specific ACP agent, run one turn. ---
+    let core = assemble(
+        &dir,
+        RecordingHarness {
+            requests: requests.clone(),
+            session_id: "hs-acp-restart-1".into(),
+            fail_on_resume: false,
+        },
+    );
+    core.workspace
+        .create_space("space-acp-restart", &core.device_id, "/tmp", None, false)
+        .expect("create space");
+    core.workspace
+        .create_chat(
+            CHAT,
+            "space-acp-restart",
+            Some(ChatConfig {
+                harness: HarnessId::Mock,
+                model: None,
+                reasoning: None,
+                model_options: Default::default(),
+                sandbox: SandboxLevel::WorkspaceWrite,
+                permission_mode: PermissionMode::default(),
+                acp_agent_id: Some("agent-factory-droid".into()),
+            }),
+            None,
+        )
+        .expect("create chat");
+    core.workspace
+        .rename_chat(CHAT, "ACP Restart Chat")
+        .expect("rename");
+
+    queue_run(
+        &core,
+        "remember the codeword PINEAPPLE",
+        "/tmp",
+        "msg-user-1",
+    );
+    wait_for(
+        || complete_assistant_count(&core) == 1,
+        "first ACP turn to complete",
+    )
+    .await;
+
+    // The first dispatch had NO resume (fresh session) and the chat's
+    // acp_agent_id was already set via the chat config at creation.
+    {
+        let log = requests.lock().unwrap();
+        assert_eq!(log.len(), 1);
+        assert_eq!(log[0].resume, None, "first turn starts fresh");
+        assert_eq!(
+            log[0].acp_agent_id.as_deref(),
+            Some("agent-factory-droid"),
+            "first turn carries the chat's ACP agent id"
+        );
+    }
+
+    // The harness session id was stored on the workspace chat row.
+    assert_eq!(
+        stored_harness_session(&core),
+        Some(("hs-acp-restart-1".into(), Some("/tmp".into()))),
+        "harness session id must be persisted before restart"
+    );
+
+    core.shutdown().await;
+    drop(core);
+
+    // --- Phase 2: "reopen the app" — fresh engine over the same data dir. ---
+    let core = assemble(
+        &dir,
+        RecordingHarness {
+            requests: requests.clone(),
+            session_id: "hs-acp-restart-2".into(),
+            fail_on_resume: false,
+        },
+    );
+
+    // The chat row survived with its ACP agent id and harness session.
+    assert_eq!(
+        stored_harness_session(&core),
+        Some(("hs-acp-restart-1".into(), Some("/tmp".into()))),
+        "harness session id must survive restart"
+    );
+
+    // Simulate the RN client: send a run with BOTH resume and acp_agent_id
+    // set to None (the client does not know the prior session after a
+    // restart). The engine must re-inject both.
+    let mut req = run_request("what was the codeword?", "/tmp");
+    req.resume = None;
+    req.acp_agent_id = None;
+    core.doc_host
+        .queue_command(
+            CHAT,
+            SessionCommandPayload::Run {
+                request: req,
+                message_id: "msg-user-2".into(),
+            },
+        )
+        .expect("queue run");
+
+    wait_for(
+        || complete_assistant_count(&core) == 2,
+        "post-restart ACP turn to complete",
+    )
+    .await;
+
+    // THE regression assertion: both fields re-injected together.
+    {
+        let log = requests.lock().unwrap();
+        let post_restart = log
+            .iter()
+            .find(|r| r.prompt == "what was the codeword?")
+            .expect("post-restart dispatch reached the harness");
+        assert_eq!(
+            post_restart.resume.as_deref(),
+            Some("hs-acp-restart-1"),
+            "post-restart dispatch must re-inject the stored harness session id \
+             so session/load recovers the conversation history"
+        );
+        assert_eq!(
+            post_restart.acp_agent_id.as_deref(),
+            Some("agent-factory-droid"),
+            "post-restart dispatch must re-inject the chat's ACP agent id so \
+             session/load targets the same agent that created the session"
+        );
+    }
+
+    core.shutdown().await;
+}
+
+/// BUG: When a chat is created with a `ChatConfig` that has `acp_agent_id =
+/// None` (e.g. the composer created the chat before the user picked an ACP
+/// agent), and the first run's `RunRequest` carries `acp_agent_id =
+/// Some(...)`, the engine does NOT persist the agent id back onto the chat
+/// config row. After an app restart the stored config still has
+/// `acp_agent_id = None`, so the engine can't re-inject it, the ACP harness
+/// resolves the wrong (active) agent, `session/load` fails, and a fresh
+/// session with no history starts — exactly the "agent lost context" bug.
+#[tokio::test]
+async fn first_run_acp_agent_id_persisted_when_config_exists_without_it() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("data");
+    let requests: RequestLog = Arc::new(Mutex::new(Vec::new()));
+
+    let core = assemble(
+        &dir,
+        RecordingHarness {
+            requests: requests.clone(),
+            session_id: "hs-acp-gap-1".into(),
+            fail_on_resume: false,
+        },
+    );
+    // Chat created with a config that has NO acp_agent_id (e.g. the composer
+    // created the chat row before the user selected a Factory Droid agent).
+    core.workspace
+        .create_space("space-acp-gap", &core.device_id, "/tmp", None, false)
+        .expect("create space");
+    core.workspace
+        .create_chat(
+            CHAT,
+            "space-acp-gap",
+            Some(ChatConfig {
+                harness: HarnessId::Mock,
+                model: None,
+                reasoning: None,
+                model_options: Default::default(),
+                sandbox: SandboxLevel::WorkspaceWrite,
+                permission_mode: PermissionMode::default(),
+                acp_agent_id: None, // no agent selected at chat-creation time
+            }),
+            None,
+        )
+        .expect("create chat");
+    core.workspace
+        .rename_chat(CHAT, "ACP Gap Chat")
+        .expect("rename");
+
+    // First run: the client sends a RunRequest WITH acp_agent_id (the user
+    // picked the Factory Droid agent in the composer before hitting send).
+    let mut req = run_request("remember the codeword PINEAPPLE", "/tmp");
+    req.acp_agent_id = Some("agent-factory-droid".into());
+    core.doc_host
+        .queue_command(
+            CHAT,
+            SessionCommandPayload::Run {
+                request: req,
+                message_id: "msg-user-1".into(),
+            },
+        )
+        .expect("queue run");
+
+    wait_for(
+        || complete_assistant_count(&core) == 1,
+        "first ACP turn to complete",
+    )
+    .await;
+
+    // The harness session id was stored.
+    assert_eq!(
+        stored_harness_session(&core),
+        Some(("hs-acp-gap-1".into(), Some("/tmp".into()))),
+    );
+
+    core.shutdown().await;
+    drop(core);
+
+    // --- App restart ---
+    let core = assemble(
+        &dir,
+        RecordingHarness {
+            requests: requests.clone(),
+            session_id: "hs-acp-gap-2".into(),
+            fail_on_resume: false,
+        },
+    );
+
+    // Second run: client sends resume=None, acp_agent_id=None (the RN client
+    // after restart does not know either value). The engine must re-inject
+    // BOTH from persisted state.
+    let mut req = run_request("what was the codeword?", "/tmp");
+    req.resume = None;
+    req.acp_agent_id = None;
+    core.doc_host
+        .queue_command(
+            CHAT,
+            SessionCommandPayload::Run {
+                request: req,
+                message_id: "msg-user-2".into(),
+            },
+        )
+        .expect("queue run");
+
+    wait_for(
+        || complete_assistant_count(&core) == 2,
+        "second turn to complete",
+    )
+    .await;
+
+    {
+        let log = requests.lock().unwrap();
+        let second = log
+            .iter()
+            .find(|r| r.prompt == "what was the codeword?")
+            .expect("second dispatch reached the harness");
+        assert_eq!(
+            second.resume.as_deref(),
+            Some("hs-acp-gap-1"),
+            "post-restart dispatch must re-inject the harness session id"
+        );
+        // THIS IS THE BUG: acp_agent_id is None because it was never persisted
+        // onto the chat config row (the config already existed without it).
+        assert_eq!(
+            second.acp_agent_id.as_deref(),
+            Some("agent-factory-droid"),
+            "post-restart dispatch must re-inject the ACP agent id that was \
+             used in the first run, even though the chat config row did not \
+             carry it at creation time"
+        );
+    }
+
+    core.shutdown().await;
+}

@@ -195,9 +195,10 @@ interface ComposerViewProps {
   store: SessionStore;
   chat: Chat;
   runLive: boolean;
+  chips?: React.ReactNode;
 }
 
-export function ComposerView({ store, chat, runLive }: ComposerViewProps) {
+export function ComposerView({ store, chat, runLive, chips }: ComposerViewProps) {
   const [text, setText] = useState('');
 
   const send = () => {
@@ -223,6 +224,7 @@ export function ComposerView({ store, chat, runLive }: ComposerViewProps) {
       showStop={runLive}
       onSend={send}
       onStop={() => store.sendInterrupt()}
+      chips={chips}
     />
   );
 }

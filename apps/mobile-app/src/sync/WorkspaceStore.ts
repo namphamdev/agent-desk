@@ -224,6 +224,7 @@ export class WorkspaceStore {
           reasoning: typeof c.reasoning === 'string' ? c.reasoning : undefined,
           sandbox: typeof c.sandbox === 'string' ? c.sandbox : undefined,
           permissionMode: mode,
+          acpAgentId: typeof c.acpAgentId === 'string' ? c.acpAgentId : undefined,
         };
       }
       chats.push({
@@ -548,6 +549,7 @@ function chatConfigToLoro(cfg: ChatConfig): Record<string, unknown> {
   if (cfg.reasoning) out.reasoning = cfg.reasoning;
   if (cfg.sandbox) out.sandbox = cfg.sandbox;
   if (cfg.permissionMode) out.permissionMode = cfg.permissionMode;
+  if (cfg.acpAgentId) out.acpAgentId = cfg.acpAgentId;
   return out;
 }
 

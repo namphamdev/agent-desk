@@ -778,20 +778,40 @@ impl DocHost {
                 // what this run actually executes with. Claimed rows and
                 // catalog-not-loaded createChats both land here; the racing
                 // real createChat carries the same picked values.
-                if let Some(ws) = self.workspace()
-                    && ws.chat_config(chat_id).is_none()
-                {
-                    let config = comet_proto::ChatConfig {
-                        harness,
-                        model: request.model.clone(),
-                        reasoning: request.reasoning,
-                        model_options: request.model_options.clone(),
-                        sandbox: request.sandbox,
-                        permission_mode: request.effective_permission_mode(),
-                        acp_agent_id: request.acp_agent_id.clone(),
-                    };
-                    if let Err(err) = ws.set_chat_config(chat_id, &config) {
-                        tracing::warn!(chat = %chat_id, error = %err, "run-config backfill failed");
+                if let Some(ws) = self.workspace() {
+                    let existing = ws.chat_config(chat_id);
+                    if existing.is_none() {
+                        let config = comet_proto::ChatConfig {
+                            harness,
+                            model: request.model.clone(),
+                            reasoning: request.reasoning,
+                            model_options: request.model_options.clone(),
+                            sandbox: request.sandbox,
+                            permission_mode: request.effective_permission_mode(),
+                            acp_agent_id: request.acp_agent_id.clone(),
+                        };
+                        if let Err(err) = ws.set_chat_config(chat_id, &config) {
+                            tracing::warn!(chat = %chat_id, error = %err, "run-config backfill failed");
+                        }
+                    } else if let Some(mut config) = existing
+                        && config.acp_agent_id.is_none()
+                        && request.acp_agent_id.is_some()
+                    {
+                        // The chat row's config predates the ACP agent
+                        // selection (e.g. the composer created the chat before
+                        // the user picked an agent). Persist the agent id now
+                        // so a post-restart dispatch can re-inject it — without
+                        // this, session/load targets the device's active agent
+                        // (which may differ), fails, and a fresh session with
+                        // no conversation history silently starts.
+                        config.acp_agent_id = request.acp_agent_id.clone();
+                        if let Err(err) = ws.set_chat_config(chat_id, &config) {
+                            tracing::warn!(
+                                chat = %chat_id,
+                                error = %err,
+                                "acp_agent_id backfill onto existing config failed"
+                            );
+                        }
                     }
                 }
                 sessions

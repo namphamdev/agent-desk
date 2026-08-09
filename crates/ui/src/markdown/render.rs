@@ -556,8 +556,7 @@ fn render_mermaid(
 ///   [`ObjectFit::Contain`] under a `max-height` cap — it never scrolls, never
 ///   captures the wheel, and never pans on drag, so wheel/scroll inside the
 ///   transcript scrolls the transcript itself. Copy and Open-full-screen
-///   affordances live in a visible header bar so they are never hidden behind
-///   the diagram.
+///   affordances float as a top-right overlay chip on the diagram.
 /// - `true` (full-screen modal): the diagram keeps the persistent zoom/pan
 ///   viewer (wheel zoom, pinch zoom, drag-pan) with zoom buttons, so the user
 ///   can inspect details.
@@ -625,21 +624,27 @@ fn mermaid_image_card(
             .child(crate::icons::icon(crate::icons::EXPAND).size(px(13.0)))
     });
 
-    // The affordance row sits in a header bar (never overlaid on the diagram),
-    // so Copy + Open-full-screen are always visible. When neither button is
-    // present (`None`) the header is dropped entirely.
+    // Top-right overlay row: Copy + Open-full-screen float over the diagram's
+    // top-right corner (matches the code-block affordance placement). When
+    // neither button is present (`None`) the overlay is dropped entirely and
+    // the card is just the diagram. A translucent chip groups the buttons so
+    // they read against any diagram background.
     let has_buttons = copy_button.is_some() || expand_button.is_some();
-    let header = has_buttons.then(|| {
+    let overlay = has_buttons.then(|| {
         div()
+            .absolute()
+            .top(px(8.0))
+            .right(px(8.0))
             .flex()
             .flex_row()
             .items_center()
-            .justify_end()
             .gap(px(4.0))
-            .px(px(8.0))
-            .py(px(5.0))
-            .border_b_1()
-            .border_color(crate::theme::white_alpha(0.08))
+            .px(px(4.0))
+            .py(px(4.0))
+            .rounded(px(6.0))
+            .bg(crate::theme::white_alpha(0.08))
+            .border_1()
+            .border_color(crate::theme::white_alpha(0.12))
             .children(copy_button)
             .children(expand_button)
     });
@@ -673,8 +678,9 @@ fn mermaid_image_card(
         .border_color(crate::theme::white_alpha(0.14))
         .bg(crate::theme::white_alpha(0.035))
         .overflow_hidden()
-        .children(header)
         .child(body)
+        // Overlay LAST so it paints above the diagram.
+        .children(overlay)
         .into_any_element()
 }
 

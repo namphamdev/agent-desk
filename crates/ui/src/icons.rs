@@ -32,14 +32,32 @@ macro_rules! icon_assets {
                     $(concat!("icons/", $path, ".svg") => Some(Cow::Borrowed(
                         include_bytes!(concat!("../assets/icons/", $path, ".svg")).as_slice(),
                     )),)+
+                    // svg_renderer asks for Zed's default bundled fonts by
+                    // path; comet bundles Geist instead, so serve Geist/
+                    // GeistMono under those names. Without this the renderer
+                    // logs "Bundled font not found" and any <text> in an SVG
+                    // (mermaid diagrams) falls back to a system face. See
+                    // crate-level note in `lib.rs::register_fonts` — the text
+                    // system path is unaffected (it uses `add_fonts`).
+                    "fonts/ibm-plex-sans/IBMPlexSans-Regular.ttf" => Some(Cow::Borrowed(
+                        include_bytes!("../assets/fonts/Geist.ttf").as_slice(),
+                    )),
+                    "fonts/lilex/Lilex-Regular.ttf" => Some(Cow::Borrowed(
+                        include_bytes!("../assets/fonts/GeistMono.ttf").as_slice(),
+                    )),
                     _ => None,
                 })
             }
 
             fn list(&self, path: &str) -> Result<Vec<SharedString>> {
-                let all = [$(concat!("icons/", $path, ".svg")),+];
-                Ok(all
+                let icons = [$(concat!("icons/", $path, ".svg")),+];
+                let fonts = [
+                    "fonts/ibm-plex-sans/IBMPlexSans-Regular.ttf",
+                    "fonts/lilex/Lilex-Regular.ttf",
+                ];
+                Ok(icons
                     .iter()
+                    .chain(fonts.iter())
                     .filter(|p| p.starts_with(path))
                     .map(|p| SharedString::from(*p))
                     .collect())
@@ -176,6 +194,24 @@ mod tests {
     #[test]
     fn list_filters_by_prefix() {
         assert!(!Assets.list("icons/").unwrap().is_empty());
-        assert!(Assets.list("fonts/").unwrap().is_empty());
+        // svg_renderer fonts are now served under their Zed-default paths.
+        assert_eq!(Assets.list("fonts/").unwrap().len(), 2);
+    }
+
+    #[test]
+    fn svg_renderer_font_paths_serve_geist() {
+        // svg_renderer asks for Zed's default faces by these exact paths; we
+        // redirect them to Geist/GeistMono so mermaid <text> renders in the
+        // app's font instead of falling back to a system face.
+        let sans = Assets
+            .load("fonts/ibm-plex-sans/IBMPlexSans-Regular.ttf")
+            .unwrap()
+            .expect("plex sans path should resolve");
+        assert_eq!(&sans[..], include_bytes!("../assets/fonts/Geist.ttf"));
+        let mono = Assets
+            .load("fonts/lilex/Lilex-Regular.ttf")
+            .unwrap()
+            .expect("lilex path should resolve");
+        assert_eq!(&mono[..], include_bytes!("../assets/fonts/GeistMono.ttf"));
     }
 }
