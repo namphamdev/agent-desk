@@ -26,12 +26,13 @@ import { LineIcon } from '../theme/LineIcon';
 interface Props {
   model: AppModel;
   spaceId: string;
+  onBack: () => void;
   onOpenChat: (chatId: string) => void;
   onNewSession: () => void;
   onOpenGit: () => void;
 }
 
-export function SpaceView({ model, spaceId, onOpenChat, onNewSession, onOpenGit }: Props) {
+export function SpaceView({ model, spaceId, onBack, onOpenChat, onNewSession, onOpenGit }: Props) {
   useForceUpdateOnNotify(model);
   const styles = useThemedStyles(() => makeStyles(), []);
   const space = model.spaces.find((s) => s.id === spaceId);
@@ -47,6 +48,13 @@ export function SpaceView({ model, spaceId, onOpenChat, onNewSession, onOpenGit 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: Theme.surface }} edges={['top']}>
       <View style={styles.header}>
+        <Pressable
+          onPress={onBack}
+          hitSlop={12}
+          style={styles.backButton}
+        >
+          <Text style={styles.backText}>‹</Text>
+        </Pressable>
         <View style={{ flex: 1 }}>
           <Text style={styles.title} numberOfLines={1}>
             {space ? displayName(space.path, space.name) : 'Space'}
@@ -248,10 +256,23 @@ function makeStyles() {
     header: {
       flexDirection: 'row',
       alignItems: 'center',
-      paddingHorizontal: 16,
+      paddingHorizontal: 8,
       paddingVertical: 12,
       borderBottomWidth: StyleSheet.hairlineWidth,
       borderBottomColor: Theme.border,
+      gap: 4,
+    },
+    backButton: {
+      width: 32,
+      height: 32,
+      borderRadius: 16,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    backText: {
+      color: Theme.text,
+      fontSize: fs(22),
+      fontFamily: Fonts.sans,
     },
     title: {
       fontFamily: Fonts.sansSemiBold,

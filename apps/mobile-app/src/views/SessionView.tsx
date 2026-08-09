@@ -24,8 +24,9 @@ import {
 } from '../models/Entities';
 import { HarnessCatalog } from '../models/HarnessCatalog';
 import { BrandMark } from '../theme/BrandMark';
+import { LineIcon } from '../theme/LineIcon';
 import { flavourSeed, flavourWord, formatElapsed } from '../theme/Motion';
-import { Fonts, Theme } from '../theme/Theme';
+import { Fonts, overlay, Theme } from '../theme/Theme';
 import { fs, useThemedStyles } from '../theme/Appearance';
 import { withAlpha } from '../theme/color';
 
@@ -33,11 +34,11 @@ interface Props {
   model: AppModel;
   chatId: string;
   onBack: () => void;
-  onOpenChanges: () => void;
+  onOpenGit: () => void;
   onOpenConfig: () => void;
 }
 
-export function SessionView({ model, chatId, onBack, onOpenChanges, onOpenConfig }: Props) {
+export function SessionView({ model, chatId, onBack, onOpenGit, onOpenConfig }: Props) {
   useForceUpdateOnNotify(model);
   const styles = useThemedStyles(() => makeStyles(), []);
   const chat = model.chat(chatId);
@@ -107,7 +108,7 @@ export function SessionView({ model, chatId, onBack, onOpenChanges, onOpenConfig
           model={model}
           onBack={onBack}
           onOpenConfig={onOpenConfig}
-          onOpenChanges={chat.cwd ? onOpenChanges : undefined}
+          onOpenGit={onOpenGit}
         />
         <View style={{ flex: 1 }}>
           <TranscriptView store={store} chatId={chat.id} />
@@ -256,13 +257,13 @@ function SessionHeader({
   model,
   onBack,
   onOpenConfig,
-  onOpenChanges,
+  onOpenGit,
 }: {
   chat: import('../models/Entities').Chat;
   model: AppModel;
   onBack: () => void;
   onOpenConfig: () => void;
-  onOpenChanges?: () => void;
+  onOpenGit: () => void;
 }) {
   const headerStyles = useThemedStyles(() => makeHeaderStyles(), []);
   const harness = chat.config?.harness ?? 'claude-code';
@@ -296,13 +297,16 @@ function SessionHeader({
           {subtitle}
         </Text>
       </Pressable>
-      {onOpenChanges ? (
-        <Pressable onPress={onOpenChanges} hitSlop={12}>
-          <Text style={{ color: Theme.text, fontSize: fs(14) }}>⋯</Text>
-        </Pressable>
-      ) : (
-        <View style={{ width: 28 }} />
-      )}
+      <Pressable
+        onPress={onOpenGit}
+        hitSlop={12}
+        style={({ pressed }) => [
+          headerStyles.gitButton,
+          pressed && headerStyles.gitButtonPressed,
+        ]}
+      >
+        <LineIcon icon="gitBranch" size={16} color={Theme.text} />
+      </Pressable>
     </View>
   );
 }
@@ -330,10 +334,11 @@ function makeHeaderStyles() {
     bar: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 12,
+    paddingHorizontal: 8,
     paddingVertical: 8,
     borderBottomWidth: 1,
     borderBottomColor: Theme.border,
+    gap: 4,
   },
   // Fixed-width back affordance with its own padding so the config button
   // (flex:1) can't steal edge taps meant for back. The 44pt width matches
@@ -348,6 +353,17 @@ function makeHeaderStyles() {
     flex: 1,
     alignItems: 'center',
     marginLeft: 4,
+  },
+  gitButton: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: overlay(0.08),
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  gitButtonPressed: {
+    backgroundColor: overlay(0.14),
   },
   });
 }

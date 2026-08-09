@@ -198,6 +198,7 @@ function MainStack({ model }: { model: AppModel }) {
           <SpaceView
             model={model}
             spaceId={props.route.params.spaceId}
+            onBack={() => props.navigation.goBack()}
             onOpenChat={(chatId) => props.navigation.navigate('Chat', { chatId })}
             onNewSession={() =>
               props.navigation.navigate('NewSession', { spaceId: props.route.params.spaceId })
@@ -216,7 +217,12 @@ function MainStack({ model }: { model: AppModel }) {
               model={model}
               chatId={props.route.params.chatId}
               onBack={() => props.navigation.goBack()}
-              onOpenChanges={() => props.navigation.navigate('Changes', { chatId: props.route.params.chatId })}
+              onOpenGit={() => {
+                const space = chat ? model.spaceFor(chat) : undefined;
+                if (space) {
+                  props.navigation.navigate('SpaceGit', { spaceId: space.id });
+                }
+              }}
               onOpenConfig={() => props.navigation.navigate('Menu')}
             />
           );
