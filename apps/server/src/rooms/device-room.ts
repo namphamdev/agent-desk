@@ -244,7 +244,10 @@ export class DeviceRoom {
   // ── WebSocket handlers ────────────────────────────────────────────────────
 
   onMessage(ws: WebSocket, message: ArrayBuffer | string): void {
-    if (typeof message === "string") return; // ping/pong auto-response
+    if (typeof message === "string") {
+      if (message === "ping") this.wsCtx.recordPong(ws);
+      return; // ping/pong handled centrally
+    }
     const state = this.wsCtx.deserializeAttachment(ws) as SocketState | null;
     if (!state) return;
     let frame: { header: DeviceFrameHeader; payload: Uint8Array };

@@ -189,7 +189,10 @@ export class SessionRoom {
 
   /** Handle an incoming binary/text message from a WebSocket. */
   async onMessage(ws: WebSocket, message: ArrayBuffer | string): Promise<void> {
-    if (typeof message === "string") return; // ping/pong handled by WsContext
+    if (typeof message === "string") {
+      if (message === "ping") this.wsCtx.recordPong(ws);
+      return; // ping/pong handled centrally
+    }
     let decoded: ProtocolMessage;
     try {
       decoded = decode(new Uint8Array(message));
@@ -666,7 +669,7 @@ export class SessionRoom {
     if ((rows ?? 0) > COMPACT_LOG_ROWS) await this.foldLog();
   }
 
-  private combinePendingUpdates(): ArrayBuffer {
+  private combinePendingUpdates(): Uint8Array {
     const headerSize = 4;
     const totalSize = this.pending.reduce(
       (sum, u) => sum + headerSize + u.byteLength,
@@ -681,7 +684,7 @@ export class SessionRoom {
       out.set(update, off);
       off += update.byteLength;
     }
-    return out.buffer.slice(out.byteOffset, out.byteOffset + out.byteLength);
+    return out;
   }
 
   private splitCombinedUpdates(bytes: Uint8Array): Uint8Array[] {

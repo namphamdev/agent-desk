@@ -10,8 +10,11 @@
  * Each room instance owns a `WsContext` that tracks:
  * - All attached sockets (with optional tags for host/client filtering).
  * - Per-socket attachment state (userId, role, joined rooms, etc.).
- * - Auto-response for ping→pong keepalive (no app-level handler needed).
  * - Per-socket last-pong timestamp (for liveness checks in device rooms).
+ *
+ * Ping/pong keepalive is handled in the Bun.serve message handler (server.ts),
+ * which calls `WsContext.recordPong()` when a "ping" string arrives. This is
+ * because Bun's ServerWebSocket does not support addEventListener.
  */
 
 /** Per-socket attachment stored via WeakMap (replaces serializeAttachment).
@@ -34,7 +37,11 @@ export class WsContext {
   /** Per-socket last-pong timestamp (replaces getWebSocketAutoResponseTimestamp). */
   private readonly pongTimestamps = new WeakMap<WebSocket, number>();
 
-  /** Accept and track a WebSocket with optional tags. */
+  /** Accept and track a WebSocket with optional tags.
+   *
+   * Note: Bun's ServerWebSocket does not have addEventListener. Ping/pong
+   * auto-response is handled centrally in the Bun.serve message handler
+   * (see server.ts), which calls `recordPong()` below. */
   accept(ws: WebSocket, tags: string[] = []): void {
     const entry: TrackedSocket = { ws, tags };
     this.sockets.add(entry);
@@ -46,18 +53,13 @@ export class WsContext {
       }
       set.add(entry);
     }
+  }
 
-    // Auto-response: reply "pong" to "ping" without app-level handler.
-    ws.addEventListener("message", (event) => {
-      if (event.data === "ping") {
-        this.pongTimestamps.set(ws, Date.now());
-        try {
-          ws.send("pong");
-        } catch {
-          /* socket gone */
-        }
-      }
-    });
+  /** Record a pong timestamp for a socket (called when a "ping" message is
+   * received in the Bun.serve message handler). Returns true if the caller
+   * should send "pong". */
+  recordPong(ws: WebSocket): void {
+    this.pongTimestamps.set(ws, Date.now());
   }
 
   /** Get all sockets, optionally filtered by tag. */

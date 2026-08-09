@@ -408,6 +408,18 @@ const server = Bun.serve<WsUpgradeData>({
 
     async message(ws, message) {
       const { roomId, roomKind } = ws.data;
+
+      // Ping/pong keepalive: Bun's ServerWebSocket has no addEventListener,
+      // so we handle "ping" centrally here. The room's onMessage records the
+      // pong timestamp on its WsContext (for liveness checks).
+      if (message === "ping") {
+        try {
+          ws.send("pong");
+        } catch {
+          /* socket gone */
+        }
+      }
+
       // Convert Bun message format to what rooms expect.
       let msg: ArrayBuffer | string;
       if (typeof message === "string") {
