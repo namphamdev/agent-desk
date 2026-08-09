@@ -23,7 +23,8 @@ cargo build --release -p comet
 
 rm -rf "$APP" "$DMG" "$APP_TARBALL"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-install -m 755 "$ROOT/target/release/comet" "$APP/Contents/MacOS/comet"
+# Binary name comes from apps/comet/Cargo.toml [[bin]] name="agent-deski".
+install -m 755 "$ROOT/target/release/agent-deski" "$APP/Contents/MacOS/comet"
 sed "s/__VERSION__/$VERSION/" "$ROOT/dist/macos/Info.plist" >"$APP/Contents/Info.plist"
 
 # Icon: iconset from dist/agent-deski.png — the comet mark from the original app
