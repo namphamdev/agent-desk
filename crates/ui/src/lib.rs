@@ -12,6 +12,7 @@
 //! - [`shell`] — sidebar + main panel + right-pane scaffold + gate;
 //! - [`loaders`] — comet pulse loader, gradient spinner, boot splash.
 
+pub mod acp_logo;
 pub mod app_menus;
 pub mod appearance;
 pub mod attachments;
@@ -299,8 +300,7 @@ fn detect_and_set_reduced_motion(cx: &mut App) {
 #[cfg(target_os = "windows")]
 fn windows_prefers_reduced_motion() -> bool {
     use windows::Win32::UI::WindowsAndMessaging::{
-        SystemParametersInfoW, SYSTEM_PARAMETERS_INFO_ACTION,
-        SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
+        SYSTEM_PARAMETERS_INFO_ACTION, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SystemParametersInfoW,
     };
 
     // SPI_GETCLIENTAREAANIMATION = 0x1042

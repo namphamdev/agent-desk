@@ -66,11 +66,7 @@ fn toggle_switch(theme: &Theme, on: bool) -> gpui::Div {
                 .left(px(if on { 16.0 } else { 2.0 }))
                 .size(px(14.0))
                 .rounded_full()
-                .bg(if on {
-                    theme.on_solid
-                } else {
-                    theme.ink(0.7)
-                }),
+                .bg(if on { theme.on_solid } else { theme.ink(0.7) }),
         )
 }
 

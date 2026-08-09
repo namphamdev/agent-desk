@@ -31,6 +31,7 @@ pub struct AcpAgentsPage {
 struct CustomAgentEditor {
     name: Entity<ComposerInput>,
     command: Entity<ComposerInput>,
+    logo: Entity<ComposerInput>,
     _inputs: Vec<Subscription>,
 }
 
@@ -68,7 +69,9 @@ impl AcpAgentsPage {
         self.harness_health = Loadable::Loading;
         self.load_task = Some(cx.spawn(async move |this, cx| {
             let (acp_result, health_result) = futures::future::join(
-                engine.client().call(methods::LIST_ACP_AGENTS, serde_json::json!({})),
+                engine
+                    .client()
+                    .call(methods::LIST_ACP_AGENTS, serde_json::json!({})),
                 engine
                     .client()
                     .call(methods::CHECK_HARNESS_HEALTH, serde_json::json!({})),
@@ -167,7 +170,8 @@ impl AcpAgentsPage {
         let command = cx.new(|cx| {
             ComposerInput::new("e.g. npx -y @my-org/my-agent or /usr/local/bin/agent", cx)
         });
-        let _inputs = [&name, &command]
+        let logo = cx.new(|cx| ComposerInput::new("https://example.com/icon.svg (optional)", cx));
+        let _inputs = [&name, &command, &logo]
             .into_iter()
             .map(|input| {
                 cx.subscribe(input, |_, _, event: &ComposerInputEvent, cx| {
@@ -180,6 +184,7 @@ impl AcpAgentsPage {
         self.editor = Some(CustomAgentEditor {
             name,
             command,
+            logo,
             _inputs,
         });
         self.error = None;
@@ -198,6 +203,7 @@ impl AcpAgentsPage {
         };
         let name = editor.name.read(cx).text().trim().to_string();
         let command = editor.command.read(cx).text().trim().to_string();
+        let logo = editor.logo.read(cx).text().trim().to_string();
         if name.is_empty() {
             self.error = Some("Agent name is required.".into());
             cx.notify();
@@ -208,6 +214,11 @@ impl AcpAgentsPage {
             cx.notify();
             return;
         }
+        let icon = if logo.is_empty() {
+            None
+        } else {
+            Some(logo.clone())
+        };
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             return;
         };
@@ -218,7 +229,7 @@ impl AcpAgentsPage {
                 .client()
                 .call(
                     methods::ADD_CUSTOM_ACP_AGENT,
-                    serde_json::json!({ "name": name, "command": command }),
+                    serde_json::json!({ "name": name, "command": command, "icon": icon }),
                 )
                 .await;
             this.update(cx, |page, cx| {
@@ -248,56 +259,59 @@ impl AcpAgentsPage {
         let command_valid = !editor.command.read(cx).text().trim().is_empty();
         let valid = name_valid && command_valid;
         let saving = self.busy_agent.as_deref() == Some("__custom__");
-        vec![div()
-            .mt(px(16.0))
-            .rounded(px(12.0))
-            .border_1()
-            .border_color(theme.border)
-            .bg(theme.surface)
-            .p(px(20.0))
-            .child(widgets::row_title(theme, "Add custom ACP agent"))
-            .child(
-                div()
-                    .mt(px(6.0))
-                    .text_size(px(11.5))
-                    .text_color(theme.text_muted.opacity(0.65))
-                    .child(
-                        "Register any ACP-compatible agent. The command is the same string the \
+        vec![
+            div()
+                .mt(px(16.0))
+                .rounded(px(12.0))
+                .border_1()
+                .border_color(theme.border)
+                .bg(theme.surface)
+                .p(px(20.0))
+                .child(widgets::row_title(theme, "Add custom ACP agent"))
+                .child(
+                    div()
+                        .mt(px(6.0))
+                        .text_size(px(11.5))
+                        .text_color(theme.text_muted.opacity(0.65))
+                        .child(
+                            "Register any ACP-compatible agent. The command is the same string the \
                          ACP SDK accepts: a bare executable, a shell pipeline, or JSON like \
                          {\"command\":\"...\",\"args\":[...],\"env\":{...}}.",
-                    ),
-            )
-            .child(editor_field(theme, "Name", editor.name.clone()))
-            .child(editor_field(theme, "Command", editor.command.clone()))
-            .child(
-                div()
-                    .mt(px(18.0))
-                    .flex()
-                    .gap(px(8.0))
-                    .child(
-                        popover::btn_primary(theme, "Save")
-                            .id("save-custom-acp-agent")
-                            .when(!valid || saving, |button| button.opacity(0.45))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                if valid && !saving {
-                                    this.save_custom(cx);
-                                }
-                            })),
-                    )
-                    .child(
-                        widgets::ghost_action(theme)
-                            .id("cancel-custom-acp-agent")
-                            .when(saving, |button| button.opacity(0.45))
-                            .hover(|s| widgets::ghost_hover(theme, s))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                if !saving {
-                                    this.cancel_editor(cx);
-                                }
-                            }))
-                            .child("Cancel"),
-                    ),
-            )
-            .into_any_element()]
+                        ),
+                )
+                .child(editor_field(theme, "Name", editor.name.clone()))
+                .child(editor_field(theme, "Command", editor.command.clone()))
+                .child(editor_field(theme, "Logo URL", editor.logo.clone()))
+                .child(
+                    div()
+                        .mt(px(18.0))
+                        .flex()
+                        .gap(px(8.0))
+                        .child(
+                            popover::btn_primary(theme, "Save")
+                                .id("save-custom-acp-agent")
+                                .when(!valid || saving, |button| button.opacity(0.45))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    if valid && !saving {
+                                        this.save_custom(cx);
+                                    }
+                                })),
+                        )
+                        .child(
+                            widgets::ghost_action(theme)
+                                .id("cancel-custom-acp-agent")
+                                .when(saving, |button| button.opacity(0.45))
+                                .hover(|s| widgets::ghost_hover(theme, s))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    if !saving {
+                                        this.cancel_editor(cx);
+                                    }
+                                }))
+                                .child("Cancel"),
+                        ),
+                )
+                .into_any_element(),
+        ]
     }
 
     fn installed_row(
@@ -313,7 +327,12 @@ impl AcpAgentsPage {
         let activate_id = id.clone();
         let remove_id = id.clone();
         widgets::card_row(theme, first)
-            .child(widgets::row_tile(theme, crate::icons::WIDGET))
+            .child(acp_tile(
+                agent.icon.as_deref(),
+                crate::icons::WIDGET,
+                theme,
+                cx,
+            ))
             .child(
                 div()
                     .min_w_0()
@@ -453,14 +472,21 @@ impl AcpAgentsPage {
             })
             .when(can_install, |row| {
                 row.child(
-                    popover::btn_primary(theme, if installing { "Installing…" } else { "Install" })
-                        .id(SharedString::from(format!("install-harness-{id:?}")))
-                        .when(installing, |button| button.opacity(0.5))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            if this.installing_harness.is_none() {
-                                this.install_harness(id, cx);
-                            }
-                        })),
+                    popover::btn_primary(
+                        theme,
+                        if installing {
+                            "Installing…"
+                        } else {
+                            "Install"
+                        },
+                    )
+                    .id(SharedString::from(format!("install-harness-{id:?}")))
+                    .when(installing, |button| button.opacity(0.5))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if this.installing_harness.is_none() {
+                            this.install_harness(id, cx);
+                        }
+                    })),
                 )
             })
             .into_any_element()
@@ -478,7 +504,12 @@ impl AcpAgentsPage {
         let busy = self.busy_agent.as_deref() == Some(agent.id.as_str());
         let supported = agent.supported;
         widgets::card_row(theme, first)
-            .child(widgets::row_tile(theme, crate::icons::ADD_CIRCLE))
+            .child(acp_tile(
+                agent.icon.as_deref(),
+                crate::icons::ADD_CIRCLE,
+                theme,
+                cx,
+            ))
             .child(
                 div()
                     .min_w_0()
@@ -553,6 +584,37 @@ fn editor_field(theme: &Theme, label: &'static str, input: Entity<ComposerInput>
         )
 }
 
+/// The identity tile for an ACP agent row: the agent's logo (fetched + decoded
+/// from its icon URL) when available, otherwise a static fallback icon. Falls
+/// back to the glyph while the logo is still loading or if the fetch failed.
+fn acp_tile(
+    icon_url: Option<&str>,
+    fallback_icon: &'static str,
+    theme: &Theme,
+    cx: &mut Context<AcpAgentsPage>,
+) -> gpui::Div {
+    let glyph: gpui::AnyElement = match icon_url.filter(|u| !u.is_empty()) {
+        Some(url) => match crate::acp_logo::logo(url, cx) {
+            crate::acp_logo::Logo::Ready(image) => gpui::img(image)
+                .size(px(20.0))
+                .flex_none()
+                .into_any_element()
+                .into_any_element(),
+            crate::acp_logo::Logo::Pending(_) | crate::acp_logo::Logo::None => {
+                crate::icons::icon(fallback_icon)
+                    .size(px(16.0))
+                    .text_color(theme.text_muted)
+                    .into_any_element()
+            }
+        },
+        None => crate::icons::icon(fallback_icon)
+            .size(px(16.0))
+            .text_color(theme.text_muted)
+            .into_any_element(),
+    };
+    widgets::row_tile_child(theme, glyph)
+}
+
 fn decode_snapshot(
     result: Result<serde_json::Value, comet_rpc::RpcError>,
 ) -> Loadable<AcpAgentsSnapshot> {
@@ -603,6 +665,23 @@ impl gpui::Render for AcpAgentsPage {
 
         let mut content: Vec<AnyElement> = match snapshot {
             Some(snapshot) => {
+                // Refresh the global agent-id -> icon-URL table so the rail,
+                // tabs, and harness-tab picker can resolve logos. Covers both
+                // installed (which may be custom with user-supplied icons) and
+                // registry agents (deterministic CDN icon URLs).
+                crate::acp_logo::set_agent_icons(
+                    &snapshot
+                        .installed
+                        .iter()
+                        .map(|a| (a.id.as_str(), a.icon.as_deref()))
+                        .chain(
+                            snapshot
+                                .registry
+                                .iter()
+                                .map(|a| (a.id.as_str(), a.icon.as_deref())),
+                        )
+                        .collect::<Vec<_>>(),
+                );
                 let installed_rows = snapshot
                     .installed
                     .iter()
@@ -691,9 +770,7 @@ impl gpui::Render for AcpAgentsPage {
             let harness_rows: Vec<AnyElement> = healths
                 .iter()
                 .enumerate()
-                .map(|(index, health)| {
-                    self.harness_health_row(health, index == 0, &theme, cx)
-                })
+                .map(|(index, health)| self.harness_health_row(health, index == 0, &theme, cx))
                 .collect();
             content.insert(
                 0,

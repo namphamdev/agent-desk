@@ -509,11 +509,7 @@ impl Render for DevicesPage {
                                         .text_color(theme.danger)
                                 })
                                 .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.open_delete(
-                                        delete_id.clone(),
-                                        delete_name.clone(),
-                                        cx,
-                                    );
+                                    this.open_delete(delete_id.clone(), delete_name.clone(), cx);
                                 }))
                                 .child(
                                     crate::icons::icon(crate::icons::TRASH_BIN_MINIMALISTIC)

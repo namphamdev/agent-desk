@@ -174,7 +174,10 @@ fn windows_machine_guid() -> Option<String> {
         .encode_utf16()
         .chain(std::iter::once(0))
         .collect();
-    let value: Vec<u16> = "MachineGuid".encode_utf16().chain(std::iter::once(0)).collect();
+    let value: Vec<u16> = "MachineGuid"
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
 
     let mut buf = [0u8; 256];
     let mut buf_len: u32 = buf.len() as u32;

@@ -12,6 +12,9 @@ pub struct AcpRegistryAgent {
     pub repository: Option<String>,
     #[serde(default)]
     pub website: Option<String>,
+    /// Optional logo/icon URL (typically an SVG) published by the registry.
+    #[serde(default)]
+    pub icon: Option<String>,
     /// Whether this device has a usable distribution for the agent.
     pub supported: bool,
     /// `binary`, `npx`, or `uvx` when supported.
@@ -28,6 +31,10 @@ pub struct InstalledAcpAgent {
     pub version: String,
     pub command: String,
     pub distribution: String,
+    /// Optional logo/icon URL (typically an SVG). Registry agents copy this
+    /// from the catalog entry; custom agents carry a user-supplied URL.
+    #[serde(default)]
+    pub icon: Option<String>,
 }
 
 /// Device-local ACP settings and the current registry catalog.
@@ -58,8 +65,19 @@ mod tests {
                 version: "1.0.0".into(),
                 command: r#"{"command":"agent"}"#.into(),
                 distribution: "binary".into(),
+                icon: Some("https://example.com/icon.svg".into()),
             }],
-            registry: vec![],
+            registry: vec![AcpRegistryAgent {
+                id: "agent".into(),
+                name: "Agent".into(),
+                version: "1.0.0".into(),
+                description: "Test.".into(),
+                repository: None,
+                website: None,
+                icon: None,
+                supported: true,
+                distribution: Some("binary".into()),
+            }],
             registry_error: None,
         };
         let decoded: AcpAgentsSnapshot =

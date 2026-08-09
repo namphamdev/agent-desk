@@ -25,8 +25,8 @@ use comet_doc::{
 use comet_engine::{EngineCore, HarnessRegistry, RunJournal};
 use comet_harness::{Harness, HarnessError, RunControls};
 use comet_proto::{
-    AgentEvent, DoneStatus, HarnessId, Model, ReasoningLevel, RunRequest, SandboxLevel,
-    SteeringMode, ChatConfig, PermissionMode,
+    AgentEvent, ChatConfig, DoneStatus, HarnessId, Model, PermissionMode, ReasoningLevel,
+    RunRequest, SandboxLevel, SteeringMode,
 };
 use comet_sync::DocsStore;
 

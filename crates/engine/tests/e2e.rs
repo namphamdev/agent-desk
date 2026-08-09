@@ -1710,7 +1710,7 @@ async fn real_claude_sees_uploaded_image_inline() {
         seed_role: None,
         seed_purpose: None,
         harness: None,
-            acp_agent_id: None,
+        acp_agent_id: None,
         custom_provider: None,
     };
     core.doc_host

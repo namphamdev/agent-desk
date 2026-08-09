@@ -270,6 +270,8 @@ struct AcpAgentParams {
 struct AddCustomAcpAgentParams {
     name: String,
     command: String,
+    #[serde(default)]
+    icon: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1119,10 +1121,7 @@ impl RpcService for EngineRpc {
                 // is kept only when no agents are installed.
                 match self.acp_agents.list().await {
                     Ok(snapshot) if !snapshot.installed.is_empty() => {
-                        let acp_base = descriptors
-                            .iter()
-                            .find(|d| d.id == HarnessId::Acp)
-                            .cloned();
+                        let acp_base = descriptors.iter().find(|d| d.id == HarnessId::Acp).cloned();
                         descriptors.retain(|d| d.id != HarnessId::Acp);
                         if let Some(base) = acp_base {
                             for agent in &snapshot.installed {
@@ -1168,13 +1167,16 @@ impl RpcService for EngineRpc {
                 // available models into the picker so the user can select
                 // a provider-native model id.
                 if p.harness == HarnessId::Codex
-                    && let Some(provider) =
-                        self.custom_providers.selected_provider_for_harness(p.harness)
+                    && let Some(provider) = self
+                        .custom_providers
+                        .selected_provider_for_harness(p.harness)
                     && provider
                         .formats
                         .contains(&comet_proto::CustomProviderFormat::Responses)
-                && let Ok(provider_models) =
-                    self.custom_providers.list_chat_models(&provider.provider_id).await
+                    && let Ok(provider_models) = self
+                        .custom_providers
+                        .list_chat_models(&provider.provider_id)
+                        .await
                 {
                     use comet_proto::{Model, ReasoningLevel};
                     let ladder = vec![
@@ -1638,7 +1640,7 @@ impl RpcService for EngineRpc {
                 let p: AddCustomAcpAgentParams = parse_params(params)?;
                 let snapshot = self
                     .acp_agents
-                    .add_custom(&p.name, &p.command)
+                    .add_custom(&p.name, &p.command, p.icon.as_deref())
                     .await
                     .map_err(|error| RpcError::Failed(error.to_string()))?;
                 RpcReply::value(&snapshot)

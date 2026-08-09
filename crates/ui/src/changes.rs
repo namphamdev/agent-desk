@@ -575,9 +575,7 @@ impl Changes {
         });
         let model_search_events = cx.subscribe(
             &model_search,
-            |_: &mut Self, _, _: &ComposerInputEvent, cx| {
-                cx.notify()
-            },
+            |_: &mut Self, _, _: &ComposerInputEvent, cx| cx.notify(),
         );
         let generation_defaults_dir = state.read(cx).data_dir.clone();
         let generation_defaults = generation_defaults_dir
@@ -2117,10 +2115,8 @@ impl Changes {
                         .into_any_element()
                 })
                 .collect::<Vec<_>>();
-            let search = popover::search_input_frame(
-                theme,
-                self.model_search.clone().into_any_element(),
-            );
+            let search =
+                popover::search_input_frame(theme, self.model_search.clone().into_any_element());
             let menu = popover::popover_card(theme)
                 .w(px(200.0))
                 .mt(px(16.0))
@@ -2193,8 +2189,8 @@ impl Changes {
                         selector("git-model-select", model_label)
                             .when(!disabled, |el| {
                                 el.on_click(cx.listener(|this, _, _, cx| {
-                                    let closing = this.generation_picker
-                                        == Some(GitGenerationPicker::Model);
+                                    let closing =
+                                        this.generation_picker == Some(GitGenerationPicker::Model);
                                     this.generation_picker = if this.generation_picker
                                         == Some(GitGenerationPicker::Model)
                                     {

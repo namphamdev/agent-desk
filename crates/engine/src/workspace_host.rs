@@ -154,7 +154,9 @@ impl WorkspaceHost {
             .read_devices()?
             .into_iter()
             .find(|d| d.id == config.device_id);
-        let existing_fingerprint = existing.as_ref().and_then(|d| d.machine_fingerprint.clone());
+        let existing_fingerprint = existing
+            .as_ref()
+            .and_then(|d| d.machine_fingerprint.clone());
         doc.upsert_device(&Device {
             id: config.device_id.clone(),
             name: existing
@@ -792,9 +794,10 @@ impl WorkspaceHostInner {
                 return false;
             }
             // Path 1: fingerprint match (strongest signal).
-            if let (Some(fp), Some(their_fp)) =
-                (current.machine_fingerprint.as_deref(), device.machine_fingerprint.as_deref())
-            {
+            if let (Some(fp), Some(their_fp)) = (
+                current.machine_fingerprint.as_deref(),
+                device.machine_fingerprint.as_deref(),
+            ) {
                 return fp == their_fp;
             }
             // Path 2: version heuristic (legacy fallback for un-fingerprinted rows).
@@ -1107,8 +1110,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("proj");
         let wt = dir.path().join("clever-ember");
-        std::fs::create_dir_all(root.join(".git").join("worktrees").join("clever-ember"))
-            .unwrap();
+        std::fs::create_dir_all(root.join(".git").join("worktrees").join("clever-ember")).unwrap();
         std::fs::create_dir_all(&wt).unwrap();
         std::fs::write(
             wt.join(".git"),

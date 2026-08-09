@@ -114,9 +114,7 @@ impl PushNotifier for NoopPushNotifier {
 }
 
 /// Convenience: create an Arc<dyn PushNotifier> from an optional config.
-pub fn make_notifier(
-    config: Option<PushConfig>,
-) -> Arc<dyn PushNotifier> {
+pub fn make_notifier(config: Option<PushConfig>) -> Arc<dyn PushNotifier> {
     match config {
         Some(cfg) => {
             let runtime = tokio::runtime::Handle::current();

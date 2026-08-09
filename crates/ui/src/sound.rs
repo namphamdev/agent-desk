@@ -86,9 +86,7 @@ fn run_player(data: &[u8]) -> Result<(), String> {
     // directly, no temp file, no process spawn. SND_ASYNC returns immediately
     // so the background thread isn't blocked; the static byte slices outlive
     // playback. A second call naturally interrupts the previous sound.
-    use windows::Win32::Media::Audio::{
-        PlaySoundW, SND_ASYNC, SND_MEMORY, SND_NODEFAULT,
-    };
+    use windows::Win32::Media::Audio::{PlaySoundW, SND_ASYNC, SND_MEMORY, SND_NODEFAULT};
     use windows::core::PCWSTR;
 
     let result = unsafe {

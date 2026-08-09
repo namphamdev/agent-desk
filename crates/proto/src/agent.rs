@@ -1,7 +1,7 @@
 //! Agent-side wire types: harness identity, run requests, streaming events, tool calls.
 
-use serde::{Deserialize, Serialize};
 use crate::providers::CustomProviderFormat;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]

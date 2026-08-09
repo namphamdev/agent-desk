@@ -142,7 +142,8 @@ struct DocHostInner {
     /// Resolves the custom provider selected for a harness, including the API
     /// key, from device-local storage. Set by the engine layer (which owns
     /// `CustomProviders`). Returns `None` when no custom provider is selected.
-    provider_resolver: OnceLock<Arc<dyn Fn(HarnessId) -> Option<comet_proto::CustomProviderEnv> + Send + Sync>>,
+    provider_resolver:
+        OnceLock<Arc<dyn Fn(HarnessId) -> Option<comet_proto::CustomProviderEnv> + Send + Sync>>,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {

@@ -200,6 +200,22 @@ pub fn row_tile(theme: &Theme, icon_path: &'static str) -> gpui::Div {
         )
 }
 
+/// Identity tile variant taking an arbitrary child element instead of a static
+/// icon path, so callers can render a fetched logo image.
+pub fn row_tile_child(theme: &Theme, child: impl gpui::IntoElement) -> gpui::Div {
+    div()
+        .flex_none()
+        .size(px(36.0))
+        .rounded(px(10.0))
+        .border_1()
+        .border_color(theme.border)
+        .bg(ink(0.03))
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(child)
+}
+
 /// Row title: `text-[13.5px] font-medium leading-tight`.
 pub fn row_title(theme: &Theme, title: impl Into<SharedString>) -> gpui::Div {
     div()

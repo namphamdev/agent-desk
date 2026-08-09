@@ -17,8 +17,9 @@ use std::time::Instant;
 
 use gpui::{
     AnyElement, BorderStyle, Bounds, FontStyle, FontWeight, Hsla, Image, ImageFormat,
-    InteractiveText, MouseButton, ScrollHandle, SharedString, StyledText, TextRun, UnderlineStyle,
-    Window, canvas, div, font, img, point, prelude::*, px, quad, relative, size,
+    InteractiveText, MouseButton, ObjectFit, ScrollHandle, SharedString, StyledImage, StyledText,
+    TextRun, UnderlineStyle, Window, canvas, div, font, img, point, prelude::*, px, quad, relative,
+    size,
 };
 
 use crate::theme::Theme;
@@ -328,9 +329,7 @@ pub fn render_block(
             .w_full()
             .bg(theme.border)
             .into_any_element(),
-        Block::Visualization { doc } => {
-            render_visualization(doc, top_ix, ix, opts, theme)
-        }
+        Block::Visualization { doc } => render_visualization(doc, top_ix, ix, opts, theme),
     }
 }
 
@@ -465,6 +464,10 @@ fn mermaid_images() -> &'static Mutex<HashMap<String, Arc<Image>>> {
     IMAGES.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// Per-key interactive viewer state (zoom + drag-pan), used only by the
+/// full-screen modal. The inline transcript card auto-fits the diagram and
+/// never captures the wheel/drag, so wheel scroll and click-drag inside a chat
+/// message never pan its contents — scrolling the transcript stays natural.
 #[derive(Default)]
 struct MermaidViewer {
     zoom: f32,
@@ -504,6 +507,7 @@ fn set_mermaid_zoom(key: &str, change: f32) {
 
 /// Wheel and two-finger scroll deltas are inverted so scrolling up zooms in.
 /// Pixel deltas come from touchpads; line deltas come from discrete wheels.
+/// Used only inside the full-screen modal.
 fn mermaid_wheel_zoom(delta: gpui::ScrollDelta) -> f32 {
     let y = match delta {
         gpui::ScrollDelta::Pixels(delta) => f32::from(delta.y) / 240.0,
@@ -528,7 +532,7 @@ fn render_mermaid(
         .get(source)
         .cloned()
     {
-        return mermaid_image_card(image, viewer_key, source, ix, opts.mermaid.clone());
+        return mermaid_image_card(image, viewer_key, source, ix, opts.mermaid.clone(), false);
     }
     let mut render_options = mermaid_rs_renderer::RenderOptions::default();
     // The renderer's outer Y padding becomes a conspicuous empty band in a
@@ -543,46 +547,30 @@ fn render_mermaid(
         .lock()
         .expect("Mermaid cache poisoned")
         .insert(source.to_string(), image.clone());
-    mermaid_image_card(image, viewer_key, source, ix, opts.mermaid.clone())
+    mermaid_image_card(image, viewer_key, source, ix, opts.mermaid.clone(), false)
 }
 
+/// The diagram card. `interactive` selects behavior:
+///
+/// - `false` (inline chat message): the diagram is auto-fit to the card with
+///   [`ObjectFit::Contain`] under a `max-height` cap — it never scrolls, never
+///   captures the wheel, and never pans on drag, so wheel/scroll inside the
+///   transcript scrolls the transcript itself. Copy and Open-full-screen
+///   affordances live in a visible header bar so they are never hidden behind
+///   the diagram.
+/// - `true` (full-screen modal): the diagram keeps the persistent zoom/pan
+///   viewer (wheel zoom, pinch zoom, drag-pan) with zoom buttons, so the user
+///   can inspect details.
 fn mermaid_image_card(
     image: Arc<Image>,
     viewer_key: String,
     source: &str,
     ix: usize,
     ui: Option<MermaidUi>,
+    interactive: bool,
 ) -> AnyElement {
-    let (zoom, scroll) = mermaid_viewer(&viewer_key);
-    let zoom_button = |label: &'static str, change: f32| {
-        let key = viewer_key.clone();
-        div()
-            .id(SharedString::from(format!("{key}-zoom-{label}")))
-            .h(px(22.0))
-            .w(px(22.0))
-            .rounded(px(4.0))
-            .bg(crate::theme::white_alpha(0.10))
-            .hover(|el| el.bg(crate::theme::white_alpha(0.18)))
-            .flex()
-            .items_center()
-            .justify_center()
-            .cursor_pointer()
-            .text_size(px(15.0))
-            .text_color(gpui::white())
-            .on_click(move |_, window, _| {
-                set_mermaid_zoom(&key, change);
-                window.refresh();
-            })
-            .child(label)
-    };
-    let pan_key = viewer_key.clone();
-    let drag_key = viewer_key.clone();
-    let release_key = viewer_key.clone();
-    let wheel_key = viewer_key.clone();
-    let pinch_key = viewer_key.clone();
-    // Copy + Open-full-screen affordances (mirrors the code-block copy button:
-    // a small ghost icon button in the card's top-right, beside the zoom
-    // controls). `None` (previews outside the transcript) renders neither.
+    // Copy + Open-full-screen affordances. `None` (previews outside the
+    // transcript) renders neither.
     let copy_button = ui.clone().map(|ui| {
         let copied = ui.copied_ix == Some(ix);
         let source_text: SharedString = source.to_string().into();
@@ -636,6 +624,48 @@ fn mermaid_image_card(
             .on_click(move |_, window, cx| handler(ix, window, cx))
             .child(crate::icons::icon(crate::icons::EXPAND).size(px(13.0)))
     });
+
+    // The affordance row sits in a header bar (never overlaid on the diagram),
+    // so Copy + Open-full-screen are always visible. When neither button is
+    // present (`None`) the header is dropped entirely.
+    let has_buttons = copy_button.is_some() || expand_button.is_some();
+    let header = has_buttons.then(|| {
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_end()
+            .gap(px(4.0))
+            .px(px(8.0))
+            .py(px(5.0))
+            .border_b_1()
+            .border_color(crate::theme::white_alpha(0.08))
+            .children(copy_button)
+            .children(expand_button)
+    });
+
+    let body = if interactive {
+        mermaid_interactive_body(image, &viewer_key)
+    } else {
+        // Auto-fit: contain the whole diagram within a capped height. It never
+        // overflows the card, so there is nothing to scroll or pan — the wheel
+        // and drag pass straight through to the transcript.
+        div()
+            .id(SharedString::from(format!("{viewer_key}-viewport")))
+            .w_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .py(px(8.0))
+            .child(
+                img(image)
+                    .max_w(relative(1.0))
+                    .max_h(px(544.0))
+                    .object_fit(ObjectFit::Contain),
+            )
+            .into_any_element()
+    };
+
     div()
         .relative()
         .rounded(px(10.0))
@@ -643,6 +673,44 @@ fn mermaid_image_card(
         .border_color(crate::theme::white_alpha(0.14))
         .bg(crate::theme::white_alpha(0.035))
         .overflow_hidden()
+        .children(header)
+        .child(body)
+        .into_any_element()
+}
+
+/// Full-screen modal body: persistent zoom (clamped 0.5×–3×), drag-pan, wheel
+/// and pinch zoom, with zoom buttons. Independent viewer key keeps its state
+/// isolated from the inline card.
+fn mermaid_interactive_body(image: Arc<Image>, viewer_key: &str) -> AnyElement {
+    let (zoom, scroll) = mermaid_viewer(viewer_key);
+    let zoom_button = |label: &'static str, change: f32| {
+        let key = viewer_key.to_string();
+        div()
+            .id(SharedString::from(format!("{key}-zoom-{label}")))
+            .h(px(22.0))
+            .w(px(22.0))
+            .rounded(px(4.0))
+            .bg(crate::theme::white_alpha(0.10))
+            .hover(|el| el.bg(crate::theme::white_alpha(0.18)))
+            .flex()
+            .items_center()
+            .justify_center()
+            .cursor_pointer()
+            .text_size(px(15.0))
+            .text_color(gpui::white())
+            .on_click(move |_, window, _| {
+                set_mermaid_zoom(&key, change);
+                window.refresh();
+            })
+            .child(label)
+    };
+    let pan_key = viewer_key.to_string();
+    let drag_key = viewer_key.to_string();
+    let release_key = viewer_key.to_string();
+    let wheel_key = viewer_key.to_string();
+    let pinch_key = viewer_key.to_string();
+    div()
+        .relative()
         .child(
             div()
                 .id(SharedString::from(format!("{viewer_key}-viewport")))
@@ -718,9 +786,7 @@ fn mermaid_image_card(
                 .flex()
                 .gap(px(4.0))
                 .child(zoom_button("out", -0.25))
-                .child(zoom_button("in", 0.25))
-                .children(expand_button)
-                .children(copy_button),
+                .child(zoom_button("in", 0.25)),
         )
         .into_any_element()
 }
@@ -848,17 +914,15 @@ pub fn mermaid_fullscreen(
         return crate::popover::modal("mermaid-fullscreen", viewport, card);
     };
     // Independent viewer key so the modal's zoom/pan doesn't bleed back into
-    // the inline card (and vice versa).
+    // the inline card (and vice versa). `interactive: true` keeps the zoom/pan
+    // viewer; no header bar (the scrim is the affordance to close).
     let viewer_key = "mermaid-fullscreen".to_string();
-    let card = mermaid_image_card(image, viewer_key, source, 0, None);
-    // Strip the inline card's max-height cap so the modal can use the full
-    // viewport — wrap in a sized container instead.
+    let card = mermaid_image_card(image, viewer_key, source, 0, None, true);
+    // Wrap in a sized container so the modal fills the viewport (the body's own
+    // max-height is a transcript-only cap).
     let max_h = px(f32::from(viewport.height) * 0.86);
     let max_w = px(f32::from(viewport.width) * 0.92);
-    let container = div()
-        .max_w(max_w)
-        .max_h(max_h)
-        .child(card);
+    let container = div().max_w(max_w).max_h(max_h).child(card);
     gpui::deferred(
         gpui::anchored()
             .position(gpui::point(px(0.0), px(0.0)))
@@ -1028,11 +1092,7 @@ fn hex_to_hsla(hex: &str) -> Option<Hsla> {
     } else {
         return None;
     };
-    let (h, s, l) = crate::theme::rgb_to_hsl(
-        r as f32 / 255.0,
-        g as f32 / 255.0,
-        b as f32 / 255.0,
-    );
+    let (h, s, l) = crate::theme::rgb_to_hsl(r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0);
     Some(gpui::hsla(h, s, l, 1.0))
 }
 
@@ -1157,7 +1217,11 @@ fn render_viz_bar_chart(
     if data.is_empty() {
         return gpui::Empty.into_any_element();
     }
-    let max_val = data.iter().map(|(_, v, _)| *v).fold(0.0f64, |a, b| a.max(b)).max(0.001);
+    let max_val = data
+        .iter()
+        .map(|(_, v, _)| *v)
+        .fold(0.0f64, |a, b| a.max(b))
+        .max(0.001);
     let show_pct = viz_bool(props.get("showPercentage"), false);
     let mut col = div().flex().flex_col().gap(px(8.0));
     for (label, value, color) in &data {
@@ -1233,12 +1297,7 @@ fn render_viz_sparkline(
     let bar_w = 3.0f32;
     let gap = 2.0f32;
     let h = 28.0f32;
-    let mut row = div()
-        .flex()
-        .flex_row()
-        .items_end()
-        .h(px(h))
-        .gap(px(gap));
+    let mut row = div().flex().flex_row().items_end().h(px(h)).gap(px(gap));
     for v in &data {
         let frac = ((v - min) / range) as f32;
         row = row.child(
@@ -1320,10 +1379,7 @@ fn render_viz_table(
                     other => other.to_string(),
                 })
                 .unwrap_or_default();
-            let mut cell = div()
-                .p(px(10.0))
-                .text_size(px(12.0))
-                .text_color(theme.text);
+            let mut cell = div().p(px(10.0)).text_size(px(12.0)).text_color(theme.text);
             if let Some(w) = width {
                 cell = cell.min_w(viz_px(*w));
             } else {

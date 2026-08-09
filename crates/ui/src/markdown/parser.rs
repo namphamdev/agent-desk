@@ -289,8 +289,10 @@ fn find_subseq_ci(haystack: &[u8], needle: &[u8], from: usize) -> Option<usize> 
     let mut i = from;
     while i < end {
         if i + needle_len <= haystack.len() {
-            let lower_slice: Vec<u8> =
-                haystack[i..i + needle_len].iter().map(|b| b.to_ascii_lowercase()).collect();
+            let lower_slice: Vec<u8> = haystack[i..i + needle_len]
+                .iter()
+                .map(|b| b.to_ascii_lowercase())
+                .collect();
             if lower_slice == lower_needle {
                 return Some(i);
             }
@@ -1279,7 +1281,13 @@ mod viz_tests {
         let src = "Hello\n\n<json-render>{\"root\":\"r\",\"elements\":{\"r\":{\"type\":\"Text\",\"props\":{\"text\":\"hi\"},\"children\":[]}}}</json-render>\n\nWorld\n";
         let tree = parse_full(src);
         // Three blocks: paragraph, visualization, paragraph.
-        assert_eq!(tree.len(), 3, "expected 3 blocks, got {}: {:#?}", tree.len(), tree);
+        assert_eq!(
+            tree.len(),
+            3,
+            "expected 3 blocks, got {}: {:#?}",
+            tree.len(),
+            tree
+        );
         assert!(matches!(tree.blocks[0].block, Block::Paragraph { .. }));
         assert!(matches!(tree.blocks[1].block, Block::Visualization { .. }));
         assert!(matches!(tree.blocks[2].block, Block::Paragraph { .. }));
@@ -1333,7 +1341,9 @@ mod viz_tests {
         // Should NOT produce a visualization block; the tag content surfaces as
         // plain text (paragraph). Two paragraphs.
         assert!(
-            tree.blocks.iter().all(|b| !matches!(b.block, Block::Visualization { .. })),
+            tree.blocks
+                .iter()
+                .all(|b| !matches!(b.block, Block::Visualization { .. })),
             "invalid JSON should not produce a viz block: {:#?}",
             tree
         );

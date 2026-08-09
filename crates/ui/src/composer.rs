@@ -25,9 +25,7 @@ use gpui::{
 use unicode_segmentation::UnicodeSegmentation;
 
 use comet_doc::{MessagePart, MessageRole, SessionCommandPayload, SessionMessageEntry};
-use comet_proto::{
-    FileSearchMatch, RunRequest, SteeringMode, UserInputAnswer, UserInputQuestion,
-};
+use comet_proto::{FileSearchMatch, RunRequest, SteeringMode, UserInputAnswer, UserInputQuestion};
 use comet_rpc::{RpcError, methods};
 
 use crate::attachments::{self, StagedAttachment};
@@ -2529,8 +2527,8 @@ impl ComposerInput {
         } else {
             (SharedString::from(self.projection.display.clone()), false)
         };
-       let font_size = style.font_size.to_pixels(window.rem_size());
-       self.line_height = px(INPUT_LINE_HEIGHT);
+        let font_size = style.font_size.to_pixels(window.rem_size());
+        self.line_height = px(INPUT_LINE_HEIGHT);
 
         // Shaping (glyph shaping + soft-wrapping the whole document) is the
         // single most expensive thing this input does, yet the caret blink
@@ -2550,8 +2548,7 @@ impl ComposerInput {
             font_size,
             is_placeholder,
             &self.marked_range,
-            )
-        {
+        ) {
             self.last_width = f32::from(width);
             return self.content_height;
         }
@@ -2611,11 +2608,11 @@ impl ComposerInput {
             }
         };
 
-       let lines = window
-           .text_system()
+        let lines = window
+            .text_system()
             .shape_text(display.clone(), font_size, &runs, Some(width), None)
-           .map(|small| small.into_vec())
-           .unwrap_or_default();
+            .map(|small| small.into_vec())
+            .unwrap_or_default();
 
         // Logical line byte offsets (each shaped line covers one \n-split line).
         let mut line_starts = Vec::with_capacity(lines.len());
@@ -5466,17 +5463,16 @@ impl Render for Composer {
             container
         };
         let container = container.child(motion::fade_quick("composer-input", body));
-        let container =
-            container.when_some(steer_hint, |el, hint| {
-                el.child(
-                    div()
-                        .w_full()
-                        .flex()
-                        .justify_end()
-                        .px(px(Theme::SPACE_SM))
-                        .child(hint),
-                )
-            });
+        let container = container.when_some(steer_hint, |el, hint| {
+            el.child(
+                div()
+                    .w_full()
+                    .flex()
+                    .justify_end()
+                    .px(px(Theme::SPACE_SM))
+                    .child(hint),
+            )
+        });
         // Branch/worktree toolbar under the pill (t3code BranchToolbar): the
         // checkout-kind selector + ref picker for new sessions, read-only
         // labels once the session exists. Git spaces only.
@@ -6254,13 +6250,13 @@ mod tests {
         let t = "fix the parser bug";
         //         0123456789012345678
         //                  1111111111
-        assert_eq!(word_range_for_offset(t, 0), 0..3);    // "fix"
-        assert_eq!(word_range_for_offset(t, 1), 0..3);    // middle of "fix"
-        assert_eq!(word_range_for_offset(t, 2), 0..3);    // end of "fix"
-        assert_eq!(word_range_for_offset(t, 3), 0..3);    // boundary after "fix"
-        assert_eq!(word_range_for_offset(t, 4), 4..7);    // "the"
-        assert_eq!(word_range_for_offset(t, 8), 8..14);   // "parser"
-        assert_eq!(word_range_for_offset(t, 11), 8..14);  // middle of "parser"
+        assert_eq!(word_range_for_offset(t, 0), 0..3); // "fix"
+        assert_eq!(word_range_for_offset(t, 1), 0..3); // middle of "fix"
+        assert_eq!(word_range_for_offset(t, 2), 0..3); // end of "fix"
+        assert_eq!(word_range_for_offset(t, 3), 0..3); // boundary after "fix"
+        assert_eq!(word_range_for_offset(t, 4), 4..7); // "the"
+        assert_eq!(word_range_for_offset(t, 8), 8..14); // "parser"
+        assert_eq!(word_range_for_offset(t, 11), 8..14); // middle of "parser"
         assert_eq!(word_range_for_offset(t, 15), 15..18); // "bug"
     }
 
@@ -6275,8 +6271,8 @@ mod tests {
     fn word_range_handles_underscores_and_unicode() {
         // Byte offsets: é is 2 bytes, so "héllo" spans bytes 14..20.
         let t = "let foo_bar = héllo;";
-        assert_eq!(word_range_for_offset(t, 4), 4..11);  // "foo_bar"
-        assert_eq!(word_range_for_offset(t, 5), 4..11);  // inside "foo_bar"
+        assert_eq!(word_range_for_offset(t, 4), 4..11); // "foo_bar"
+        assert_eq!(word_range_for_offset(t, 5), 4..11); // inside "foo_bar"
         assert_eq!(word_range_for_offset(t, 10), 4..11); // end of "foo_bar"
         assert_eq!(word_range_for_offset(t, 14), 14..20); // "héllo"
         assert_eq!(word_range_for_offset(t, 16), 14..20); // mid-multibyte word
@@ -6289,7 +6285,7 @@ mod tests {
         assert_eq!(word_range_for_offset("word", 3), 0..4); // last char
         assert_eq!(word_range_for_offset("word", 4), 0..4); // past end → word
         assert_eq!(word_range_for_offset("", 0), 0..0);
-        assert_eq!(word_range_for_offset("  ", 1), 1..1);   // whitespace only
+        assert_eq!(word_range_for_offset("  ", 1), 1..1); // whitespace only
     }
 
     #[test]
@@ -6301,30 +6297,78 @@ mod tests {
         // Same inputs => reuse the stored layout (the idle blink /
         // redundant-notify case that previously re-shaped the whole draft).
         assert!(ComposerInput::shape_inputs_unchanged(
-            &display, 300.0, px(14.0), false, &marked,
-            &display, 300.0, px(14.0), false, &marked,
+            &display,
+            300.0,
+            px(14.0),
+            false,
+            &marked,
+            &display,
+            300.0,
+            px(14.0),
+            false,
+            &marked,
         ));
 
         // Any single change invalidates the cache.
         assert!(!ComposerInput::shape_inputs_unchanged(
-            &display, 300.0, px(14.0), false, &marked,
-            &display, 300.0, px(14.0), false, &None,
+            &display,
+            300.0,
+            px(14.0),
+            false,
+            &marked,
+            &display,
+            300.0,
+            px(14.0),
+            false,
+            &None,
         )); // marked text changed (IME)
         assert!(!ComposerInput::shape_inputs_unchanged(
-            &display, 300.0, px(14.0), false, &marked,
-            &format!("{}y", display), 300.0, px(14.0), false, &marked,
+            &display,
+            300.0,
+            px(14.0),
+            false,
+            &marked,
+            &format!("{}y", display),
+            300.0,
+            px(14.0),
+            false,
+            &marked,
         )); // a keystroke changed the text
         assert!(!ComposerInput::shape_inputs_unchanged(
-            &display, 300.0, px(14.0), false, &marked,
-            &display, 640.0, px(14.0), false, &marked,
+            &display,
+            300.0,
+            px(14.0),
+            false,
+            &marked,
+            &display,
+            640.0,
+            px(14.0),
+            false,
+            &marked,
         )); // a compact to expanded flip changed the width
         assert!(!ComposerInput::shape_inputs_unchanged(
-            &display, 300.0, px(14.0), false, &marked,
-            &display, 300.0, px(16.0), false, &marked,
+            &display,
+            300.0,
+            px(14.0),
+            false,
+            &marked,
+            &display,
+            300.0,
+            px(16.0),
+            false,
+            &marked,
         )); // font size changed
         assert!(!ComposerInput::shape_inputs_unchanged(
-            &display, 300.0, px(14.0), false, &marked,
-            "Do anything", 300.0, px(14.0), true, &marked,
+            &display,
+            300.0,
+            px(14.0),
+            false,
+            &marked,
+            "Do anything",
+            300.0,
+            px(14.0),
+            true,
+            &marked,
         )); // placeholder mode toggled
     }
 }

@@ -1,8 +1,10 @@
 //! Composer pickers (feature-inventory §1.7): RepoPicker (recents + search +
 //! in-app folder browser + clone/create), BranchPicker (search + isolated-
 //! worktree toggle), HarnessModelPicker (harness rail + model list, harness
-//! locked once the chat exists), TraitsPicker (reasoning ladder + advertised
-//! model options; trigger shows the non-default summary "High · 1M · Fast").
+//! locked once the chat exists), TraitsPicker (its own composer chip +
+//! dropdown — reasoning ladder + advertised model options; trigger shows the
+//! non-default summary "High · 1M · Fast", hidden when the model advertises
+//! neither a ladder nor options).
 //!
 //! All selections accumulate into a [`DraftConfig`] the composer threads into
 //! the Run command and the `Mutate createChat` call on first send.
@@ -396,7 +398,7 @@ impl Pickers {
         // headless compositors, so captures need a data-side path.
         let open = match std::env::var("COMET_OPEN_PICKER").ok().as_deref() {
             Some("model") => Some(PickerKind::HarnessModel),
-            Some("traits") => Some(PickerKind::HarnessModel),
+            Some("traits") => Some(PickerKind::Traits),
             Some("branch") => Some(PickerKind::Branch),
             Some("checkout") => Some(PickerKind::Checkout),
             _ => None,
@@ -667,13 +669,6 @@ impl Pickers {
     }
 
     fn toggle(&mut self, kind: PickerKind, window: &mut Window, cx: &mut Context<Self>) {
-        // Model + traits merged into ONE menu (user request): the traits chip
-        // opens the combined harness/model/reasoning popover.
-        let kind = if kind == PickerKind::Traits {
-            PickerKind::HarnessModel
-        } else {
-            kind
-        };
         if self.open == Some(kind) {
             self.open = None;
             cx.notify();
@@ -716,7 +711,8 @@ impl Pickers {
                         this.model_scroll.scroll_to_item(target);
                         cx.notify();
                     }
-                }).ok();
+                })
+                .ok();
             });
         }
         // Searchable pickers focus the filter input (it sits inside the frame,
@@ -831,10 +827,7 @@ impl Pickers {
             let mut params = serde_json::json!({ "harness": harness });
             if let Some(ref id) = acp_agent_id {
                 if let Some(object) = params.as_object_mut() {
-                    object.insert(
-                        "acpAgentId".into(),
-                        serde_json::Value::String(id.clone()),
-                    );
+                    object.insert("acpAgentId".into(), serde_json::Value::String(id.clone()));
                 }
             }
             if let (Some(target), Some(object)) = (&target, params.as_object_mut()) {
@@ -1146,9 +1139,7 @@ impl Pickers {
         if self.harness_locked(cx) {
             return;
         }
-        if self.config.harness != Some(harness)
-            || self.config.acp_agent_id != acp_agent_id
-        {
+        if self.config.harness != Some(harness) || self.config.acp_agent_id != acp_agent_id {
             // The remembered model for this harness takes over via the
             // defaults fallback; a foreign pick must not linger.
             self.config.model = None;
@@ -1167,7 +1158,10 @@ impl Pickers {
     }
 
     fn pick_model(&mut self, model_id: String, cx: &mut Context<Self>) {
-        eprintln!("[pickers:DEBUG] pick_model: called with model_id = {:?}", model_id);
+        eprintln!(
+            "[pickers:DEBUG] pick_model: called with model_id = {:?}",
+            model_id
+        );
         self.open = None;
         if self.state.read(cx).selected_chat.is_some() {
             // Existing chat: persist to the chat row (Mutate setChatConfig) —
@@ -1336,6 +1330,18 @@ impl Pickers {
             .unwrap_or_default()
     }
 
+    /// Whether the selected model advertises ANY trait — a reasoning ladder
+    /// (its own or the harness's) or at least one model option. The traits
+    /// chip hides entirely when this is false: a dead trigger reads as broken
+    /// (comet hides it for Hermes, which exposes no traits over ACP).
+    fn traits_available(&self, cx: &App) -> bool {
+        if !self.trait_ladder(cx).is_empty() {
+            return true;
+        }
+        self.selected_model(cx)
+            .is_some_and(|model| !model.options.is_empty())
+    }
+
     /// The viewed harness's filtered model list, when loaded.
     fn filtered_model_rows(&self, cx: &App) -> Vec<Model> {
         let Some(models) = self
@@ -1493,19 +1499,17 @@ impl Pickers {
                 let count = match self.open {
                     Some(PickerKind::Branch) => self.filtered_ref_rows(cx).len().min(MAX_REF_ROWS),
                     Some(PickerKind::Checkout) => 2,
-                    // Keyboard nav walks the MODEL list only; the traits
-                    // chips below (reasoning ladder, model options) are
-                    // mouse-only.
+                    // Keyboard nav walks the MODEL list only; traits
+                    // (reasoning ladder, model options) live in their own
+                    // dropdown and are mouse-only.
                     Some(PickerKind::HarnessModel) => self.model_rows_len(cx),
                     Some(PickerKind::Permission) => 4,
-                    Some(PickerKind::Traits) => 0, // merged into HarnessModel
+                    Some(PickerKind::Traits) => 0, // chips are mouse-only
                     None => 0,
                 };
                 self.active = popover::menu_step(Some(self.active), count, delta).unwrap_or(0);
                 // Keep the highlighted MODEL row in view (the rows are the
-                // scroll container's direct children, so indices map 1:1);
-                // the traits chips below live in the pinned tray and never
-                // need scrolling into view.
+                // scroll container's direct children, so indices map 1:1).
                 if self.open == Some(PickerKind::HarnessModel)
                     && self.active < self.model_rows_len(cx)
                 {
@@ -1558,8 +1562,7 @@ impl Pickers {
             PickerKind::Traits => "picker-traits",
             PickerKind::Permission => "picker-permission",
         };
-        let open = self.open == Some(kind)
-            || (kind == PickerKind::Traits && self.open == Some(PickerKind::HarnessModel));
+        let open = self.open == Some(kind);
         // Ghost pill (comet composer/styles.tsx `pill`): `h-8 rounded-lg px-2.5
         // gap-1.5 text-[12px] font-medium text-muted-foreground`, icons size-4,
         // hover/open wash — no border, no caret; the actions row stays quiet.
@@ -2194,6 +2197,8 @@ impl Pickers {
                         let is_disabled = locked && !is_viewed;
                         let (icon_path, tint) =
                             harness_brand_icon(harness, acp_agent_id.as_deref());
+                        let acp_logo =
+                            crate::acp_logo::harness_logo_for(harness, acp_agent_id.as_deref(), cx);
                         let name: SharedString = descriptor.name.clone().into();
                         div()
                             .id(("harness-tab", ix))
@@ -2227,16 +2232,21 @@ impl Pickers {
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.pick_harness(harness, acp_agent_id.clone(), cx);
                             }))
-                            .child(
-                                crate::icons::icon(icon_path)
+                            .child(match acp_logo {
+                                Some(crate::acp_logo::Logo::Ready(image)) => gpui::img(image)
+                                    .size(px(16.0))
+                                    .flex_none()
+                                    .into_any_element(),
+                                _ => crate::icons::icon(icon_path)
                                     .size(px(16.0))
                                     .flex_none()
                                     .text_color(tint.unwrap_or(if is_viewed {
                                         theme.text
                                     } else {
                                         theme.text_muted
-                                    })),
-                            )
+                                    }))
+                                    .into_any_element(),
+                            })
                             .child(div().min_w_0().truncate().child(name))
                     }))
                     .into_any_element()
@@ -2248,11 +2258,10 @@ impl Pickers {
         // The rows are collected FLAT — they become the scroll container's
         // direct children so `scroll_to_item(active)` maps 1:1 (the palette's
         // keyboard-follow standard).
-        let model_children: Vec<AnyElement> = match effective
-            .map(|h| {
-                let acp_agent_id = self.effective_acp_agent_id(cx);
-                (h, self.models.get(&(h, acp_agent_id)))
-            }) {
+        let model_children: Vec<AnyElement> = match effective.map(|h| {
+            let acp_agent_id = self.effective_acp_agent_id(cx);
+            (h, self.models.get(&(h, acp_agent_id)))
+        }) {
             Some((_, Some(Loadable::Ready(_)))) => {
                 // The check mirrors the chip: the resolved concrete pick (draft
                 // / chat config / remembered, else the harness default row).
@@ -2342,15 +2351,12 @@ impl Pickers {
             ],
         };
 
-        // One combined menu (user request): harness tabs across the top,
-        // then the viewed harness's models, then the reasoning ladder and
-        // model options that used to live in the separate traits popover.
-        let traits = self.render_traits_sections(cx);
-        // The palette architecture: agents rail LEFT, models pane beside it
-        // with the traits INSPECTOR pinned below (models are the decision;
-        // reasoning/options are properties of it — they never scroll away
-        // with the list), legend footer under everything. FIXED height so
-        // harness switches and loading skeletons don't resize the card.
+        // The palette architecture: agents rail LEFT, the viewed harness's
+        // models pane beside it. Traits (reasoning ladder + options) live in
+        // their own composer chip + dropdown now — they're properties of the
+        // selected model, so they follow the pick instead of sharing the
+        // browse surface. FIXED height so harness switches and loading
+        // skeletons don't resize the card.
         div()
             .h(px(420.0))
             .flex()
@@ -2403,19 +2409,6 @@ impl Pickers {
                                         .track_scroll(&model_scroll)
                                         .children(model_children),
                                 ),
-                            )
-                            .child(
-                                // The pinned inspector tray (scrolls only if
-                                // a model advertises many option groups).
-                                div()
-                                    .id("model-traits-scroll")
-                                    .flex_none()
-                                    .max_h(px(190.0))
-                                    .overflow_y_scroll()
-                                    .border_t_1()
-                                    .border_color(crate::theme::hairline(0.06))
-                                    .p(px(4.0))
-                                    .child(traits),
                             ),
                     ),
             )
@@ -2443,11 +2436,10 @@ impl Pickers {
             .into_any_element()
     }
 
-    /// The traits INSPECTOR: the reasoning ladder plus every advertised
-    /// model option as headed segmented-chip sections, pinned under the
-    /// models pane (formerly menu rows in the shared scroll). Selecting
-    /// keeps the menu open; the active chip carries the wash + ring.
-    /// Mouse-only — arrow keys walk the model list above, never these chips.
+    /// The traits DROPDOWN body: the reasoning ladder plus every advertised
+    /// model option as headed segmented-chip sections. Selecting keeps the
+    /// dropdown open; the active chip carries the wash + ring. Mouse-only —
+    /// arrow keys are unused in this narrow popover.
     fn render_traits_sections(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = Theme::of(cx).clone();
         let Some(model) = self.selected_model(cx).cloned() else {
@@ -2539,6 +2531,22 @@ impl Pickers {
             .pb(px(4.0))
             .child(ladder)
             .child(options)
+            .into_any_element()
+    }
+
+    /// The traits DROPDOWN (comet TraitsPicker): a narrow card over the
+    /// traits chip holding the reasoning ladder + advertised model options.
+    /// Traits are properties of the *selected* model, so they follow the pick
+    /// instead of sharing the model browse surface. The card grows with its
+    /// content and scrolls only when a model advertises many option groups.
+    fn render_traits_popover(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let body = self.render_traits_sections(cx);
+        div()
+            .id("traits-scroll")
+            .max_h(px(360.0))
+            .overflow_y_scroll()
+            .p(px(4.0))
+            .child(body)
             .into_any_element()
     }
 }
@@ -2819,8 +2827,11 @@ impl Render for Pickers {
                     self.popover_frame(260.0, content, cx),
                 ))
             }
-            // Traits merged into the HarnessModel popover.
-            Some(PickerKind::Traits) | None => None,
+            Some(PickerKind::Traits) => {
+                let content = self.render_traits_popover(cx);
+                Some((PickerKind::Traits, self.popover_frame(280.0, content, cx)))
+            }
+            None => None,
         };
 
         // Left cluster (the branch chip moved to the composer FOOTER row).
@@ -2833,18 +2844,34 @@ impl Render for Pickers {
             .items_center()
             .min_w_0()
             .gap(px(4.0));
-        // ONE combined model+effort chip (user request): brand icon + model
-        // name, then the effort level muted with no icon — a single button
-        // opening the single merged menu.
-        let combined_chip = self.trigger_chip(
+        // Model chip: brand icon + model name only. Traits (reasoning +
+        // options) are properties of the selected model, so they get their
+        // OWN chip + dropdown to the right (comet's separate TraitsPicker).
+        let model_chip = self.trigger_chip(
             PickerKind::HarnessModel,
             model_label,
             true,
             Some(harness_icon),
-            Some(traits_label),
+            None,
             &theme,
             cx,
         );
+        // The traits chip is hidden entirely when the selected model
+        // advertises neither a ladder nor options — a dead trigger reads as
+        // broken (comet hides it for Hermes). The trigger shows the
+        // non-default summary ("High · 1M · Fast"), falling back to "Traits".
+        let traits_available = self.traits_available(cx);
+        let traits_chip = traits_available.then(|| {
+            self.trigger_chip(
+                PickerKind::Traits,
+                traits_label,
+                traits_set.is_some(),
+                None,
+                None,
+                &theme,
+                cx,
+            )
+        });
         let permission_chip = self.trigger_chip(
             PickerKind::Permission,
             permission_label,
@@ -2854,7 +2881,7 @@ impl Render for Pickers {
             &theme,
             cx,
         );
-        let _ = traits_set;
+
         let right = div()
             .flex()
             .flex_row()
@@ -2867,10 +2894,18 @@ impl Render for Pickers {
                 PickerKind::Permission,
                 "permission-popover",
             ))
+            .when_some(traits_chip, |el, traits_chip| {
+                el.child(attach_overlay_end(
+                    traits_chip,
+                    &mut overlay,
+                    PickerKind::Traits,
+                    "traits-popover",
+                ))
+            })
             // End-anchored: the menu's right edge sits flush with the chip's
             // right edge (user request), same as the footer's ref popover.
             .child(attach_overlay_end(
-                combined_chip,
+                model_chip,
                 &mut overlay,
                 PickerKind::HarnessModel,
                 "model-popover",

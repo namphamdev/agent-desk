@@ -2215,19 +2215,32 @@ impl Shell {
                     .gap(px(4.0))
                     .when_some(
                         harness.map(|harness| {
-                            crate::pickers::harness_brand_icon(
+                            let brand = crate::pickers::harness_brand_icon(
                                 harness,
                                 acp_agent_id.as_deref(),
-                            )
-                        }),
-                        |el, (path, tint)| {
-                            el.child(
-                                icon(path)
+                            );
+                            let logo = crate::acp_logo::harness_logo_for(
+                                harness,
+                                acp_agent_id.as_deref(),
+                                cx,
+                            );
+                            let (path, tint) = brand;
+                            match logo {
+                                // ACP agent with a decoded logo: show the image.
+                                Some(crate::acp_logo::Logo::Ready(image)) => gpui::img(image)
                                     .size(px(11.0))
                                     .flex_none()
-                                    .text_color(tint.unwrap_or(subline).opacity(0.8)),
-                            )
-                        },
+                                    .into_any_element(),
+                                // ACP agent without an icon, or still loading,
+                                // or a non-ACP harness: fall back to the static mark.
+                                _ => icon(path)
+                                    .size(px(11.0))
+                                    .flex_none()
+                                    .text_color(tint.unwrap_or(subline).opacity(0.8))
+                                    .into_any_element(),
+                            }
+                        }),
+                        |el, glyph| el.child(glyph),
                     )
                     .when_some(branch, |el, branch| {
                         el.child(

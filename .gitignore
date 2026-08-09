@@ -13,3 +13,5 @@ apps/ios/Comet/Generated/
 /apps/rn/Comet/android
 /apps/rn/Comet/ios
 /apps/rn/Comet/dist
+/apps/mobile-app/dist
+/apps/mobile-app/crash

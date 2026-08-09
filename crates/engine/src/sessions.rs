@@ -653,10 +653,10 @@ impl SessionsEngine {
                             resume: None,
                             seed: None,
                             seed_purpose: None,
-        harness: None,
+                            harness: None,
                             seed_role: None,
                             acp_agent_id: None,
-        custom_provider: None,
+                            custom_provider: None,
                         })
                     });
                 let Some(mut request) = request else {
@@ -758,9 +758,7 @@ impl Inner {
         let now = Utc::now();
         let agent_running = lock(&self.runs).contains_key(chat_id);
         // Capture the previous status so we can fire push on transitions.
-        let previous_status = lock(&self.statuses)
-            .get(chat_id)
-            .map(|s| s.status);
+        let previous_status = lock(&self.statuses).get(chat_id).map(|s| s.status);
         let session = {
             let mut statuses = lock(&self.statuses);
             let entry = statuses
@@ -809,12 +807,7 @@ impl Inner {
     /// Fire a push notification (if a notifier is wired) on transitions that
     /// mobile users care about: Working → Idle, Working → Errored, and
     /// * → AwaitingInput.
-    fn maybe_push_transition(
-        &self,
-        chat_id: &str,
-        from: SessionStatus,
-        to: SessionStatus,
-    ) {
+    fn maybe_push_transition(&self, chat_id: &str, from: SessionStatus, to: SessionStatus) {
         let should_notify = match (from, to) {
             (SessionStatus::Working, SessionStatus::Idle) => true,
             (SessionStatus::Working, SessionStatus::Errored) => true,
@@ -828,9 +821,7 @@ impl Inner {
             let chat_title = self
                 .workspace()
                 .and_then(|ws| ws.doc().chat(chat_id).ok().flatten())
-                .and_then(|chat| {
-                    chat.title.filter(|t| !t.trim().is_empty())
-                });
+                .and_then(|chat| chat.title.filter(|t| !t.trim().is_empty()));
             notifier.notify(StatusTransition {
                 chat_id: chat_id.to_string(),
                 from,

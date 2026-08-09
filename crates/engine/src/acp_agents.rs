@@ -43,6 +43,8 @@ struct RegistryEntry {
     repository: Option<String>,
     #[serde(default)]
     website: Option<String>,
+    #[serde(default)]
+    icon: Option<String>,
     distribution: RegistryDistribution,
 }
 
@@ -175,12 +177,14 @@ impl AcpAgents {
     ///
     /// `command` is the launch spec understood by the ACP SDK's
     /// `AcpAgent::from_str` (a bare executable, a shell pipeline, or the JSON
-    /// `{ "command": "...", "args": [...], "env": { ... } }`). The agent is
-    /// persisted with distribution `"custom"` and made active immediately.
+    /// `{ "command": "...", "args": [...], "env": { ... } }`). `icon` is an
+    /// optional logo URL (typically an SVG) shown beside the agent. The agent
+    /// is persisted with distribution `"custom"` and made active immediately.
     pub async fn add_custom(
         &self,
         name: &str,
         command: &str,
+        icon: Option<&str>,
     ) -> anyhow::Result<AcpAgentsSnapshot> {
         let name = name.trim();
         let command = command.trim();
@@ -190,6 +194,10 @@ impl AcpAgents {
         if command.is_empty() {
             bail!("ACP agent command is required");
         }
+        let icon = icon
+            .map(str::trim)
+            .filter(|icon| !icon.is_empty())
+            .map(str::to_string);
 
         let _guard = self.mutation.lock().await;
         let mut config = self.load_config()?;
@@ -210,6 +218,7 @@ impl AcpAgents {
             version: "custom".to_string(),
             command: normalize_custom_command(command),
             distribution: "custom".into(),
+            icon,
         };
         config.agents.retain(|agent| agent.id != installed.id);
         config.agents.push(installed.clone());
@@ -315,6 +324,7 @@ impl AcpAgents {
             version: entry.version.clone(),
             command: command_json,
             distribution: "binary".into(),
+            icon: entry.icon.clone(),
         })
     }
 
@@ -355,6 +365,7 @@ fn snapshot(
                     description: entry.description,
                     repository: entry.repository,
                     website: entry.website,
+                    icon: entry.icon,
                     supported: distribution.is_some(),
                     distribution: distribution.map(str::to_string),
                 }
@@ -428,6 +439,7 @@ fn direct_package_agent(
         version: entry.version.clone(),
         command: launch_json(&executable, &package.args, &env)?,
         distribution: "direct".into(),
+        icon: entry.icon.clone(),
     })
 }
 
@@ -450,6 +462,7 @@ fn package_agent(
         version: entry.version.clone(),
         command: launch_json(&executable, &args, &env)?,
         distribution: runner.into(),
+        icon: entry.icon.clone(),
     })
 }
 
@@ -511,7 +524,12 @@ fn find_executable(name: &str) -> Option<PathBuf> {
                 search_dirs.push(appdata.join("npm"));
             }
             search_dirs.extend([
-                home.join("AppData").join("Local").join("fnm").join("aliases").join("default").join("bin"),
+                home.join("AppData")
+                    .join("Local")
+                    .join("fnm")
+                    .join("aliases")
+                    .join("default")
+                    .join("bin"),
                 home.join("AppData").join("Local").join("Volta"),
                 home.join("AppData").join("Local").join("pnpm"),
             ]);
@@ -724,6 +742,7 @@ mod tests {
             description: "Test".into(),
             repository: None,
             website: None,
+            icon: None,
             distribution: RegistryDistribution {
                 binary: BTreeMap::from([(
                     platform_target().to_string(),
@@ -776,6 +795,7 @@ mod tests {
             description: String::new(),
             repository: None,
             website: None,
+            icon: Some("https://example.test/droid.svg".into()),
             distribution: RegistryDistribution::default(),
         };
         let package = PackageDistribution {
@@ -794,6 +814,11 @@ mod tests {
             serde_json::json!(["exec", "--output-format", "acp-daemon"])
         );
         assert_eq!(launch["env"]["DROID_DISABLE_AUTO_UPDATE"], "true");
+        // The registry icon URL is carried through to the installed agent.
+        assert_eq!(
+            installed.icon.as_deref(),
+            Some("https://example.test/droid.svg")
+        );
     }
 
     #[test]
@@ -808,6 +833,7 @@ mod tests {
                 version: "1".into(),
                 command: "{}".into(),
                 distribution: "npx".into(),
+                icon: None,
             }],
         };
         agents.save_config(&config).unwrap();
@@ -822,7 +848,11 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let agents = AcpAgents::new(temp.path());
         let snapshot = agents
-            .add_custom("My Agent", "/usr/local/bin/my-agent --acp")
+            .add_custom(
+                "My Agent",
+                "/usr/local/bin/my-agent --acp",
+                Some("https://example.test/icon.svg"),
+            )
             .await
             .unwrap();
         assert_eq!(snapshot.installed.len(), 1);
@@ -830,6 +860,7 @@ mod tests {
         assert_eq!(agent.name, "My Agent");
         assert_eq!(agent.command, "/usr/local/bin/my-agent --acp");
         assert_eq!(agent.distribution, "custom");
+        assert_eq!(agent.icon.as_deref(), Some("https://example.test/icon.svg"));
         // `safe_component` sanitizes spaces to underscores in the id.
         assert_eq!(agent.id, "custom:My_Agent");
         assert_eq!(snapshot.active_agent_id.as_deref(), Some(agent.id.as_str()));
@@ -844,26 +875,28 @@ mod tests {
     async fn add_custom_rejects_empty_fields() {
         let temp = tempfile::tempdir().unwrap();
         let agents = AcpAgents::new(temp.path());
-        assert!(agents.add_custom("", "/usr/local/bin/agent").await.is_err());
-        assert!(agents.add_custom("Agent", "   ").await.is_err());
+        assert!(
+            agents
+                .add_custom("", "/usr/local/bin/agent", None)
+                .await
+                .is_err()
+        );
+        assert!(agents.add_custom("Agent", "   ", None).await.is_err());
     }
 
     #[tokio::test]
     async fn add_custom_deduplicates_id_on_name_collision() {
         let temp = tempfile::tempdir().unwrap();
         let agents = AcpAgents::new(temp.path());
-        let first = agents.add_custom("Agent", "/bin/a").await.unwrap();
-        let second = agents.add_custom("Agent", "/bin/b").await.unwrap();
+        let first = agents.add_custom("Agent", "/bin/a", None).await.unwrap();
+        let second = agents.add_custom("Agent", "/bin/b", None).await.unwrap();
         // The second agent with the same name gets a "-2" suffix on its id.
         let ids: Vec<&str> = second.installed.iter().map(|a| a.id.as_str()).collect();
         assert!(ids.contains(&"custom:Agent"));
         assert!(ids.contains(&"custom:Agent-2"));
         assert_eq!(second.installed.len(), 2);
         // The most recently added agent becomes active.
-        assert_eq!(
-            second.active_agent_id.as_deref(),
-            Some("custom:Agent-2")
-        );
+        assert_eq!(second.active_agent_id.as_deref(), Some("custom:Agent-2"));
         // The first snapshot only had the original id.
         assert_eq!(first.installed[0].id, "custom:Agent");
     }
@@ -884,7 +917,10 @@ mod tests {
             normalize_custom_command("/usr/local/bin/agent --acp"),
             "/usr/local/bin/agent --acp"
         );
-        assert_eq!(normalize_custom_command("npx -y @org/agent"), "npx -y @org/agent");
+        assert_eq!(
+            normalize_custom_command("npx -y @org/agent"),
+            "npx -y @org/agent"
+        );
     }
 
     #[test]

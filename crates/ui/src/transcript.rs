@@ -749,10 +749,7 @@ pub fn chips_height(tools: &[ToolItem]) -> f32 {
         return 0.0;
     }
     CHIPS_TOP_PAD
-        + tools
-            .iter()
-            .map(|t| tool_chip_height(&t.call))
-            .sum::<f32>()
+        + tools.iter().map(|t| tool_chip_height(&t.call)).sum::<f32>()
         + (tools.len() as f32 - 1.0) * CHIP_GAP
 }
 
@@ -1445,12 +1442,7 @@ impl Transcript {
         rows
     }
 
-    fn toggle_fold(
-        &mut self,
-        row_id: SharedString,
-        tools: &[ToolItem],
-        auto_open: bool,
-    ) {
+    fn toggle_fold(&mut self, row_id: SharedString, tools: &[ToolItem], auto_open: bool) {
         let entry = self.folds.entry(row_id).or_default();
         let currently_open = entry.open.unwrap_or(auto_open);
         entry.from = if currently_open {
@@ -2093,12 +2085,7 @@ impl Transcript {
     /// inline card's click only carries the block index, so we resolve from
     /// the row's parsed tree here.
     fn mermaid_fullscreen_open(&mut self, row_id: &SharedString) {
-        let Some(row) = self
-            .rows
-            .iter()
-            .find(|r| &r.id == row_id)
-            .cloned()
-        else {
+        let Some(row) = self.rows.iter().find(|r| &r.id == row_id).cloned() else {
             return;
         };
         let tree = match &row.kind {
@@ -2812,8 +2799,10 @@ impl Transcript {
         let thumb_h = (thumb_ratio * viewport).max(Self::SCROLLBAR_THUMB_MIN);
         let track_h = viewport - Self::SCROLLBAR_TRACK_INSET * 2.0;
         let thumb_travel = (track_h - thumb_h).max(0.0);
-        let new_top = (mouse_y - anchor)
-            .clamp(Self::SCROLLBAR_TRACK_INSET, Self::SCROLLBAR_TRACK_INSET + thumb_travel);
+        let new_top = (mouse_y - anchor).clamp(
+            Self::SCROLLBAR_TRACK_INSET,
+            Self::SCROLLBAR_TRACK_INSET + thumb_travel,
+        );
         let new_scroll_top = if thumb_travel > 0.0 {
             ((new_top - Self::SCROLLBAR_TRACK_INSET) / thumb_travel) * max
         } else {
@@ -2867,22 +2856,24 @@ impl Render for Transcript {
                         if phase != gpui::DispatchPhase::Bubble || !e.dragging() {
                             return;
                         }
-                        weak_move.update(cx, |this, cx| {
-                            this.scrollbar_drag_move(f32::from(e.position.y), cx);
-                        })
-                        .ok();
+                        weak_move
+                            .update(cx, |this, cx| {
+                                this.scrollbar_drag_move(f32::from(e.position.y), cx);
+                            })
+                            .ok();
                     });
                     window.on_mouse_event(move |_: &gpui::MouseUpEvent, phase, _window, cx| {
                         if phase != gpui::DispatchPhase::Bubble {
                             return;
                         }
-                        weak_up.update(cx, |this, cx| {
-                            if this.scrollbar_drag_anchor.is_some() {
-                                this.scrollbar_drag_anchor = None;
-                                cx.notify();
-                            }
-                        })
-                        .ok();
+                        weak_up
+                            .update(cx, |this, cx| {
+                                if this.scrollbar_drag_anchor.is_some() {
+                                    this.scrollbar_drag_anchor = None;
+                                    cx.notify();
+                                }
+                            })
+                            .ok();
                     });
                 },
             ))
@@ -3577,7 +3568,9 @@ mod tests {
         // The chip row height is a constant, independent of content shape
         // (for non-Todo tools).
         let one = vec![ToolItem {
-            call: ToolCall::Exec { command: "x".into() },
+            call: ToolCall::Exec {
+                command: "x".into(),
+            },
             is_error: false,
             resolved: false,
         }];
@@ -3656,7 +3649,9 @@ mod tests {
     #[test]
     fn chips_height_is_analytic() {
         let exec = || ToolItem {
-            call: ToolCall::Exec { command: "x".into() },
+            call: ToolCall::Exec {
+                command: "x".into(),
+            },
             is_error: false,
             resolved: false,
         };
@@ -3688,8 +3683,7 @@ mod tests {
                 },
             ],
         };
-        let expected =
-            CHIP_CARD_HEIGHT + TODO_ITEMS_PAD * 2.0 + 2.0 * TODO_ITEM_HEIGHT;
+        let expected = CHIP_CARD_HEIGHT + TODO_ITEMS_PAD * 2.0 + 2.0 * TODO_ITEM_HEIGHT;
         assert_eq!(tool_chip_height(&two), expected);
         assert!(expected > CHIP_HEIGHT, "todo chip must be taller than flat");
     }
@@ -3713,7 +3707,9 @@ mod tests {
             resolved: false,
         };
         let exec = ToolItem {
-            call: ToolCall::Exec { command: "ls".into() },
+            call: ToolCall::Exec {
+                command: "ls".into(),
+            },
             is_error: false,
             resolved: false,
         };

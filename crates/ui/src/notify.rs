@@ -208,7 +208,7 @@ fn dispatch(kind: NotificationKind) -> Result<(), String> {
 /// Encode a PowerShell script as Base64 UTF-16LE for -EncodedCommand.
 #[cfg(windows)]
 fn encode_powerhell(script: &str) -> Result<String, String> {
-    use base64::{engine::general_purpose, Engine as _};
+    use base64::{Engine as _, engine::general_purpose};
     let utf16: Vec<u16> = script.encode_utf16().collect();
     let bytes: &[u8] =
         unsafe { std::slice::from_raw_parts(utf16.as_ptr() as *const u8, utf16.len() * 2) };

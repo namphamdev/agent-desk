@@ -73,9 +73,11 @@ display EXCLUDED. File paths refer to the reference repo.
   auto-advances after 220ms, multi/typed explicit, number keys, free-text override, wizard state
   cached per requestId, latched across blips.
 - Pickers: HarnessModelPicker (harness rail + models, harness locked once chat exists),
-  TraitsPicker (reasoning + advertised model options; trigger shows non-defaults "High · 1M · Fast"),
-  RepoPicker (search, Open folder… in-app browser w/ breadcrumbs + keys + skeletons, Clone from
-  URL…, Create new repo…), BranchPicker (search + isolated-worktree toggle ~/.comet/worktrees/…).
+  TraitsPicker (SEPARATE composer chip + dropdown — reasoning + advertised model options;
+  trigger shows non-defaults "High · 1M · Fast", hidden when the model advertises neither
+  a ladder nor options), RepoPicker (search, Open folder… in-app browser w/ breadcrumbs +
+  keys + skeletons, Clone from URL…, Create new repo…), BranchPicker (search +
+  isolated-worktree toggle ~/.comet/worktrees/…).
 
 ### 1.8 Conversation / transcript
 - ONE transcript source = doc projection. Optimistic echoes until first doc frame.

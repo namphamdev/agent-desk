@@ -177,7 +177,7 @@ impl TitleGenerator {
                 seed_purpose: None,
                 seed_role: None,
                 acp_agent_id: None,
-        custom_provider: None,
+                custom_provider: None,
             };
             match collect_text(harness.as_ref(), request).await {
                 Ok(raw) => {
