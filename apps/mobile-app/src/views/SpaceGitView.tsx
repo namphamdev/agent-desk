@@ -246,14 +246,14 @@ export function SpaceGitView({ model, spaceId, onBack }: Props) {
     setBusy('generate');
     void AsyncStorage.setItem('spaceGitHarness', selectedHarness);
     void AsyncStorage.setItem('spaceGitModel', selectedModel);
-    const result = await model.gitGenerateCommitMessage(deviceId, cwd, selectedHarness, selectedModel);
+    const result: unknown = await model.gitGenerateCommitMessage(deviceId, cwd, selectedHarness, selectedModel);
     setBusy(null);
-    if (result && typeof result === 'object' && typeof result.subject === 'string') {
-      setSubject(result.subject);
-      setBody(typeof result.body === 'string' ? result.body : '');
+    if (result && typeof result === 'object' && typeof (result as Record<string, unknown>).subject === 'string') {
+      const msg = result as { subject: string; body?: string };
+      setSubject(msg.subject);
+      setBody(typeof msg.body === 'string' ? msg.body : '');
       showInfo('AI message generated');
     } else if (typeof result === 'string' && result.length > 0) {
-      // Server returned a raw string — use it as the subject.
       setSubject(result);
       showInfo('AI message generated');
     } else {
