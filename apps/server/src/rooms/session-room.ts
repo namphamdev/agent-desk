@@ -481,13 +481,7 @@ export class SessionRoom {
       }
       this.recordLoroUpdates(updates);
       this.ack(ws, { crdt, roomId }, UpdateStatusCode.Ok, batchId);
-      this.broadcast(ws, crdt, {
-        type: MessageType.DocUpdate,
-        crdt,
-        roomId,
-        updates,
-        batchId
-      });
+      this.broadcastUpdates(ws, crdt, roomId, updates, batchId);
       return;
     }
     if (crdt === CrdtType.LoroEphemeralStore) {
@@ -499,13 +493,7 @@ export class SessionRoom {
         return;
       }
       this.ack(ws, { crdt, roomId }, UpdateStatusCode.Ok, batchId);
-      this.broadcast(ws, crdt, {
-        type: MessageType.DocUpdate,
-        crdt,
-        roomId,
-        updates,
-        batchId
-      });
+      this.broadcastUpdates(ws, crdt, roomId, updates, batchId);
       return;
     }
     this.ack(ws, { crdt, roomId }, UpdateStatusCode.Unknown, batchId);
@@ -830,8 +818,10 @@ export class SessionRoom {
     ws: WebSocket,
     crdt: CrdtType,
     roomId: string,
-    updates: Uint8Array[]
+    updates: Uint8Array[],
+    batchId?: `0x${string}`
   ): void {
+    const smallBatchId = batchId ?? this.newBatchId();
     const small = updates.filter((u) => u.length <= MAX_MESSAGE_SIZE);
     if (small.length > 0) {
       this.send(ws, {
@@ -839,18 +829,18 @@ export class SessionRoom {
         crdt,
         roomId,
         updates: small,
-        batchId: this.newBatchId()
+        batchId: smallBatchId
       });
     }
     for (const update of updates) {
       if (update.length <= MAX_MESSAGE_SIZE) continue;
-      const batchId = this.newBatchId();
+      const fragBatchId = batchId ?? this.newBatchId();
       const fragmentCount = Math.ceil(update.length / FRAGMENT_BYTES);
       this.send(ws, {
         type: MessageType.DocUpdateFragmentHeader,
         crdt,
         roomId,
-        batchId,
+        batchId: fragBatchId,
         fragmentCount,
         totalSizeBytes: update.length
       });
@@ -859,7 +849,7 @@ export class SessionRoom {
           type: MessageType.DocUpdateFragment,
           crdt,
           roomId,
-          batchId,
+          batchId: fragBatchId,
           index: i,
           fragment: update.subarray(
             i * FRAGMENT_BYTES,
@@ -870,17 +860,21 @@ export class SessionRoom {
     }
   }
 
-  private broadcast(from: WebSocket, crdt: CrdtType, message: ProtocolMessage): void {
-    const bytes = encode(message);
+  /** Broadcast updates to all other sockets in the same room, using
+   *  per-socket sendUpdates which handles fragmentation for large payloads.
+   *  This avoids encode() throwing on messages that exceed MAX_MESSAGE_SIZE. */
+  private broadcastUpdates(
+    from: WebSocket,
+    crdt: CrdtType,
+    roomId: string,
+    updates: Uint8Array[],
+    batchId: `0x${string}`
+  ): void {
     for (const ws of this.wsCtx.getWebSockets()) {
       if (ws === from) continue;
       const state = this.wsCtx.deserializeAttachment(ws) as SocketState | null;
       if (!state?.rooms.includes(crdt)) continue;
-      try {
-        ws.send(bytes);
-      } catch {
-        /* stale socket */
-      }
+      this.sendUpdates(ws, crdt, roomId, updates, batchId);
     }
   }
 
