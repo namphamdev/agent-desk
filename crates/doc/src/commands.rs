@@ -320,4 +320,63 @@ mod tests {
         custom_provider: None,
         }
     }
+
+    /// Regression: the mobile app's loro-react-native library coerces falsy
+    /// values (false, 0, "") to null when writing to a Loro doc. The fix
+    /// strips those keys before writing; this test verifies the sanitized
+    /// payload (autoApprove/cwd absent or non-empty) still deserializes.
+    #[test]
+    fn run_payload_without_auto_approve_deserializes() {
+        // What the mobile app writes after sanitization: autoApprove omitted
+        // (serde defaults to false), cwd is a non-empty space.
+        let json = serde_json::json!({
+            "id": "c1",
+            "payload": {
+                "kind": "run",
+                "request": {
+                    "prompt": "hello",
+                    "cwd": " ",
+                    "sandbox": "workspace-write"
+                },
+                "messageId": "m1"
+            },
+            "issuedBy": "dev-mobile",
+            "issuedAt": 1_000,
+            "expiresAt": 1_000,
+            "status": "pending"
+        });
+        let entry: SessionCommandEntry = serde_json::from_value(json).unwrap();
+        let SessionCommandPayload::Run { request, .. } = &entry.payload else {
+            panic!("expected run payload");
+        };
+        assert_eq!(request.prompt, "hello");
+        assert_eq!(request.cwd, " ");
+        // auto_approve defaults to false when absent.
+        assert!(!request.auto_approve);
+    }
+
+    /// Regression: a payload where falsy values were coerced to null must
+    /// NOT deserialize (proving the bug existed before the fix).
+    #[test]
+    fn run_payload_with_null_auto_approve_fails() {
+        let json = serde_json::json!({
+            "id": "c1",
+            "payload": {
+                "kind": "run",
+                "request": {
+                    "prompt": "hello",
+                    "cwd": null,
+                    "sandbox": "workspace-write",
+                    "autoApprove": null
+                },
+                "messageId": "m1"
+            },
+            "issuedBy": "dev-mobile",
+            "issuedAt": 1_000,
+            "expiresAt": 1_000,
+            "status": "pending"
+        });
+        let result: Result<SessionCommandEntry, _> = serde_json::from_value(json);
+        assert!(result.is_err(), "null cwd/autoApprove must fail deserialization");
+    }
 }

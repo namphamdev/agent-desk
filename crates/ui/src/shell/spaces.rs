@@ -1,4 +1,4 @@
-//! Spaces sidebar: the spaces list (folder + device rows), the global
+﻿//! Spaces sidebar: the spaces list (folder + device rows), the global
 //! Sessions list, and the add-space palette (⌘K-style: device tabs + filtered
 //! folder browser).
 //!
@@ -22,21 +22,21 @@ const SPACE_ROW_SLOT: f32 = 31.0;
 /// Drag-reorder state for the spaces list; `epoch` keys the 150ms slide
 /// animation restarts (the session-tab idiom, vertical).
 pub(super) struct SpaceDragState {
-    from: usize,
-    over: usize,
-    epoch: usize,
-    prev_over: usize,
+    pub(super) from: usize,
+    pub(super) over: usize,
+    pub(super) epoch: usize,
+    pub(super) prev_over: usize,
 }
 
 /// The dragged-row payload (gpui drag-and-drop).
 struct SpaceDragPayload {
-    from: usize,
-    name: SharedString,
+    pub(super) from: usize,
+    pub(super) name: SharedString,
 }
 
 /// The floating row rendered at the cursor while dragging.
 struct SpaceGhost {
-    name: SharedString,
+    pub(super) name: SharedString,
 }
 
 impl Render for SpaceGhost {
@@ -73,36 +73,36 @@ impl Render for SpaceGhost {
 /// place, no step wizard.
 pub(super) struct AddSpaceFlow {
     /// The device currently browsed (the highlighted rail row).
-    device: Option<Device>,
+    pub(super) device: Option<Device>,
     /// Filter input; Enter descends into the highlighted folder.
-    search: Entity<ComposerInput>,
-    browser: Loadable<FolderListing>,
+    pub(super) search: Entity<ComposerInput>,
+    pub(super) browser: Loadable<FolderListing>,
     /// Requested browser path (`None` = the device's default, i.e. home).
-    browser_path: Option<String>,
+    pub(super) browser_path: Option<String>,
     /// The device's home (the path a `None` browse resolved to) — breadcrumbs
     /// fold everything up to here into the device-name crumb.
-    home: Option<String>,
+    pub(super) home: Option<String>,
     /// Best-effort git seed for the CURRENT browser path (known when we
     /// descended through an entry whose `is_repo` we saw; the owning device's
     /// SpacesSync re-verifies either way).
-    browser_repo: bool,
+    pub(super) browser_repo: bool,
     /// Keyboard highlight within the FILTERED folder rows.
-    active: usize,
-    submit_busy: bool,
-    error: Option<SharedString>,
+    pub(super) active: usize,
+    pub(super) submit_busy: bool,
+    pub(super) error: Option<SharedString>,
     /// Tracked on the card (`track_focus`) — puts the card on the keyboard
     /// dispatch path so ↑↓/⌫/esc reach `add_space_key` while the search input
     /// holds focus (the structure every working picker uses).
-    focus: FocusHandle,
+    pub(super) focus: FocusHandle,
     /// Folder-list scroll — keyboard navigation keeps the highlighted row in
     /// view (`scroll_to_item`).
-    list_scroll: gpui::ScrollHandle,
+    pub(super) list_scroll: gpui::ScrollHandle,
     /// Reject late responses from a previous path while the user is typing.
-    load_generation: u64,
-    focus_pending: bool,
-    load_task: Option<Task<()>>,
-    submit_task: Option<Task<()>>,
-    _search_events: Subscription,
+    pub(super) load_generation: u64,
+    pub(super) focus_pending: bool,
+    pub(super) load_task: Option<Task<()>>,
+    pub(super) submit_task: Option<Task<()>>,
+    pub(super) _search_events: Subscription,
 }
 
 /// The space-row Rename dialog (same shape as [`RenameChatDialog`]).
@@ -114,15 +114,15 @@ pub(super) struct RenameSpaceDialog {
 }
 
 pub(super) struct ProjectHarnessFlow {
-    space_id: String,
-    project: String,
-    cwd: String,
-    device_id: String,
-    status: Loadable<ProjectHarness>,
-    busy_id: Option<String>,
-    flash: Option<SharedString>,
-    error: Option<SharedString>,
-    task: Option<Task<()>>,
+    pub(super) space_id: String,
+    pub(super) project: String,
+    pub(super) cwd: String,
+    pub(super) device_id: String,
+    pub(super) status: Loadable<ProjectHarness>,
+    pub(super) busy_id: Option<String>,
+    pub(super) flash: Option<SharedString>,
+    pub(super) error: Option<SharedString>,
+    pub(super) task: Option<Task<()>>,
 }
 
 /// Dot color for a chat's display status (tab dots + Sessions rows).

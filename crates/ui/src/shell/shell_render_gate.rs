@@ -1,0 +1,356 @@
+﻿
+use gpui::{
+    AnyElement, Context, Empty, IntoElement, SharedString, div, img, prelude::*, px,
+};
+
+
+use crate::icons::{self};
+use crate::motion::{self};
+use crate::popover::{self, Loadable};
+use crate::state::GatePhase;
+use crate::theme::Theme;
+
+use super::render_fns::grid_backdrop;
+use super::Shell;
+
+impl Shell {
+    pub(super) fn render_gate_card(&mut self, phase: &GatePhase, cx: &mut Context<Self>) -> AnyElement {
+        let theme = Theme::of(cx).clone();
+        let content: AnyElement = match phase {
+            // Backend unreachable: quiet centered copy (comet Gate `Failed`),
+            // plus a Retry affordance (the native engine doesn't self-redial).
+            GatePhase::Failed(error) => div()
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap(px(Theme::SPACE_MD))
+                .child(
+                    div()
+                        .text_size(px(14.0))
+                        .text_color(theme.text_muted)
+                        .child(SharedString::from(error.clone())),
+                )
+                .child(
+                    div()
+                        .id("retry-engine")
+                        .px(px(12.0))
+                        .py(px(6.0))
+                        .rounded(px(8.0))
+                        .border_1()
+                        .border_color(theme.border)
+                        .text_size(px(13.0))
+                        .text_color(theme.text)
+                        .cursor_pointer()
+                        .hover(|s| s.bg(theme.glass_hover()))
+                        .on_click(cx.listener(|this, _, _, cx| this.retry_engine(cx)))
+                        .child(SharedString::from("Retry")),
+                )
+                .into_any_element(),
+            // Login card (comet App.tsx Gate): centered card on the grid —
+            // logo, "Log in to Comet", copy, full-width white Log in button.
+            _ => div()
+                .w(px(360.0))
+                .px(px(32.0))
+                .py(px(40.0))
+                .rounded(px(12.0))
+                .border_1()
+                .border_color(theme.border)
+                .bg(theme.surface_card)
+                .shadow_lg()
+                .flex()
+                .flex_col()
+                .items_center()
+                .text_center()
+                .child(
+                    img(icons::logo_image())
+                        .w(px(31.4))
+                        .h(px(36.0))
+                        .opacity(0.9),
+                )
+                .child(
+                    div()
+                        .mt(px(24.0))
+                        .text_size(px(18.0))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(theme.text)
+                        .child(SharedString::from("Log in to Comet")),
+                )
+                .child(
+                    div()
+                        .mt(px(6.0))
+                        .mb(px(24.0))
+                        .text_size(px(13.0))
+                        .line_height(px(19.0))
+                        .text_color(theme.text_muted)
+                        .child(SharedString::from(
+                            "This opens your browser to finish logging in — you'll come right back.",
+                        )),
+                )
+                .child(
+                    div()
+                        .id("sign-in")
+                        .w_full()
+                        .h(px(36.0))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(6.0))
+                        .bg(theme.text)
+                        .text_size(px(14.0))
+                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .text_color(theme.on_solid)
+                        .cursor_pointer()
+                        .hover(|s| s.opacity(0.9))
+                        .on_click(cx.listener(|this, _, _, cx| this.start_sign_in(cx)))
+                        .child(SharedString::from("Log in")),
+                )
+                .into_any_element(),
+        };
+        div()
+            .size_full()
+            .relative()
+            .bg(theme.bg)
+            .child(grid_backdrop(&theme))
+            .child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    // Keyed per phase (comet App.tsx `<div key={phase}
+                    // className="animate-in">`): every gate swap replays the
+                    // 0.5s entrance instead of mutating one animated element.
+                    .child(motion::fade_in(
+                        match phase {
+                            GatePhase::SignIn => "gate-card-signin",
+                            _ => "gate-card-failed",
+                        },
+                        div().child(content),
+                    )),
+            )
+            .into_any_element()
+    }
+
+    /// The OrgGate ("Create your workspace"): name form + existing memberships
+    /// + "Use a different account" (feature-inventory §1.2).
+    pub(super) fn render_org_gate(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        self.ensure_org_ui(cx);
+        let theme = Theme::of(cx).clone();
+        let Some(org) = self.org.as_ref() else {
+            return Empty.into_any_element();
+        };
+        let submitting = org.submitting;
+        let error = org.error.clone();
+        let name_input = org.name_input.clone();
+        let orgs = org.orgs.clone();
+
+        let email: Option<SharedString> = self
+            .state
+            .read(cx)
+            .auth_user()
+            .map(|u| u.email.clone().into());
+
+        let memberships: AnyElement =
+            match &orgs {
+                Loadable::Idle | Loadable::Loading => div()
+                    .mt(px(24.0))
+                    .child(popover::skeleton_rows(
+                        "org-skeleton",
+                        &theme,
+                        2,
+                        cx.entity_id(),
+                        cx,
+                    ))
+                    .into_any_element(),
+                Loadable::Error(message) => div()
+                    .mt(px(24.0))
+                    .child(
+                        popover::error_row(&theme, message).child(
+                            div()
+                                .id("orgs-retry")
+                                .px(px(Theme::SPACE_SM))
+                                .py(px(3.0))
+                                .rounded(px(Theme::CONTROL_RADIUS))
+                                .border_1()
+                                .border_color(theme.border)
+                                .text_color(theme.text)
+                                .cursor_pointer()
+                                .hover(|s| s.bg(theme.glass_hover()))
+                                .on_click(cx.listener(|this, _, _, cx| this.load_orgs(cx)))
+                                .child(SharedString::from("Retry")),
+                        ),
+                    )
+                    .into_any_element(),
+                Loadable::Ready(rows) if rows.is_empty() => Empty.into_any_element(),
+                Loadable::Ready(rows) => div()
+                    .mt(px(24.0))
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .pb(px(8.0))
+                            .text_size(px(11.0))
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .text_color(theme.text_muted.opacity(0.6))
+                            .child(SharedString::from(
+                                "Or continue in a workspace you belong to",
+                            )),
+                    )
+                    .child(div().flex().flex_col().gap(px(4.0)).children(
+                        rows.iter().enumerate().map(|(ix, row)| {
+                            let org_id = row.organization_id.clone();
+                            div()
+                                .id(("org-row", ix))
+                                .px(px(12.0))
+                                .py(px(8.0))
+                                .rounded(px(8.0))
+                                .border_1()
+                                .border_color(theme.border)
+                                .bg(theme.bg)
+                                .text_size(px(13.0))
+                                .text_color(theme.text)
+                                .when(submitting, |el| el.opacity(0.5))
+                                .cursor_pointer()
+                                .hover(|s| s.bg(crate::theme::wash(0.11)))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.select_org(org_id.clone(), cx);
+                                }))
+                                .child(SharedString::from(row.name.clone()))
+                        }),
+                    ))
+                    .into_any_element(),
+            };
+
+        // comet App.tsx OrgGate: w-400 card on the grid — logo, headline,
+        // explainer (+ signed-in email), name form with a white Create button,
+        // then existing memberships and the account escape hatch.
+        let blurb: SharedString = match email {
+            Some(email) => format!(
+                "Comet is organized around workspaces — create one for yourself or your team. Signed in as {email}."
+            )
+            .into(),
+            None => {
+                "Comet is organized around workspaces — create one for yourself or your team."
+                    .into()
+            }
+        };
+        let card = div()
+            .w(px(400.0))
+            .px(px(32.0))
+            .py(px(36.0))
+            .rounded(px(12.0))
+            .border_1()
+            .border_color(theme.border)
+            .bg(theme.surface_card)
+            .shadow_lg()
+            .flex()
+            .flex_col()
+            .child(
+                img(icons::logo_image())
+                    .w(px(24.4))
+                    .h(px(28.0))
+                    .opacity(0.9),
+            )
+            .child(
+                div()
+                    .mt(px(20.0))
+                    .text_size(px(18.0))
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_color(theme.text)
+                    .child(SharedString::from("Create your workspace")),
+            )
+            .child(
+                div()
+                    .mt(px(6.0))
+                    .mb(px(24.0))
+                    .text_size(px(13.0))
+                    .line_height(px(19.0))
+                    .text_color(theme.text_muted)
+                    .child(blurb),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .gap(px(8.0))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .h(px(36.0))
+                            .flex()
+                            .items_center()
+                            .px(px(12.0))
+                            .rounded(px(8.0))
+                            .border_1()
+                            .border_color(theme.border)
+                            .bg(theme.bg)
+                            .text_size(px(13.0))
+                            .child(name_input),
+                    )
+                    .child(
+                        div()
+                            .id("create-org")
+                            .h(px(36.0))
+                            .px(px(16.0))
+                            .flex()
+                            .items_center()
+                            .rounded(px(6.0))
+                            .bg(theme.text)
+                            .text_size(px(14.0))
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .text_color(theme.on_solid)
+                            .when(submitting, |el| el.opacity(0.5))
+                            .cursor_pointer()
+                            .hover(|s| s.opacity(0.9))
+                            .on_click(cx.listener(|this, _, _, cx| this.create_org(cx)))
+                            .child(SharedString::from(if submitting {
+                                "Creating…"
+                            } else {
+                                "Create"
+                            })),
+                    ),
+            )
+            .child(memberships)
+            .when_some(error, |el, message| {
+                el.child(
+                    div()
+                        .mt(px(16.0))
+                        .text_size(px(12.0))
+                        .line_height(px(17.0))
+                        .text_color(theme.danger_muted.opacity(0.9)) // red-300
+                        .child(message),
+                )
+            })
+            .child(
+                div().mt(px(24.0)).flex().flex_row().child(
+                    div()
+                        .id("org-signout")
+                        .text_size(px(12.0))
+                        .text_color(theme.text_muted.opacity(0.6))
+                        .cursor_pointer()
+                        .hover(|s| s.text_color(theme.text))
+                        .on_click(cx.listener(|this, _, _, cx| this.sign_out(cx)))
+                        .child(SharedString::from("Use a different account")),
+                ),
+            );
+
+        div()
+            .size_full()
+            .relative()
+            .bg(theme.bg)
+            .child(grid_backdrop(&theme))
+            .child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(motion::fade_in("org-gate-card", card)),
+            )
+            .into_any_element()
+    }
+
+}
