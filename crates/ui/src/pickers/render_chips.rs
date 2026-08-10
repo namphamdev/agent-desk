@@ -2,6 +2,7 @@
 
 use gpui::{AnyElement, Context, SharedString, div, prelude::*, px};
 
+use crate::dev_inspector::{InspectClickExt as _, InspectExt as _};
 use crate::motion;
 use crate::theme::Theme;
 
@@ -16,6 +17,11 @@ impl Pickers {
         label: SharedString,
         set: bool,
         chip_icon: Option<(&'static str, Option<gpui::Hsla>)>,
+        // A fetched ACP logo to prefer over the static `chip_icon` glyph (the
+        // picker rail / tabs / settings all render the agent's real mark this
+        // way). Rendered when `Ready`; `Pending`/`None` falls back to the
+        // static icon so the slot never blinks empty mid-fetch.
+        chip_logo: Option<crate::acp_logo::Logo>,
         suffix: Option<SharedString>,
         theme: &Theme,
         cx: &mut Context<Self>,
@@ -31,6 +37,8 @@ impl Pickers {
         // Ghost pill (comet composer/styles.tsx `pill`): `h-8 rounded-lg px-2.5
         // gap-1.5 text-[12px] font-medium text-muted-foreground`, icons size-4,
         // hover/open wash — no border, no caret; the actions row stays quiet.
+        let chip_inspect = crate::dev_inspector::inspect_meta(id);
+        let chip_hover_tag = chip_inspect.clone();
         div()
             .id(id)
             .h(px(32.0))
@@ -59,15 +67,25 @@ impl Pickers {
             } else {
                 motion::hover_blend(id, gpui::transparent_black(), theme.element_hover)
             })
-            .on_hover(motion::hover_listener(id))
+            .on_hover(move |hovered: &bool, window: &mut gpui::Window, cx: &mut gpui::App| {
+                motion::hover_listener(id)(&hovered, window, cx);
+                crate::dev_inspector::report_hover(&chip_hover_tag, *hovered, window, cx);
+            })
+            .inspect_click(chip_inspect)
             .cursor_pointer()
             .on_click(cx.listener(move |this, _, window, cx| this.toggle(kind, window, cx)))
             .when_some(chip_icon, |el, (path, tint)| {
-                el.child(
-                    crate::icons::icon(path)
+                let glyph: gpui::AnyElement = match &chip_logo {
+                    Some(crate::acp_logo::Logo::Ready(image)) => gpui::img(image.clone())
                         .size(px(16.0))
-                        .text_color(tint.unwrap_or(theme.text_muted)),
-                )
+                        .flex_none()
+                        .into_any_element(),
+                    _ => crate::icons::icon(path)
+                        .size(px(16.0))
+                        .text_color(tint.unwrap_or(theme.text_muted))
+                        .into_any_element(),
+                };
+                el.child(glyph)
             })
             .child(div().min_w_0().truncate().child(label))
             // The effort half of the combined model+effort chip: muted, no
@@ -95,6 +113,8 @@ impl Pickers {
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
         let open = self.open == Some(kind);
+        let chip_inspect = crate::dev_inspector::inspect_meta(id);
+        let chip_hover_tag = chip_inspect.clone();
         div()
             .id(id)
             .h(px(20.0))
@@ -117,7 +137,11 @@ impl Pickers {
             } else {
                 motion::hover_blend(id, gpui::transparent_black(), theme.element_hover)
             })
-            .on_hover(motion::hover_listener(id))
+            .on_hover(move |hovered: &bool, window: &mut gpui::Window, cx: &mut gpui::App| {
+                motion::hover_listener(id)(&hovered, window, cx);
+                crate::dev_inspector::report_hover(&chip_hover_tag, *hovered, window, cx);
+            })
+            .inspect_click(chip_inspect)
             .cursor_pointer()
             .on_click(cx.listener(move |this, _, window, cx| this.toggle(kind, window, cx)))
             .child(

@@ -11,6 +11,7 @@ use gpui::{
 };
 
 use crate::composer::{ComposerInput, ComposerInputEvent};
+use crate::dev_inspector::{self, InspectClickExt as _, InspectExt as _};
 use crate::popover::Loadable;
 use crate::settings::widgets;
 use crate::settings::{AiShortcut, KeymapConfig, ShortcutId, combo_from_keystroke, display_combo};
@@ -416,6 +417,7 @@ impl ShortcutsPage {
                     SharedString::from(format!("shortcut-model-row-{model}")),
                 )
                 .id(SharedString::from(format!("shortcut-model-row-{model}")))
+                .inspect_click(dev_inspector::inspect_meta("shortcut-model-row"))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.select_model(value.clone(), cx);
                 }))
@@ -442,6 +444,7 @@ impl ShortcutsPage {
         }
         let model_menu = crate::popover::popover_card(theme)
             .id("shortcut-model-menu")
+            .inspect_tag("shortcut-model-menu")
             .w(px(420.0))
             // `anchored_menu` pins its content's top-left to the trigger.
             // Keep the trigger visible and place the menu below it.
@@ -462,6 +465,7 @@ impl ShortcutsPage {
             .child(
                 div()
                     .id("shortcut-model-options")
+                    .inspect_tag("shortcut-model-options")
                     .max_h(px(260.0))
                     .overflow_y_scroll()
                     .children(model_rows),
@@ -470,6 +474,7 @@ impl ShortcutsPage {
         let model_selected = !selected_model.trim().is_empty();
         let model_trigger = div()
             .id("shortcut-model-trigger")
+            .inspect_tag("shortcut-model-trigger")
             .relative()
             .mt(px(7.0))
             .w(px(420.0))
@@ -542,6 +547,7 @@ impl ShortcutsPage {
                         .child(
                             div()
                                 .id("ai-shortcut-record")
+                                .inspect_tag("ai-shortcut-record")
                                 .min_w(px(110.0))
                                 .px(px(12.0))
                                 .py(px(7.0))
@@ -663,6 +669,7 @@ impl ShortcutsPage {
                         .child(
                             crate::popover::btn_primary(theme, "Save")
                                 .id("save-ai-shortcut")
+                                .inspect_tag("save-ai-shortcut")
                                 .when(!valid, |button| button.opacity(0.4))
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     if valid {
@@ -673,6 +680,7 @@ impl ShortcutsPage {
                         .child(
                             widgets::ghost_action(theme)
                                 .id("cancel-ai-shortcut")
+                                .inspect_tag("cancel-ai-shortcut")
                                 .hover(|s| widgets::ghost_hover(&theme, s))
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.ai_editor = None;
@@ -744,6 +752,7 @@ fn shortcut_chip(
 ) -> impl IntoElement {
     div()
         .id(id.into())
+        .inspect_tag("shortcut-chip")
         .px(px(9.0))
         .py(px(5.0))
         .rounded(px(7.0))
@@ -835,6 +844,7 @@ impl Render for ShortcutsPage {
                     el.child(
                         div()
                             .id(("shortcut-reset", ix))
+                            .inspect_tag("shortcut-reset")
                             .text_size(px(11.0))
                             .text_color(theme.text_muted.opacity(0.7))
                             .cursor_pointer()
@@ -850,6 +860,7 @@ impl Render for ShortcutsPage {
                 .child(
                     div()
                         .id(("shortcut-combo", ix))
+                        .inspect_tag("shortcut-combo")
                         .min_w(px(96.0))
                         .px(px(12.0))
                         .py(px(6.0))
@@ -901,6 +912,7 @@ impl Render for ShortcutsPage {
 
         div()
             .id("shortcuts-page")
+            .inspect_tag("shortcuts-page")
             .size_full()
             .overflow_y_scroll()
             .track_focus(&self.focus)
@@ -937,6 +949,7 @@ impl Render for ShortcutsPage {
                                 let disabled = !customized || recording.is_some();
                                 widgets::ghost_action(&theme)
                                     .id("shortcuts-restore-defaults")
+                                    .inspect_tag("shortcuts-restore-defaults")
                                     .flex_none()
                                     .when(disabled, |el| el.opacity(0.35))
                                     .when(!disabled, |el| {
@@ -980,6 +993,7 @@ impl Render for ShortcutsPage {
                             .child(
                                 widgets::ghost_action(&theme)
                                     .id("add-ai-shortcut")
+                                    .inspect_tag("add-ai-shortcut")
                                     .when(self.ai_editor.is_some(), |button| button.opacity(0.4))
                                     .hover(|s| widgets::ghost_hover(&theme, s))
                                     .on_click(cx.listener(|this, _, _, cx| {
@@ -1011,6 +1025,7 @@ impl Render for ShortcutsPage {
                         page.child(
                             widgets::error_strip(&theme, error)
                                 .id("shortcut-provider-error")
+                                .inspect_tag("shortcut-provider-error")
                                 .cursor_pointer()
                                 .on_click(cx.listener(|this, _, _, cx| this.load_providers(cx))),
                         )
@@ -1066,6 +1081,7 @@ impl Render for ShortcutsPage {
                                                     "edit-ai-shortcut-{}",
                                                     shortcut.id
                                                 )))
+                                                .inspect_tag("edit-ai-shortcut")
                                                 .hover(|s| widgets::ghost_hover(&theme, s))
                                                 .on_click(cx.listener(move |this, _, _, cx| {
                                                     this.open_ai_editor(Some(edit.clone()), cx)
@@ -1078,6 +1094,7 @@ impl Render for ShortcutsPage {
                                                     "delete-ai-shortcut-{}",
                                                     shortcut.id
                                                 )))
+                                                .inspect_tag("delete-ai-shortcut")
                                                 .hover(|s| widgets::ghost_hover(&theme, s))
                                                 .on_click(cx.listener(move |this, _, _, cx| {
                                                     this.delete_ai_shortcut(delete_id.clone(), cx)

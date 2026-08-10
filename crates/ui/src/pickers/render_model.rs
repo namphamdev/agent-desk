@@ -6,6 +6,7 @@ use gpui::{AnyElement, Context, SharedString, div, prelude::*, px};
 use comet_engine::registry::HarnessDescriptor;
 use comet_proto::HarnessId;
 
+use crate::dev_inspector::{self, InspectClickExt as _, InspectExt as _};
 use crate::popover::{self, Loadable};
 use crate::theme::Theme;
 
@@ -71,11 +72,19 @@ impl Pickers {
                         let is_disabled = locked && !is_viewed;
                         let (icon_path, tint) =
                             harness_brand_icon(harness, acp_agent_id.as_deref());
-                        let acp_logo =
-                            crate::acp_logo::harness_logo_for(harness, acp_agent_id.as_deref(), cx);
+                        // Prefer the icon URL carried by the descriptor (always
+                        // populated by the engine for ACP agents that declare
+                        // one) so the logo renders without depending on the
+                        // ICON_URLS global being warmed by the settings page.
+                        let acp_logo = descriptor
+                            .icon
+                            .as_deref()
+                            .filter(|u| !u.is_empty())
+                            .map(|url| crate::acp_logo::logo(url, cx));
                         let name: SharedString = descriptor.name.clone().into();
                         div()
                             .id(("harness-tab", ix))
+                            .inspect_tag("harness-tab")
                             .h(px(30.0))
                             .px(px(8.0))
                             .flex()
@@ -174,6 +183,7 @@ impl Pickers {
                                 el.shadow(crate::theme::card_selected_shadows())
                             })
                             .id(("model-row", ix))
+                            .inspect_click(dev_inspector::inspect_meta("model-row"))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.pick_model(id.clone(), cx);
                             }))
@@ -274,6 +284,7 @@ impl Pickers {
                                 div().flex_1().min_h_0().pb(px(4.0)).child(
                                     div()
                                         .id("model-menu-scroll")
+                                        .inspect_tag("model-menu-scroll")
                                         .size_full()
                                         .flex()
                                         .flex_col()
@@ -342,6 +353,7 @@ impl Pickers {
                             let is_active = current == Some(level);
                             trait_chip(&theme, is_active)
                                 .id(("reasoning-row", ix))
+                                .inspect_tag("reasoning-row")
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.pick_reasoning(level, cx);
                                 }))
@@ -384,6 +396,7 @@ impl Pickers {
                                         let is_default = choice.id == default_choice;
                                         trait_chip(&theme, is_active)
                                             .id(("trait-choice", opt_ix * 32 + choice_ix))
+                                            .inspect_tag("trait-choice")
                                             .on_click(cx.listener(move |this, _, _, cx| {
                                                 this.pick_option(
                                                     option_id.clone(),
@@ -417,6 +430,7 @@ impl Pickers {
         let body = self.render_traits_sections(cx);
         div()
             .id("traits-scroll")
+            .inspect_tag("traits-scroll")
             .max_h(px(360.0))
             .overflow_y_scroll()
             .p(px(4.0))

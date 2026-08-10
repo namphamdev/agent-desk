@@ -14,6 +14,7 @@ use comet_doc::{MessagePart, MessageRole, SessionMessageEntry};
 
 use crate::motion;
 use crate::popover;
+use crate::dev_inspector::{InspectClickExt as _, InspectExt as _};
 use crate::theme::Theme;
 use crate::transcript::Transcript;
 
@@ -517,6 +518,8 @@ impl Transcript {
                     // mount helper), so the frost wrap happens here.
                     crate::frost::frosted(12.0, 16.0, card).into_any_element()
                 });
+                let tick_inspect = crate::dev_inspector::inspect_meta("rail-tick");
+                let tick_hover_tag = tick_inspect.clone();
                 div()
                     .id(("rail-tick", ix))
                     .relative()
@@ -525,10 +528,12 @@ impl Transcript {
                     .flex()
                     .items_center()
                     .cursor_pointer()
-                    .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                    .on_hover(cx.listener(move |this, hovered: &bool, window, cx| {
                         this.set_rail_hover(if *hovered { Some(ix) } else { None });
+                        crate::dev_inspector::report_hover(&tick_hover_tag, *hovered, window, cx);
                         cx.notify();
                     }))
+                    .inspect_click(tick_inspect)
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.scroll_to_row(row, cx);
                     }))

@@ -9,6 +9,7 @@ use gpui::{
 use gpui_tokio::Tokio;
 
 use crate::icons::{self, icon};
+use crate::dev_inspector::{self, InspectClickExt as _, InspectExt as _};
 use crate::motion::{self, AnimationExt as _};
 use crate::popover::{self};
 use crate::theme::Theme;
@@ -113,6 +114,7 @@ impl Shell {
             .child(
                 div()
                     .id("sidebar-activity-toggle")
+                    .inspect_tag("sidebar-activity-toggle")
                     .size(px(24.0))
                     .flex()
                     .items_center()
@@ -151,6 +153,7 @@ impl Shell {
                     .child(
                         div()
                             .id("sidebar-lists")
+                            .inspect_tag("sidebar-lists")
                             .size_full()
                             .overflow_y_scroll()
                             .track_scroll(&self.sidebar_scroll)
@@ -329,6 +332,7 @@ impl Shell {
                 el.child(
                     div()
                         .id("sidebar-notice")
+                        .inspect_tag("sidebar-notice")
                         .mx(px(Theme::SPACE_SM))
                         .mb(px(Theme::SPACE_SM))
                         .px(px(Theme::SPACE_SM))
@@ -392,6 +396,7 @@ impl Shell {
 
         let mut strip = div()
             .id("update-strip")
+            .inspect_tag("update-strip")
             .mx(px(Theme::SPACE_SM))
             // No bottom margin: the user-menu block below carries its own
             // SPACE_SM padding — doubling it read as a hole (user report).
@@ -514,6 +519,8 @@ impl Shell {
             .map(|c| c.to_uppercase().to_string())
             .unwrap_or_else(|| "?".into())
             .into();
+        let user_menu_inspect = crate::dev_inspector::inspect_meta("user-menu");
+        let user_menu_hover_tag = user_menu_inspect.clone();
         let mut trigger = div()
             .id("user-menu")
             .flex_none()
@@ -537,7 +544,11 @@ impl Shell {
                     theme.glass_hover().opacity(0.8),
                 )
             })
-            .on_hover(motion::hover_listener("user-menu-trigger"))
+            .on_hover(move |hovered: &bool, window: &mut gpui::Window, cx: &mut gpui::App| {
+                motion::hover_listener("user-menu-trigger")(&hovered, window, cx);
+                crate::dev_inspector::report_hover(&user_menu_hover_tag, *hovered, window, cx);
+            })
+            .inspect_click(user_menu_inspect)
             .on_click(cx.listener(|this, _, _, cx| {
                 // A click that just dismissed the menu (outside-click on the
                 // trigger) must not instantly reopen it.
@@ -618,6 +629,7 @@ impl Shell {
                 .child(
                     popover::menu_row(theme, false, "user-menu-settings")
                         .id("user-menu-settings")
+                        .inspect_click(dev_inspector::inspect_meta("user-menu-settings"))
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.open_settings(SettingsSection::Devices, cx)
                         }))
@@ -632,6 +644,7 @@ impl Shell {
                 .child(
                     popover::menu_row(theme, false, "user-menu-signout")
                         .id("user-menu-signout")
+                        .inspect_click(dev_inspector::inspect_meta("user-menu-signout"))
                         .on_click(cx.listener(|this, _, _, cx| this.sign_out(cx)))
                         .child(
                             icon(icons::LOGOUT_2)

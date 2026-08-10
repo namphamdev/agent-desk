@@ -5,6 +5,7 @@ use gpui::{AnyElement, Context, KeyDownEvent, SharedString, div, prelude::*, px}
 
 use comet_proto::PermissionMode;
 
+use crate::dev_inspector::{self, InspectClickExt as _, InspectExt as _};
 use crate::popover::{self, Loadable};
 use crate::theme::Theme;
 
@@ -69,6 +70,7 @@ impl Pickers {
             .child(
                 div()
                     .id(id)
+                    .inspect_tag(id)
                     .px(px(Theme::SPACE_SM))
                     .py(px(3.0))
                     .rounded(px(Theme::CONTROL_RADIUS))
@@ -136,6 +138,7 @@ impl Pickers {
                     let selected = session_branch.or_else(|| self.config.branch.clone());
                     div()
                         .id("branch-list")
+                        .inspect_tag("branch-list")
                         .flex()
                         .flex_col()
                         .gap(px(2.0))
@@ -162,6 +165,7 @@ impl Pickers {
                                     format!("branch-row-{ix}"),
                                 )
                                 .id(("branch-row", ix))
+                                .inspect_click(dev_inspector::inspect_meta("branch-row"))
                                 .when(switching.is_some(), |el| el.opacity(0.55))
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.pick_ref(row.clone(), cx);
@@ -269,6 +273,7 @@ impl Pickers {
                             format!("checkout-row-{ix}"),
                         )
                         .id(("checkout-row", ix))
+                        .inspect_click(dev_inspector::inspect_meta("checkout-row"))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.pick_checkout(kind, cx);
                         }))
@@ -328,6 +333,7 @@ impl Pickers {
                             format!("permission-row-{ix}"),
                         )
                         .id(("permission-row", ix))
+                        .inspect_click(dev_inspector::inspect_meta("permission-row"))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.pick_permission(mode, cx);
                         }))

@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use gpui::{App, Context, Entity, EventEmitter, Window, div, prelude::*, px};
 
 use crate::composer::ComposerInput;
+use crate::dev_inspector::InspectExt as _;
 use crate::settings::widgets;
 use crate::state::AppState;
 use crate::theme::Theme;
@@ -240,17 +241,20 @@ impl Render for WorkflowsPage {
                         .child(
                             crate::popover::btn_primary(theme, "Save")
                                 .id("workflows-save-global")
+                                .inspect_tag("workflows-save-global")
                                 .on_click(cx.listener(|this, _, _, cx| this.save_global(cx))),
                         )
                         .child(
                             widgets::ghost_action(theme)
                                 .id("workflows-clear-global")
+                                .inspect_tag("workflows-clear-global")
                                 .child("Clear")
                                 .on_click(cx.listener(|this, _, _, cx| this.clear_global(cx))),
                         )
                         .child(
                             widgets::ghost_action(theme)
                                 .id("workflows-load-builtins")
+                                .inspect_tag("workflows-load-builtins")
                                 .child("Load built-ins")
                                 .on_click(cx.listener(|this, _, _, cx| this.load_builtins(cx))),
                         ),
@@ -301,11 +305,13 @@ impl Render for WorkflowsPage {
                         .child(
                             crate::popover::btn_primary(theme, "Save")
                                 .id("workflows-save-project")
+                                .inspect_tag("workflows-save-project")
                                 .on_click(cx.listener(|this, _, _, cx| this.save_project(cx))),
                         )
                         .child(
                             widgets::ghost_action(theme)
                                 .id("workflows-clear-project")
+                                .inspect_tag("workflows-clear-project")
                                 .child("Clear")
                                 .on_click(cx.listener(|this, _, _, cx| this.clear_project(cx))),
                         ),
@@ -314,6 +320,7 @@ impl Render for WorkflowsPage {
 
         div()
             .id("workflows-page")
+            .inspect_tag("workflows-page")
             .size_full()
             .overflow_y_scroll()
             .child(

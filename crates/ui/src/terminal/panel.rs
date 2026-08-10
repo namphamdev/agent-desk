@@ -25,6 +25,7 @@ use gpui::{
 use comet_proto::{TerminalEvent, TerminalSession};
 use comet_rpc::methods;
 
+use crate::dev_inspector::{InspectClickExt as _, InspectExt as _};
 use crate::motion::{self, AnimationExt as _, TAB_SLIDE};
 use crate::settings::{TERMINAL_MAX_VH, TERMINAL_MIN_HEIGHT};
 use crate::state::{AppState, EngineHandle};
@@ -846,11 +847,76 @@ impl TerminalPanel {
 
         let bar_chat = chat_owned.clone();
         let drop_chat = chat_owned.clone();
+        // New-tab button (hoisted so the inspector tags can be created before
+        // the element chain that owns the on_hover).
+        let new_tab_inspect = crate::dev_inspector::inspect_meta("terminal-new-tab");
+        let new_tab_hover_tag = new_tab_inspect.clone();
+        let new_tab_button = div()
+            .id("terminal-new-tab")
+            .size(px(28.0))
+            .flex_none()
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(px(8.0))
+            .cursor_pointer()
+            // comet terminal-panel.tsx icon buttons: `transition-colors`.
+            .bg(motion::hover_blend(
+                "term-new-tab",
+                gpui::transparent_black(),
+                crate::theme::ink(0.05),
+            ))
+            .on_hover(move |hovered: &bool, window: &mut Window, cx: &mut App| {
+                motion::hover_listener("term-new-tab")(&hovered, window, cx);
+                crate::dev_inspector::report_hover(&new_tab_hover_tag, *hovered, window, cx);
+            })
+            .inspect_click(new_tab_inspect)
+            .on_click(cx.listener(|this, _, _, cx| {
+                if let Some(chat) = this.selected_chat(cx) {
+                    this.open_tab(chat, cx);
+                }
+            }))
+            .child(
+                crate::icons::icon(crate::icons::PLUS)
+                    .size(px(16.0))
+                    .text_color(theme.text_muted.opacity(0.6)),
+            );
+        // Collapse chevron (hoisted for the same reason).
+        let collapse_inspect = crate::dev_inspector::inspect_meta("terminal-collapse");
+        let collapse_hover_tag = collapse_inspect.clone();
+        let collapse_button = div()
+            .id("terminal-collapse")
+            .size(px(28.0))
+            .flex_none()
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(px(8.0))
+            .cursor_pointer()
+            .bg(motion::hover_blend(
+                "term-collapse",
+                gpui::transparent_black(),
+                crate::theme::ink(0.05),
+            ))
+            .on_hover(move |hovered: &bool, window: &mut Window, cx: &mut App| {
+                motion::hover_listener("term-collapse")(&hovered, window, cx);
+                crate::dev_inspector::report_hover(&collapse_hover_tag, *hovered, window, cx);
+            })
+            .inspect_click(collapse_inspect)
+            .on_click(|_, window, cx| {
+                window.dispatch_action(Box::new(ToggleTerminal), cx);
+            })
+            .child(
+                crate::icons::icon(crate::icons::ALT_ARROW_DOWN)
+                    .size(px(13.0))
+                    .text_color(theme.text_muted.opacity(0.55)),
+            );
         // Comet terminal-panel.tsx: `flex h-10 items-center border-b
         // border-white/[0.07] pl-2 pr-1.5` on the #090909 panel — no separate
         // bar fill.
         div()
             .id("terminal-tab-bar")
+            .inspect_tag("terminal-tab-bar")
             .h(px(TAB_BAR_HEIGHT))
             .flex_none()
             .flex()
@@ -905,6 +971,7 @@ impl TerminalPanel {
                         };
                         let close_btn = div()
                             .id(("terminal-tab-close", key))
+                            .inspect_tag("terminal-tab-close")
                             .size(px(20.0))
                             .flex_none()
                             .flex()
@@ -923,6 +990,8 @@ impl TerminalPanel {
                                     .size(px(12.0))
                                     .text_color(theme.text_muted.opacity(0.8)),
                             );
+                        let tab_inspect = crate::dev_inspector::inspect_meta("terminal-tab");
+                        let tab_hover_tag = tab_inspect.clone();
                         let tab_el = div()
                             .id(("terminal-tab", key))
                             .w(px(TAB_WIDTH))
@@ -941,7 +1010,11 @@ impl TerminalPanel {
                                 bg,
                                 theme.element_hover,
                             ))
-                            .on_hover(motion::hover_listener(format!("term-tab-{key}")))
+                            .on_hover(move |hovered: &bool, window: &mut Window, cx: &mut App| {
+                                motion::hover_listener(format!("term-tab-{key}"))(&hovered, window, cx);
+                                crate::dev_inspector::report_hover(&tab_hover_tag, *hovered, window, cx);
+                            })
+                            .inspect_click(tab_inspect)
                             .text_size(px(12.0))
                             .text_color(text_color)
                             .cursor_pointer()
@@ -1003,61 +1076,10 @@ impl TerminalPanel {
                         }
                     }),
             )
-            .child(
-                div()
-                    .id("terminal-new-tab")
-                    .size(px(28.0))
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded(px(8.0))
-                    .cursor_pointer()
-                    // comet terminal-panel.tsx icon buttons: `transition-colors`.
-                    .bg(motion::hover_blend(
-                        "term-new-tab",
-                        gpui::transparent_black(),
-                        crate::theme::ink(0.05),
-                    ))
-                    .on_hover(motion::hover_listener("term-new-tab"))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        if let Some(chat) = this.selected_chat(cx) {
-                            this.open_tab(chat, cx);
-                        }
-                    }))
-                    .child(
-                        crate::icons::icon(crate::icons::PLUS)
-                            .size(px(16.0))
-                            .text_color(theme.text_muted.opacity(0.6)),
-                    ),
-            )
+            .child(new_tab_button)
             // Collapse chevron pinned right (comet "Hide terminal" ⌘J).
             .child(div().flex_1())
-            .child(
-                div()
-                    .id("terminal-collapse")
-                    .size(px(28.0))
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded(px(8.0))
-                    .cursor_pointer()
-                    .bg(motion::hover_blend(
-                        "term-collapse",
-                        gpui::transparent_black(),
-                        crate::theme::ink(0.05),
-                    ))
-                    .on_hover(motion::hover_listener("term-collapse"))
-                    .on_click(|_, window, cx| {
-                        window.dispatch_action(Box::new(ToggleTerminal), cx);
-                    })
-                    .child(
-                        crate::icons::icon(crate::icons::ALT_ARROW_DOWN)
-                            .size(px(13.0))
-                            .text_color(theme.text_muted.opacity(0.55)),
-                    ),
-            )
+            .child(collapse_button)
     }
 }
 
@@ -1096,6 +1118,7 @@ impl Render for TerminalPanel {
             .child(
                 div()
                     .id("terminal-body")
+                    .inspect_tag("terminal-body")
                     .flex_1()
                     .min_h_0()
                     .key_context("Terminal")

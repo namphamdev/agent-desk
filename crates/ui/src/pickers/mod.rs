@@ -218,6 +218,28 @@ impl Render for Pickers {
                 crate::icons::CLAUDE_MARK,
                 Some(crate::icons::claude_brand()),
             ));
+        // Prefer the ACP agent's fetched logo over the static brand glyph in
+        // the model chip (same resolution as the picker rail and tabs). Falls
+        // back to `harness_icon` while a logo is pending/unavailable. Try the
+        // descriptor's icon URL first (always populated by the engine), then
+        // the ICON_URLS global as a fallback (warmed by the settings page).
+        let effective_acp_agent_id = self.effective_acp_agent_id(cx);
+        let descriptor_icon_url = self
+            .harnesses
+            .ready()
+            .and_then(|list| {
+                list.iter().find(|d| {
+                    d.id == HarnessId::Acp && d.acp_agent_id == effective_acp_agent_id
+                })
+            })
+            .and_then(|d| d.icon.clone());
+        let harness_logo = self.effective_harness(cx).and_then(|harness| {
+            if let Some(url) = descriptor_icon_url.as_deref().filter(|u| !u.is_empty()) {
+                Some(crate::acp_logo::logo(url, cx))
+            } else {
+                crate::acp_logo::harness_logo_for(harness, effective_acp_agent_id.as_deref(), cx)
+            }
+        });
         let explicit_options = self.explicit_options(cx);
         let traits_set = traits_summary(
             self.selected_model(cx),
@@ -279,6 +301,7 @@ impl Render for Pickers {
             model_label,
             true,
             Some(harness_icon),
+            harness_logo,
             None,
             &theme,
             cx,
@@ -295,6 +318,7 @@ impl Render for Pickers {
                 traits_set.is_some(),
                 None,
                 None,
+                None,
                 &theme,
                 cx,
             )
@@ -303,6 +327,7 @@ impl Render for Pickers {
             PickerKind::Permission,
             permission_label,
             true,
+            None,
             None,
             None,
             &theme,

@@ -13,6 +13,7 @@ use gpui::{
 
 use comet_doc::MessageRole;
 
+use crate::dev_inspector::{InspectClickExt as _, InspectExt as _};
 use crate::markdown::highlight::{Token, lang_for_tag};
 use crate::markdown::parser::{Block, BlockTree};
 use crate::markdown::render::{self, RenderOptions};
@@ -251,6 +252,7 @@ impl Transcript {
                 .child(
                     div()
                         .id(SharedString::from(format!("message-copy-{}", row.entry_id)))
+                        .inspect_tag("message-copy")
                         .h(px(24.0))
                         .px(px(8.0))
                         .flex()
@@ -296,6 +298,7 @@ impl Transcript {
                             "message-new-thread-{}",
                             row.entry_id
                         )))
+                        .inspect_tag("message-new-thread")
                         .h(px(24.0))
                         .px(px(8.0))
                         .flex()
@@ -324,9 +327,11 @@ impl Transcript {
         });
         let entry_id = row.entry_id.clone();
         let row_id = row.id.clone();
+        let row_inspect = crate::dev_inspector::inspect_meta("message-row");
+        let row_hover_tag = row_inspect.clone();
         div()
             .id(row.id.clone())
-            .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+            .on_hover(cx.listener(move |this, hovered: &bool, window, cx| {
                 if *hovered {
                     let next = Some((row_id.clone(), entry_id.clone()));
                     if this.hovered_entry != next {
@@ -350,7 +355,9 @@ impl Transcript {
                     this.hovered_entry = None;
                     cx.notify();
                 }
+                crate::dev_inspector::report_hover(&row_hover_tag, *hovered, window, cx);
             }))
+            .inspect_click(row_inspect)
             .w_full()
             .flex()
             .justify_center()
@@ -525,6 +532,7 @@ impl Transcript {
         // chips' guide rail, then the quiet 12px summary.
         let header = div()
             .id(SharedString::from(format!("{row_id}-hdr")))
+            .inspect_tag("tool-group-header")
             .flex()
             .flex_row()
             .items_center()
@@ -630,6 +638,7 @@ impl Transcript {
             .child(
                 div()
                     .id(SharedString::from(format!("error-copy-{row_id}")))
+                    .inspect_tag("error-copy")
                     .h(px(34.0))
                     .w_full()
                     .flex()

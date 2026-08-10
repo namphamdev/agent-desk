@@ -313,6 +313,8 @@ impl Shell {
                 // click-to-activate never fires when closing.
                 let dot = spaces::status_dot_color(status, &theme);
                 let trailing_hover_id = id.clone();
+                let close_inspect = dev_inspector::inspect_meta("session-tab-close");
+                let close_hover_tag = close_inspect.clone();
                 let trailing: AnyElement = div()
                     .id(SharedString::from(format!("session-tab-close-{id}")))
                     .size(px(20.0))
@@ -321,12 +323,13 @@ impl Shell {
                     .items_center()
                     .justify_center()
                     .rounded(px(6.0))
-                    .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                    .on_hover(cx.listener(move |this, hovered: &bool, window, cx| {
                         if *hovered {
                             this.tab_hover = Some(trailing_hover_id.clone());
                         } else if this.tab_hover.as_deref() == Some(trailing_hover_id.as_str()) {
                             this.tab_hover = None;
                         }
+                        dev_inspector::report_hover(&close_hover_tag, *hovered, window, cx);
                         cx.notify();
                     }))
                     .when(is_hovered, |el| {
@@ -364,7 +367,10 @@ impl Shell {
                             |el| el.child(div().size(px(6.0)).rounded_full().bg(dot)),
                         )
                     })
+                    .inspect_click(close_inspect)
                     .into_any_element();
+                let tab_inspect = dev_inspector::inspect_meta("session-tab");
+                let tab_hover_tag = tab_inspect.clone();
                 let tab_el = div()
                     .id(SharedString::from(format!("session-tab-{id}")))
                     .w(px(SESSION_TAB_WIDTH))
@@ -437,12 +443,13 @@ impl Shell {
                     // Track hover in Shell state: the trailing slot flips
                     // between dot and close button (hover_blend only fades
                     // colors; child swaps need real state).
-                    .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                    .on_hover(cx.listener(move |this, hovered: &bool, window, cx| {
                         if *hovered {
                             this.tab_hover = Some(hover_id.clone());
                         } else if this.tab_hover.as_deref() == Some(hover_id.as_str()) {
                             this.tab_hover = None;
                         }
+                        dev_inspector::report_hover(&tab_hover_tag, *hovered, window, cx);
                         cx.notify();
                     }))
                     .on_click(cx.listener(move |this, _, _, cx| {
@@ -460,7 +467,8 @@ impl Shell {
                     )
                     .when_some(brand_glyph, |el, glyph| el.child(glyph))
                     .child(div().flex_1().min_w_0().truncate().child(title))
-                    .child(trailing);
+                    .child(trailing)
+                    .inspect_click(tab_inspect);
 
                 tab_el.into_any_element()
             })
@@ -468,6 +476,8 @@ impl Shell {
 
         // `+` — the new-session canvas "is" the unmaterialized tab, so the
         // button carries the active wash while the canvas shows.
+        let new_inspect = dev_inspector::inspect_meta("new-session-tab");
+        let new_hover_tag = new_inspect.clone();
         let new_tab = div()
             .id("session-tab-new")
             .size(px(28.0))
@@ -489,8 +499,12 @@ impl Shell {
             .when(on_canvas && has_space, |el| {
                 el.shadow(crate::theme::glass_selected_shadows())
             })
-            .on_hover(motion::hover_listener("session-tab-new"))
+            .on_hover(move |hovered: &bool, window: &mut Window, cx: &mut App| {
+                motion::hover_listener("session-tab-new")(&hovered, window, cx);
+                dev_inspector::report_hover(&new_hover_tag, *hovered, window, cx);
+            })
             .occlude()
+            .inspect_click(new_inspect)
             .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
             .on_click(cx.listener(|this, _, _, cx| {
                 cx.stop_propagation();
@@ -613,6 +627,7 @@ impl Shell {
         let muted = theme.text_muted;
         let prev_arrow = div()
             .id("session-tab-prev")
+            .inspect_tag("tab-prev-arrow")
             .size(px(20.0))
             .flex_none()
             .flex()
@@ -630,6 +645,7 @@ impl Shell {
             .child(icon(icons::ARROW_LEFT).size(px(14.0)).text_color(muted));
         let next_arrow = div()
             .id("session-tab-next")
+            .inspect_tag("tab-next-arrow")
             .size(px(20.0))
             .flex_none()
             .flex()
@@ -663,6 +679,7 @@ impl Shell {
                 el.child(
                     div()
                         .id("review-session")
+                        .inspect_tag("review-session-button")
                         .h(px(26.0))
                         .px(px(8.0))
                         .flex_none()

@@ -8,6 +8,7 @@ use gpui::{
 };
 
 use crate::composer::{ComposerInput, ComposerInputEvent};
+use crate::dev_inspector::{self, InspectClickExt as _, InspectExt as _};
 use crate::popover::{self, Loadable};
 use crate::settings::widgets;
 use crate::state::AppState;
@@ -401,6 +402,7 @@ impl ProvidersPage {
             .child(
                 widgets::ghost_action(theme)
                     .id(SharedString::from(format!("edit-provider-{}", provider.id)))
+                    .inspect_tag("edit-provider")
                     .hover(|s| widgets::ghost_hover(&theme, s))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         if !this.busy {
@@ -415,6 +417,7 @@ impl ProvidersPage {
                         "delete-provider-{}",
                         provider.id
                     )))
+                    .inspect_tag("delete-provider")
                     .when(self.busy, |button| button.opacity(0.45))
                     .hover(|s| widgets::ghost_hover(&theme, s))
                     .on_click(cx.listener(move |this, _, _, cx| {
@@ -519,6 +522,7 @@ impl ProvidersPage {
                 "codex-subagent-model-default-row",
             )
             .id("codex-subagent-model-default-row")
+            .inspect_click(dev_inspector::inspect_meta("codex-subagent-model-default-row"))
             .on_click(cx.listener(move |this, _, _, cx| {
                 if !this.busy {
                     this.set_codex_subagent_model(default_provider_id.clone(), None, cx);
@@ -541,6 +545,7 @@ impl ProvidersPage {
                     "codex-subagent-model-row-{}",
                     model.id
                 )))
+                .inspect_click(dev_inspector::inspect_meta("codex-subagent-model-row"))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     if !this.busy {
                         this.set_codex_subagent_model(
@@ -571,6 +576,7 @@ impl ProvidersPage {
         }
         let menu = popover::popover_card(theme)
             .id("codex-subagent-model-menu")
+            .inspect_tag("codex-subagent-model-menu")
             .w(px(340.0))
             // `anchored_menu` pins its top-left to the trigger; offset the
             // menu so it opens below the select field instead of covering it.
@@ -588,6 +594,7 @@ impl ProvidersPage {
             .child(
                 div()
                     .id("codex-subagent-model-options")
+                    .inspect_tag("codex-subagent-model-options")
                     .max_h(px(260.0))
                     .overflow_y_scroll()
                     .children(rows),
@@ -595,6 +602,7 @@ impl ProvidersPage {
             .into_any_element();
         let trigger = div()
             .id("codex-subagent-model-trigger")
+            .inspect_tag("codex-subagent-model-trigger")
             .relative()
             .mt(px(9.0))
             .w(px(340.0))
@@ -754,6 +762,7 @@ impl ProvidersPage {
                         .child(
                             crate::popover::btn_primary(theme, "Save")
                                 .id("save-custom-provider")
+                                .inspect_tag("save-custom-provider")
                                 .when(!valid || self.busy, |button| button.opacity(0.45))
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     if valid && !this.busy {
@@ -764,6 +773,7 @@ impl ProvidersPage {
                         .child(
                             widgets::ghost_action(theme)
                                 .id("cancel-custom-provider")
+                                .inspect_tag("cancel-custom-provider")
                                 .hover(|s| widgets::ghost_hover(&theme, s))
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     if !this.busy {
@@ -815,6 +825,7 @@ fn selection_button(
 ) -> impl IntoElement {
     div()
         .id(id.into())
+        .inspect_tag("provider-selection-button")
         .px(px(9.0))
         .py(px(5.0))
         .rounded(px(7.0))
@@ -925,6 +936,7 @@ impl gpui::Render for ProvidersPage {
 
         div()
             .id("providers-page")
+            .inspect_tag("providers-page")
             .size_full()
             .overflow_y_scroll()
             .child(
@@ -942,6 +954,7 @@ impl gpui::Render for ProvidersPage {
                             .child(
                                 widgets::ghost_action(&theme)
                                     .id("add-custom-provider")
+                                    .inspect_tag("add-custom-provider")
                                     .when(self.editor.is_some() || self.busy, |button| {
                                         button.opacity(0.45)
                                     })
@@ -967,6 +980,7 @@ impl gpui::Render for ProvidersPage {
                         page.child(
                             widgets::error_strip(&theme, error)
                                 .id("providers-load-error")
+                                .inspect_tag("providers-load-error")
                                 .cursor_pointer()
                                 .on_click(cx.listener(|this, _, _, cx| this.load(cx))),
                         )

@@ -14,6 +14,7 @@ mod shell_render_sidebar;
 mod shell_render_activity;
 mod shell_render_main;
 mod shell_render_gate;
+mod shell_render_inspector;
 mod render_fns;
 pub(crate) use render_fns::header_icon_button;
 #[cfg(test)]
@@ -31,7 +32,7 @@ pub(crate) use nav::{
 
 use std::path::PathBuf;
 
-actions!(shell, [ToggleSidebar, ToggleChanges, AddSpacePalette]);
+actions!(shell, [ToggleSidebar, ToggleChanges, AddSpacePalette, ToggleInspector]);
 
 use chrono::Utc;
 use gpui::{
@@ -44,6 +45,7 @@ use comet_rpc::methods;
 
 use crate::changes::Changes;
 use crate::composer::{Composer, ComposerInput, ComposerInputEvent};
+use crate::dev_inspector::{self, InspectClickExt as _, InspectExt as _};
 use crate::icons::{self, icon};
 use crate::loaders;
 use crate::motion::{self, AnimationExt as _};
@@ -327,6 +329,14 @@ impl Render for Shell {
                 } else {
                     this.open_add_space(cx);
                 }
+            }))
+            .on_action(cx.listener(|_, _: &ToggleInspector, _, cx| {
+                if crate::dev_inspector::InspectorState::feature_enabled() {
+                    let state = crate::dev_inspector::global_state(cx);
+                    state.toggle_picking();
+                    state.clear_selection();
+                    cx.notify();
+                }
             }));
 
         let root = match &gate {
@@ -504,6 +514,14 @@ impl Render for Shell {
         if self.motion_active.get() | motion::hover_fades_active() {
             window.request_animation_frame();
         }
+
+        // Agent debug inspector overlay (fixed bottom-right icon + pick mode).
+        // Zero-cost in release builds without COMET_INSPECTOR (renders empty div).
+        let root = if crate::dev_inspector::InspectorState::feature_enabled() {
+            root.child(self.render_inspector_overlay(window, cx))
+        } else {
+            root
+        };
 
         // Boot splash overlay: visible → crossfades out on Ready → removed.
         match self.splash {

@@ -11,6 +11,7 @@ use gpui::{
 };
 
 use crate::theme::Theme;
+use crate::dev_inspector::{InspectClickExt as _, InspectExt as _};
 
 use super::{MermaidUi, RenderOptions, CODE_LINE_HEIGHT, CODE_TEXT_SIZE};
 
@@ -245,6 +246,8 @@ pub fn mermaid_image_card(
         let source_text: SharedString = source.to_string().into();
         let handler = ui.copy.clone();
         let fade_key = format!("{viewer_key}-copy");
+        let copy_inspect = crate::dev_inspector::inspect_meta("mermaid-copy");
+        let copy_hover_tag = copy_inspect.clone();
         div()
             .id(SharedString::from(fade_key.clone()))
             .h(px(22.0))
@@ -259,7 +262,11 @@ pub fn mermaid_image_card(
                 crate::theme::white_alpha(0.10),
                 crate::theme::white_alpha(0.18),
             ))
-            .on_hover(crate::motion::hover_listener(fade_key))
+            .on_hover(move |hovered: &bool, window: &mut gpui::Window, cx: &mut gpui::App| {
+                crate::motion::hover_listener(fade_key.clone())(&hovered, window, cx);
+                crate::dev_inspector::report_hover(&copy_hover_tag, *hovered, window, cx);
+            })
+            .inspect_click(copy_inspect)
             .text_color(gpui::white())
             .on_click(move |_, window, cx| handler(ix, source_text.clone(), window, cx))
             .child(
@@ -274,6 +281,8 @@ pub fn mermaid_image_card(
     let expand_button = ui.map(|ui| {
         let handler = ui.fullscreen.clone();
         let fade_key = format!("{viewer_key}-expand");
+        let expand_inspect = crate::dev_inspector::inspect_meta("mermaid-expand");
+        let expand_hover_tag = expand_inspect.clone();
         div()
             .id(SharedString::from(fade_key.clone()))
             .h(px(22.0))
@@ -288,7 +297,11 @@ pub fn mermaid_image_card(
                 crate::theme::white_alpha(0.10),
                 crate::theme::white_alpha(0.18),
             ))
-            .on_hover(crate::motion::hover_listener(fade_key))
+            .on_hover(move |hovered: &bool, window: &mut gpui::Window, cx: &mut gpui::App| {
+                crate::motion::hover_listener(fade_key.clone())(&hovered, window, cx);
+                crate::dev_inspector::report_hover(&expand_hover_tag, *hovered, window, cx);
+            })
+            .inspect_click(expand_inspect)
             .text_color(gpui::white())
             .on_click(move |_, window, cx| handler(ix, window, cx))
             .child(crate::icons::icon(crate::icons::EXPAND).size(px(13.0)))
@@ -327,6 +340,7 @@ pub fn mermaid_image_card(
         // and drag pass straight through to the transcript.
         div()
             .id(SharedString::from(format!("{viewer_key}-viewport")))
+            .inspect_tag("mermaid-viewport")
             .w_full()
             .flex()
             .items_center()
@@ -363,6 +377,7 @@ pub fn mermaid_interactive_body(image: Arc<Image>, viewer_key: &str) -> AnyEleme
         let key = viewer_key.to_string();
         div()
             .id(SharedString::from(format!("{key}-zoom-{label}")))
+            .inspect_tag("mermaid-zoom")
             .h(px(22.0))
             .w(px(22.0))
             .rounded(px(4.0))
@@ -390,6 +405,7 @@ pub fn mermaid_interactive_body(image: Arc<Image>, viewer_key: &str) -> AnyEleme
         .child(
             div()
                 .id(SharedString::from(format!("{viewer_key}-viewport")))
+                .inspect_tag("mermaid-viewport")
                 .w_full()
                 .max_h(px(560.0))
                 .overflow_scroll()
@@ -605,6 +621,7 @@ pub fn mermaid_fullscreen(
             .child(
                 div()
                     .id("mermaid-fullscreen-scrim")
+                    .inspect_tag("mermaid-fullscreen-scrim")
                     .occlude()
                     .w(viewport.width)
                     .h(viewport.height)

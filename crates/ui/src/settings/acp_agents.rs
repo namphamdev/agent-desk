@@ -7,6 +7,7 @@ use gpui::{
 };
 
 use crate::composer::{ComposerInput, ComposerInputEvent};
+use crate::dev_inspector::InspectExt as _;
 use crate::popover::{self, Loadable};
 use crate::settings::widgets;
 use crate::state::AppState;
@@ -358,6 +359,7 @@ impl AcpAgentsPage {
                         .child(
                             popover::btn_primary(theme, "Save")
                                 .id("save-custom-acp-agent")
+                                .inspect_tag("save-custom-acp-agent")
                                 .when(!valid || saving, |button| button.opacity(0.45))
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     if valid && !saving {
@@ -368,6 +370,7 @@ impl AcpAgentsPage {
                         .child(
                             widgets::ghost_action(theme)
                                 .id("cancel-custom-acp-agent")
+                                .inspect_tag("cancel-custom-acp-agent")
                                 .when(saving, |button| button.opacity(0.45))
                                 .hover(|s| widgets::ghost_hover(theme, s))
                                 .on_click(cx.listener(move |this, _, _, cx| {
@@ -425,6 +428,7 @@ impl AcpAgentsPage {
                 row.child(
                     widgets::ghost_action(theme)
                         .id(SharedString::from(format!("activate-acp-{id}")))
+                        .inspect_tag("activate-acp")
                         .when(busy, |button| button.opacity(0.5))
                         .hover(|s| widgets::ghost_hover(&theme, s))
                         .on_click(cx.listener(move |this, _, _, cx| {
@@ -439,6 +443,7 @@ impl AcpAgentsPage {
                 row.child(
                     widgets::ghost_action(theme)
                         .id(SharedString::from(format!("edit-acp-{id}")))
+                        .inspect_tag("edit-acp")
                         .when(busy, |button| button.opacity(0.5))
                         .hover(|s| widgets::ghost_hover(&theme, s))
                         .on_click({
@@ -455,6 +460,7 @@ impl AcpAgentsPage {
             .child(
                 widgets::ghost_action(theme)
                     .id(SharedString::from(format!("remove-acp-{id}")))
+                    .inspect_tag("remove-acp")
                     .when(busy, |button| button.opacity(0.5))
                     .hover(|s| widgets::ghost_hover(&theme, s))
                     .on_click(cx.listener(move |this, _, _, cx| {
@@ -566,6 +572,7 @@ impl AcpAgentsPage {
                         },
                     )
                     .id(SharedString::from(format!("install-harness-{id:?}")))
+                    .inspect_tag("install-harness")
                     .when(installing, |button| button.opacity(0.5))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         if this.installing_harness.is_none() {
@@ -630,6 +637,7 @@ impl AcpAgentsPage {
                 row.child(
                     widgets::ghost_action(theme)
                         .id(SharedString::from(format!("install-acp-{id}")))
+                        .inspect_tag("install-acp")
                         .when(!supported || busy, |button| button.opacity(0.45))
                         .hover(|s| widgets::ghost_hover(&theme, s))
                         .on_click(cx.listener(move |this, _, _, cx| {
@@ -884,6 +892,7 @@ impl gpui::Render for AcpAgentsPage {
 
         div()
             .id("acp-agents-page")
+            .inspect_tag("acp-agents-page")
             .size_full()
             .overflow_y_scroll()
             .child(
@@ -897,6 +906,7 @@ impl gpui::Render for AcpAgentsPage {
                             .child(
                                 widgets::ghost_action(&theme)
                                     .id("add-custom-acp-agent")
+                                    .inspect_tag("add-custom-acp-agent")
                                     .when(self.editor.is_some() || self.busy_agent.is_some(), |button| {
                                         button.opacity(0.45)
                                     })
@@ -916,6 +926,7 @@ impl gpui::Render for AcpAgentsPage {
                             .child(
                                 widgets::ghost_action(&theme)
                                     .id("refresh-acp-registry")
+                                    .inspect_tag("refresh-acp-registry")
                                     .when(refreshing, |button| button.opacity(0.5))
                                     .hover(|s| widgets::ghost_hover(&theme, s))
                                     .on_click(cx.listener(|this, _, _, cx| {
@@ -935,6 +946,7 @@ impl gpui::Render for AcpAgentsPage {
                         page.child(
                             widgets::error_strip(&theme, error)
                                 .id("acp-load-error")
+                                .inspect_tag("acp-load-error")
                                 .cursor_pointer()
                                 .on_click(cx.listener(|this, _, _, cx| this.load(cx))),
                         )
@@ -943,6 +955,7 @@ impl gpui::Render for AcpAgentsPage {
                         page.child(
                             widgets::error_strip(&theme, error)
                                 .id("acp-action-error")
+                                .inspect_tag("acp-action-error")
                                 .cursor_pointer()
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.error = None;

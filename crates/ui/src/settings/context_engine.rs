@@ -7,6 +7,7 @@ use comet_engine::context_engine::{
 };
 use gpui::{Context, SharedString, Window, div, prelude::*, px};
 
+use crate::dev_inspector::InspectExt as _;
 use crate::settings::widgets;
 use crate::theme::Theme;
 
@@ -79,6 +80,7 @@ impl gpui::Render for ContextEnginePage {
 
         let toggle_row = widgets::card_row(&theme, true)
             .id("context-engine-toggle")
+            .inspect_tag("context-engine-toggle")
             .when(!locked, |row| {
                 row.cursor_pointer()
                     .on_click(cx.listener(|this, _, _, cx| this.toggle(cx)))
@@ -124,6 +126,7 @@ impl gpui::Render for ContextEnginePage {
             .child(
                 widgets::ghost_action(&theme)
                     .id("context-engine-open-dashboard")
+                    .inspect_tag("context-engine-open-dashboard")
                     .hover(|s| widgets::ghost_hover(&theme, s))
                     .on_click(cx.listener(|_, _, _, cx| cx.open_url(DASHBOARD_URL)))
                     .child(crate::icons::icon(crate::icons::GLOBAL).size(px(14.0)))
@@ -132,6 +135,7 @@ impl gpui::Render for ContextEnginePage {
 
         div()
             .id("context-engine-page")
+            .inspect_tag("context-engine-page")
             .size_full()
             .overflow_y_scroll()
             .child(

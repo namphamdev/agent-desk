@@ -1,11 +1,12 @@
 ﻿
 use chrono::Utc;
 use gpui::{
-    AnyElement, Context, Focusable as _, IntoElement,
+    AnyElement, App, Context, Focusable as _, IntoElement,
     MouseButton, MouseUpEvent, Pixels, Point, SharedString, Window, div, img, prelude::*, px,
 };
 
 
+use crate::dev_inspector::{self, InspectClickExt as _, InspectExt as _};
 use crate::icons::{self, icon};
 use crate::loaders;
 use crate::motion::{self};
@@ -57,6 +58,7 @@ impl Shell {
                 .child(
                     popover::menu_row(&theme, false, format!("chat-menu-rename-{chat_id}"))
                         .id("chat-menu-rename")
+                        .inspect_click(dev_inspector::inspect_meta("chat-menu-rename"))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.open_rename_chat(rename_id.clone(), cx)
                         }))
@@ -66,6 +68,7 @@ impl Shell {
                 .child(
                     popover::menu_row(&theme, false, format!("chat-menu-archive-{chat_id}"))
                         .id("chat-menu-archive")
+                        .inspect_click(dev_inspector::inspect_meta("chat-menu-archive"))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.archive_chat(archive_id.clone(), cx)
                         }))
@@ -79,6 +82,7 @@ impl Shell {
                 .child(
                     popover::menu_row(&theme, false, format!("chat-menu-settle-{chat_id}"))
                         .id("chat-menu-settle")
+                        .inspect_click(dev_inspector::inspect_meta("chat-menu-settle"))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.set_chat_settled(settle_id.clone(), !settled, cx)
                         }))
@@ -97,6 +101,7 @@ impl Shell {
                 .child(
                     popover::menu_row(&theme, false, format!("chat-menu-delete-{chat_id}"))
                         .id("chat-menu-delete")
+                        .inspect_click(dev_inspector::inspect_meta("chat-menu-delete"))
                         .text_color(theme.danger)
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.chat_menu = None;
@@ -142,6 +147,7 @@ impl Shell {
                         .child(
                             popover::btn_ghost(&theme, "Cancel", "rename-chat-cancel")
                                 .id("rename-chat-cancel")
+                                .inspect_click(dev_inspector::inspect_meta("rename-chat-cancel"))
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.rename_dialog = None;
                                     cx.notify();
@@ -150,6 +156,7 @@ impl Shell {
                         .child(
                             popover::btn_primary(&theme, "Rename")
                                 .id("rename-chat-save")
+                                .inspect_click(dev_inspector::inspect_meta("rename-chat-save"))
                                 .on_click(
                                     cx.listener(|this, _, _, cx| this.submit_rename_chat(cx)),
                                 ),
@@ -191,6 +198,7 @@ impl Shell {
                         .child(
                             popover::btn_ghost(&theme, "Cancel", "delete-chat-cancel")
                                 .id("delete-chat-cancel")
+                                .inspect_click(dev_inspector::inspect_meta("delete-chat-cancel"))
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.delete_confirm = None;
                                     cx.notify();
@@ -199,6 +207,7 @@ impl Shell {
                         .child(
                             popover::btn_danger(&theme, "Delete")
                                 .id("delete-chat-confirm")
+                                .inspect_click(dev_inspector::inspect_meta("delete-chat-confirm"))
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.delete_chat(chat_id.clone(), cx)
                                 })),
@@ -324,6 +333,7 @@ impl Shell {
                         .child(
                             popover::btn_primary(&theme_owned, "Add a space")
                                 .id("onboarding-add-space")
+                                .inspect_click(dev_inspector::inspect_meta("onboarding-add-space"))
                                 .mt(px(20.0))
                                 .on_click(cx.listener(|this, _, _, cx| this.open_add_space(cx))),
                         ),
@@ -490,7 +500,13 @@ impl Shell {
                             theme.surface_raised,
                             theme.surface_raised_hover,
                         ))
-                        .on_hover(motion::hover_listener("jump-pill"))
+                        .on_hover({
+                            let tag = dev_inspector::inspect_meta("jump-to-bottom");
+                            move |hovered: &bool, window: &mut Window, cx: &mut App| {
+                                motion::hover_listener("jump-pill")(&hovered, window, cx);
+                                dev_inspector::report_hover(&tag, *hovered, window, cx);
+                            }
+                        })
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.transcript
                                 .update(cx, |transcript, cx| transcript.jump_to_bottom(cx));

@@ -227,6 +227,7 @@ fn mock_harness_hidden_unless_alone() {
         steering_mode: comet_proto::SteeringMode::StepBoundary,
         reasoning_levels: vec![],
         acp_agent_id: None,
+        icon: None,
     };
     let mixed = vec![
         descriptor(HarnessId::Mock, "Mock"),

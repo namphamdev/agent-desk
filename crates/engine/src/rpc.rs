@@ -1138,6 +1138,7 @@ impl RpcService for EngineRpc {
                                 descriptors.push(HarnessDescriptor {
                                     name: agent.name.clone(),
                                     acp_agent_id: Some(agent.id.clone()),
+                                    icon: agent.icon.clone(),
                                     ..base.clone()
                                 });
                             }

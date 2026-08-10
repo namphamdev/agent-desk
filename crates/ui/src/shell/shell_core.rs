@@ -29,6 +29,10 @@ use super::Shell;
 
 impl Shell {
     pub fn new(state: Entity<AppState>, boot: EngineBootConfig, cx: &mut Context<Self>) -> Self {
+        // Initialize the agent debug inspector global (zero-cost unless
+        // feature_enabled: debug builds or COMET_INSPECTOR=1).
+        crate::dev_inspector::init(cx);
+
         let observation = cx.observe(&state, |this: &mut Shell, state, cx| {
             this.on_state_changed(&state, cx);
             cx.notify();

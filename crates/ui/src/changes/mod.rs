@@ -37,6 +37,7 @@ use comet_proto::CheckoutDiff;
 use comet_proto::{HarnessId, Model};
 
 use crate::composer::ComposerInput;
+use crate::dev_inspector::InspectExt as _;
 use crate::settings::composer::ComposerDefaults;
 use crate::state::AppState;
 use crate::theme::Theme;
@@ -168,6 +169,7 @@ impl Render for Changes {
                     if let Some(ix) = selected {
                         div()
                             .id("git-selected-file-diff")
+                            .inspect_tag("git-selected-file-diff")
                             .flex_1()
                             .min_h_0()
                             .flex()

@@ -14,6 +14,7 @@ use std::time::Duration;
 use comet_rpc::methods;
 
 use crate::composer::{ComposerInput, ComposerInputEvent};
+use crate::dev_inspector::{self, InspectClickExt as _, InspectExt as _};
 use crate::popover;
 use crate::state::AppState;
 use crate::theme::Theme;
@@ -202,6 +203,7 @@ impl DevicesPage {
                     .child(
                         popover::btn_ghost(&theme, "Cancel", "rename-cancel")
                             .id("rename-cancel")
+                            .inspect_click(dev_inspector::inspect_meta("rename-cancel"))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.rename = None;
                                 cx.notify();
@@ -210,6 +212,7 @@ impl DevicesPage {
                     .child(
                         popover::btn_primary(&theme, "Rename")
                             .id("rename-save")
+                            .inspect_tag("rename-save")
                             .on_click(cx.listener(|this, _, _, cx| this.submit_rename(cx))),
                     ),
             )
@@ -244,6 +247,7 @@ impl DevicesPage {
                     .child(
                         popover::btn_ghost(&theme, "Cancel", "delete-cancel")
                             .id("delete-cancel")
+                            .inspect_click(dev_inspector::inspect_meta("delete-cancel"))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.delete = None;
                                 cx.notify();
@@ -252,6 +256,7 @@ impl DevicesPage {
                     .child(
                         popover::btn_primary(&theme, "Remove")
                             .id("delete-confirm")
+                            .inspect_tag("delete-confirm")
                             .on_click(cx.listener(|this, _, _, cx| this.confirm_delete(cx))),
                     ),
             )
@@ -442,6 +447,7 @@ impl Render for DevicesPage {
                 meta.push(
                     div()
                         .id(("device-id", ix))
+                        .inspect_tag("device-id")
                         .font_family(theme.font_mono.clone())
                         .text_size(px(10.5))
                         .text_color(if id_copied {
@@ -482,6 +488,7 @@ impl Render for DevicesPage {
                         // own hover carries the reveal).
                         widgets::ghost_action(&theme)
                             .id(("device-rename", ix))
+                            .inspect_tag("device-rename")
                             .opacity(0.7)
                             .hover(|s| {
                                 s.opacity(1.0)
@@ -502,6 +509,7 @@ impl Render for DevicesPage {
                         el.child(
                             widgets::ghost_action(&theme)
                                 .id(("device-delete", ix))
+                                .inspect_tag("device-delete")
                                 .opacity(0.7)
                                 .hover(|s| {
                                     s.opacity(1.0)
@@ -540,6 +548,7 @@ impl Render for DevicesPage {
 
         div()
             .id("devices-page")
+            .inspect_tag("devices-page")
             .size_full()
             .overflow_y_scroll()
             .child(
@@ -557,6 +566,7 @@ impl Render for DevicesPage {
                         el.child(
                             widgets::error_strip(&theme, message)
                                 .id("devices-error")
+                                .inspect_tag("devices-error")
                                 .cursor_pointer()
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.error = None;

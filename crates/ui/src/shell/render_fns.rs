@@ -2,6 +2,7 @@
 
 use gpui::{AnyElement, App, MouseButton, Window, div, prelude::*, px};
 
+use crate::dev_inspector::{self, InspectClickExt as _, InspectExt as _};
 use crate::icons::icon;
 use crate::motion;
 use crate::theme::Theme;
@@ -105,6 +106,8 @@ pub(crate) fn window_control_button(
 ) -> impl IntoElement {
     let muted = theme.text_muted;
     let fade_key = format!("window-control-{id}");
+    let inspect_tag = dev_inspector::inspect_meta(id);
+    let hover_tag = inspect_tag.clone();
     div()
         .id(id)
         .size(px(24.0))
@@ -120,7 +123,10 @@ pub(crate) fn window_control_button(
             theme.glass_hover().opacity(0.0),
             theme.glass_hover(),
         ))
-        .on_hover(motion::hover_listener(fade_key))
+        .on_hover(move |hovered: &bool, window: &mut Window, cx: &mut App| {
+            motion::hover_listener(&fade_key)(&hovered, window, cx);
+            dev_inspector::report_hover(&hover_tag, *hovered, window, cx);
+        })
         // Buttons in/over a titlebar drag strip must be EXCLUDED from the
         // strip's event surface entirely. `.occlude()` (gpui
         // `HitboxBehavior::BlockMouse`) makes the window hit-test STOP at the
@@ -134,6 +140,7 @@ pub(crate) fn window_control_button(
         // zed's ButtonLike belt on top. Double-click on EMPTY strip space
         // still zooms — nothing occludes it there.
         .occlude()
+        .inspect_click(inspect_tag)
         .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
         .on_click(move |event, window, cx| {
             cx.stop_propagation();
@@ -182,6 +189,8 @@ pub(crate) fn header_icon_button(
 ) -> impl IntoElement {
     let muted = theme.text_muted;
     let fade_key = format!("header-icon-{id}");
+    let inspect_tag = dev_inspector::inspect_meta(id);
+    let hover_tag = inspect_tag.clone();
     div()
         .id(id)
         .size(px(28.0))
@@ -197,11 +206,15 @@ pub(crate) fn header_icon_button(
             crate::theme::wash(0.0),
             crate::theme::wash(0.11),
         ))
-        .on_hover(motion::hover_listener(fade_key))
+        .on_hover(move |hovered: &bool, window: &mut Window, cx: &mut App| {
+            motion::hover_listener(&fade_key)(&hovered, window, cx);
+            dev_inspector::report_hover(&hover_tag, *hovered, window, cx);
+        })
         // Same occlusion + click-swallowing as [`window_control_button`]: this
         // button sits inside the chat header's titlebar drag region, so its
         // rect must be carved out of the strip's drag/double-click surface.
         .occlude()
+        .inspect_click(inspect_tag)
         .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
         .on_click(move |event, window, cx| {
             cx.stop_propagation();

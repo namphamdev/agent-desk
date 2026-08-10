@@ -4,6 +4,7 @@ use gpui::{
 };
 
 
+use crate::dev_inspector::InspectExt as _;
 use crate::icons::{self};
 use crate::motion::{self};
 use crate::popover::{self, Loadable};
@@ -33,6 +34,7 @@ impl Shell {
                 .child(
                     div()
                         .id("retry-engine")
+                        .inspect_tag("retry-engine-button")
                         .px(px(12.0))
                         .py(px(6.0))
                         .rounded(px(8.0))
@@ -89,6 +91,7 @@ impl Shell {
                 .child(
                     div()
                         .id("sign-in")
+                        .inspect_tag("sign-in-button")
                         .w_full()
                         .h(px(36.0))
                         .flex()
@@ -169,6 +172,7 @@ impl Shell {
                         popover::error_row(&theme, message).child(
                             div()
                                 .id("orgs-retry")
+                                .inspect_tag("orgs-retry-button")
                                 .px(px(Theme::SPACE_SM))
                                 .py(px(3.0))
                                 .rounded(px(Theme::CONTROL_RADIUS))
@@ -202,6 +206,7 @@ impl Shell {
                             let org_id = row.organization_id.clone();
                             div()
                                 .id(("org-row", ix))
+                                .inspect_tag("org-row")
                                 .px(px(12.0))
                                 .py(px(8.0))
                                 .rounded(px(8.0))
@@ -292,6 +297,7 @@ impl Shell {
                     .child(
                         div()
                             .id("create-org")
+                            .inspect_tag("create-org-button")
                             .h(px(36.0))
                             .px(px(16.0))
                             .flex()
@@ -327,6 +333,7 @@ impl Shell {
                 div().mt(px(24.0)).flex().flex_row().child(
                     div()
                         .id("org-signout")
+                        .inspect_tag("org-signout-button")
                         .text_size(px(12.0))
                         .text_color(theme.text_muted.opacity(0.6))
                         .cursor_pointer()

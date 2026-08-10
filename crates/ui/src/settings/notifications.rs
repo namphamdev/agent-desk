@@ -7,6 +7,7 @@ use std::path::PathBuf;
 
 use gpui::{AnyElement, Context, EventEmitter, SharedString, Window, div, prelude::*, px};
 
+use crate::dev_inspector::InspectExt as _;
 use crate::settings::UiSettings;
 use crate::settings::widgets;
 use crate::theme::Theme;
@@ -116,6 +117,7 @@ impl gpui::Render for NotificationsPage {
 
         div()
             .id("notifications-page")
+            .inspect_tag("notifications-page")
             .size_full()
             .overflow_y_scroll()
             .child(
@@ -148,6 +150,7 @@ fn toggle_row(
 ) -> AnyElement {
     widgets::card_row(theme, true)
         .id(id)
+        .inspect_tag(id)
         .cursor_pointer()
         .on_click(listener)
         .child(widgets::row_tile(theme, icon))

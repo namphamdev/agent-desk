@@ -20,6 +20,7 @@ use comet_proto::{FileSearchMatch, RunRequest, SteeringMode, UserInputAnswer, Us
 use comet_rpc::{RpcError, methods};
 
 use crate::attachments::{self, StagedAttachment};
+use crate::dev_inspector::{self, InspectClickExt as _, InspectExt as _};
 use crate::motion;
 use crate::pickers::Pickers;
 use crate::state::{AppState, Indicator};
@@ -146,6 +147,8 @@ impl Composer {
             // Selection reads on the row only while no typed override exists
             // (typed answers win — comet question-panel.tsx `isSel`).
             let picked = wizard.is_picked(ix) && typed_empty;
+            let option_inspect = crate::dev_inspector::inspect_meta("wizard-option");
+            let option_hover_tag = option_inspect.clone();
             div()
                 .id(("wizard-option", ix))
                 .flex()
@@ -171,7 +174,11 @@ impl Composer {
                         crate::theme::ink(0.06),
                     )
                 })
-                .on_hover(motion::hover_listener(format!("wizard-option-{ix}")))
+                .on_hover(move |hovered: &bool, window: &mut Window, cx: &mut App| {
+                    motion::hover_listener(format!("wizard-option-{ix}"))(&hovered, window, cx);
+                    crate::dev_inspector::report_hover(&option_hover_tag, *hovered, window, cx);
+                })
+                .inspect_click(option_inspect)
                 .cursor_pointer()
                 .on_click(cx.listener(move |this, _, _, cx| this.wizard_select(ix, cx)))
                 .child(
@@ -215,6 +222,7 @@ impl Composer {
 
         div()
             .id("question-panel")
+            .inspect_tag("question-panel")
             .track_focus(&self.wizard_focus)
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 this.on_wizard_key(event, window, cx)
@@ -315,6 +323,7 @@ impl Composer {
                     .child(if page > 0 {
                         crate::popover::btn_ghost(&theme, "Back", "wizard-back")
                             .id("wizard-back")
+                            .inspect_click(dev_inspector::inspect_meta("wizard-back"))
                             .on_click(cx.listener(|this, _, _, cx| this.wizard_back(cx)))
                             .into_any_element()
                     } else {
@@ -323,6 +332,7 @@ impl Composer {
                     .child(
                         crate::popover::btn_primary(&theme, if last { "Submit" } else { "Next" })
                             .id("wizard-submit")
+                            .inspect_tag("wizard-submit")
                             .px(px(16.0))
                             .when(!can_advance, |el| el.opacity(0.4))
                             .on_click(cx.listener(|this, _, _, cx| this.wizard_advance(cx))),
@@ -342,6 +352,7 @@ impl Composer {
         match mode {
             SendButtonMode::Stop => div()
                 .id("composer-stop")
+                .inspect_tag("composer-stop-button")
                 .size(px(28.0))
                 .flex_none()
                 .rounded_full()
@@ -356,6 +367,7 @@ impl Composer {
                 .into_any_element(),
             SendButtonMode::Send | SendButtonMode::Steer => div()
                 .id("composer-send")
+                .inspect_tag("composer-send-button")
                 .size(px(28.0))
                 .flex_none()
                 .rounded_full()

@@ -1,11 +1,12 @@
 ﻿
 use chrono::Utc;
 use gpui::{
-    AnyElement, Context, IntoElement,
-    MouseButton, MouseDownEvent, SharedString, div, prelude::*, px,
+    AnyElement, App, Context, IntoElement,
+    MouseButton, MouseDownEvent, SharedString, Window, div, prelude::*, px,
 };
 
 
+use crate::dev_inspector::{self, InspectClickExt as _, InspectExt as _};
 use crate::icons::{self, icon};
 use crate::loaders;
 use crate::motion::{self};
@@ -65,6 +66,7 @@ impl Shell {
                             let selected = item == section;
                             div()
                                 .id(SharedString::from(format!("settings-nav-{}", item.label())))
+                                .inspect_tag("settings-nav-item")
                                 .flex()
                                 .flex_row()
                                 .items_center()
@@ -190,6 +192,8 @@ impl Shell {
         // dimmed the active row under the pointer (user report).
         let hover_bg = if selected { selected_wash } else { hover };
         let rest_text = if selected { text } else { text.opacity(0.8) };
+        let chat_inspect = crate::dev_inspector::inspect_meta("sidebar-chat-row");
+        let chat_hover_tag = chat_inspect.clone();
         div()
             .id(SharedString::from(format!("chat-{id}")))
             .w_full()
@@ -204,7 +208,11 @@ impl Shell {
             .when(selected, |el| {
                 el.shadow(crate::theme::glass_selected_shadows())
             })
-            .on_hover(motion::hover_listener(fade_key))
+            .on_hover(move |hovered: &bool, window: &mut Window, cx: &mut App| {
+                motion::hover_listener(&fade_key)(&hovered, window, cx);
+                crate::dev_inspector::report_hover(&chat_hover_tag, *hovered, window, cx);
+            })
+            .inspect_click(chat_inspect)
             .cursor_pointer()
             .on_click(cx.listener(move |this, _, _, cx| {
                 let id = select_id.clone();

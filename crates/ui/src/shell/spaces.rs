@@ -7,6 +7,7 @@
 //! `shell` so it renders straight off `Shell`'s private state.
 
 use super::*;
+use crate::dev_inspector::InspectClickExt as _;
 use crate::motion::TAB_SLIDE;
 use crate::pickers::{breadcrumbs, browser_rows, is_absolute_path, parent_path};
 use crate::terminal::panel::{drop_index, reorder_tabs, slide_offset};
@@ -299,7 +300,9 @@ impl Shell {
                     .text_color(theme.text_muted.opacity(0.6))
                     .child(SharedString::from("Spaces")),
             )
-            .child(
+            .child({
+                let add_space_inspect = crate::dev_inspector::inspect_meta("add-space-button");
+                let add_space_hover = add_space_inspect.clone();
                 div()
                     .id("add-space")
                     .size(px(20.0))
@@ -313,14 +316,18 @@ impl Shell {
                         crate::theme::wash(0.0),
                         crate::theme::wash(0.14),
                     ))
-                    .on_hover(motion::hover_listener("add-space"))
+                    .on_hover(move |hovered: &bool, window: &mut Window, cx: &mut App| {
+                        motion::hover_listener("add-space")(&hovered, window, cx);
+                        crate::dev_inspector::report_hover(&add_space_hover, *hovered, window, cx);
+                    })
+                    .inspect_click(add_space_inspect)
                     .on_click(cx.listener(|this, _, _, cx| this.open_add_space(cx)))
                     .child(
                         icon(icons::PLUS)
                             .size(px(14.0))
                             .text_color(theme.text_muted.opacity(0.7)),
-                    ),
-            );
+                    )
+            });
 
         let mut column = div().flex().flex_col().child(header);
         if spaces.is_empty() {
@@ -515,6 +522,8 @@ impl Shell {
         // One line: "name @ device" — the folder name carries the weight, the
         // device tag rides along slightly muted. Long names truncate; the
         // device tag stays visible.
+        let space_inspect = crate::dev_inspector::inspect_meta("sidebar-space-row");
+        let space_hover_tag = space_inspect.clone();
         div()
             .id(SharedString::from(format!("space-{id}")))
             .flex()
@@ -540,7 +549,11 @@ impl Shell {
             .when(selected, |el| {
                 el.shadow(crate::theme::glass_selected_shadows())
             })
-            .on_hover(motion::hover_listener(fade_key))
+            .on_hover(move |hovered: &bool, window: &mut Window, cx: &mut App| {
+                motion::hover_listener(&fade_key)(&hovered, window, cx);
+                crate::dev_inspector::report_hover(&space_hover_tag, *hovered, window, cx);
+            })
+            .inspect_click(space_inspect)
             .cursor_pointer()
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.activate_space(select_id.clone(), cx);

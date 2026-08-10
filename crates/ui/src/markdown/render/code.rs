@@ -9,6 +9,7 @@ use gpui::{
 };
 
 use crate::theme::Theme;
+use crate::dev_inspector::{InspectClickExt as _, InspectExt as _};
 use crate::markdown::highlight::{Token, TokenClass};
 use crate::markdown::parser::InlineRun;
 use crate::markdown::veil::{apply_veil, slice_spans};
@@ -110,6 +111,8 @@ pub fn render_code_block(
         let code_text: SharedString = code.to_string().into();
         let handler = copy.handler.clone();
         let fade_key = format!("{}-copy{ix}", opts.row_key);
+        let copy_inspect = crate::dev_inspector::inspect_meta("code-copy");
+        let copy_hover_tag = copy_inspect.clone();
         div()
             .id(SharedString::from(fade_key.clone()))
             .absolute()
@@ -130,7 +133,11 @@ pub fn render_code_block(
                 gpui::transparent_black(),
                 crate::theme::ink(0.08),
             ))
-            .on_hover(crate::motion::hover_listener(fade_key))
+            .on_hover(move |hovered: &bool, window: &mut gpui::Window, cx: &mut gpui::App| {
+                crate::motion::hover_listener(fade_key.clone())(&hovered, window, cx);
+                crate::dev_inspector::report_hover(&copy_hover_tag, *hovered, window, cx);
+            })
+            .inspect_click(copy_inspect)
             .text_size(px(10.5))
             .text_color(theme.text_muted)
             .on_click(move |_, window, cx| handler(ix, code_text.clone(), window, cx))
@@ -171,6 +178,7 @@ pub fn render_code_block(
         .child(
             div()
                 .id(scroll_id)
+                .inspect_tag("code-scroll")
                 .overflow_x_scroll()
                 .px(px(CODE_PADDING_X))
                 .py(px(CODE_PADDING_Y))

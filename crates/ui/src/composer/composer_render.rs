@@ -20,6 +20,7 @@ use comet_proto::{FileSearchMatch, RunRequest, SteeringMode, UserInputAnswer, Us
 use comet_rpc::{RpcError, methods};
 
 use crate::attachments::{self, StagedAttachment};
+use crate::dev_inspector::{InspectClickExt as _, InspectExt as _};
 use crate::motion;
 use crate::pickers::Pickers;
 use crate::state::{AppState, Indicator};
@@ -176,6 +177,7 @@ impl Render for Composer {
                 el.child(
                     div()
                         .id("composer-failure")
+                        .inspect_tag("composer-failure")
                         .mx(px(4.0))
                         .mt(px(6.0))
                         .flex()
@@ -268,6 +270,8 @@ impl Render for Composer {
         // `<input type=file accept="image/*" multiple>`); paste/drop also feed
         // the same strip. `ml-1` per the source cluster — chips→attach reads
         // 8px (4 gap + 4 margin) in BOTH modes.
+        let attach_inspect = crate::dev_inspector::inspect_meta("composer-attach");
+        let attach_hover_tag = attach_inspect.clone();
         let attach = div()
             .id("composer-attach")
             .ml(px(4.0))
@@ -284,7 +288,11 @@ impl Render for Composer {
                 gpui::transparent_black(),
                 crate::theme::ink(0.10),
             ))
-            .on_hover(motion::hover_listener("composer-attach"))
+            .on_hover(move |hovered: &bool, window: &mut Window, cx: &mut App| {
+                motion::hover_listener("composer-attach")(&hovered, window, cx);
+                crate::dev_inspector::report_hover(&attach_hover_tag, *hovered, window, cx);
+            })
+            .inspect_click(attach_inspect)
             .on_click(cx.listener(|this, _, _, cx| this.open_file_picker(cx)))
             .child(
                 crate::icons::icon(crate::icons::PAPERCLIP)

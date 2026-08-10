@@ -14,6 +14,7 @@ use gpui::{
 };
 
 use crate::appearance::{self, AppearanceMode};
+use crate::dev_inspector::InspectExt as _;
 use crate::settings::widgets;
 use crate::theme::{Appearance, Theme};
 
@@ -174,6 +175,7 @@ impl Render for AppearancePage {
         let cards = AppearanceMode::ALL.into_iter().map(|mode| {
             widgets::option_card(&theme, mode.label(), mode == current, preview(mode))
                 .id(SharedString::from(format!("appearance-{}", mode.label())))
+                .inspect_tag("appearance-card")
                 .on_click(cx.listener(move |_, _, _, cx| {
                     appearance::set_mode(mode, cx);
                     cx.notify();
@@ -182,6 +184,7 @@ impl Render for AppearancePage {
 
         div()
             .id("appearance-page")
+            .inspect_tag("appearance-page")
             .size_full()
             .overflow_y_scroll()
             .child(

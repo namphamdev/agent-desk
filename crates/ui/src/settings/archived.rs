@@ -8,6 +8,7 @@ use gpui::{
 use comet_proto::Chat;
 use comet_rpc::methods;
 
+use crate::dev_inspector::InspectExt as _;
 use crate::state::AppState;
 use crate::theme::Theme;
 
@@ -204,6 +205,7 @@ impl Render for ArchivedPage {
                         // accent tone (`hover:bg-accent`).
                         div()
                             .id(("unarchive", ix))
+                            .inspect_tag("unarchive")
                             .flex_none()
                             .flex()
                             .flex_row()
@@ -282,6 +284,7 @@ impl Render for ArchivedPage {
 
         div()
             .id("archived-page")
+            .inspect_tag("archived-page")
             .size_full()
             .overflow_y_scroll()
             .child(
@@ -299,6 +302,7 @@ impl Render for ArchivedPage {
                         el.child(
                             widgets::error_strip(&theme, message)
                                 .id("archived-error")
+                                .inspect_tag("archived-error")
                                 .cursor_pointer()
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.error = None;

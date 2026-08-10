@@ -24,6 +24,11 @@ pub struct HarnessDescriptor {
     /// non-ACP harness. The UI renders one rail entry per installed agent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub acp_agent_id: Option<String>,
+    /// The ACP agent's logo URL (typically an SVG). The UI fetches + decodes
+    /// this to render the agent's brand mark in the rail, tabs, and picker.
+    /// `None` for non-ACP harnesses or agents without a declared icon.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
 }
 
 fn describe(harness: &dyn Harness) -> HarnessDescriptor {
@@ -34,6 +39,7 @@ fn describe(harness: &dyn Harness) -> HarnessDescriptor {
         steering_mode: harness.steering_mode(),
         reasoning_levels: harness.reasoning_levels().to_vec(),
         acp_agent_id: None,
+        icon: None,
     }
 }
 
@@ -207,6 +213,7 @@ pub fn default_registry_with_config(
                 ReasoningLevel::Max,
             ],
             acp_agent_id: None,
+            icon: None,
         },
         Box::new({
             let mcp_server_url = mcp_server_url.map(str::to_owned);
@@ -241,6 +248,7 @@ pub fn default_registry_with_config(
                 ReasoningLevel::Ultra,
             ],
             acp_agent_id: None,
+            icon: None,
         },
         Box::new({
             let mcp_server_url = mcp_server_url.map(str::to_owned);
@@ -262,6 +270,7 @@ pub fn default_registry_with_config(
             steering_mode: SteeringMode::TurnBoundary,
             reasoning_levels: vec![ReasoningLevel::Medium],
             acp_agent_id: None,
+            icon: None,
         },
         Box::new({
             let mcp_server_url = mcp_server_url.map(str::to_owned);
@@ -297,6 +306,7 @@ pub fn default_registry_with_config(
                 ReasoningLevel::Max,
             ],
             acp_agent_id: None,
+            icon: None,
         },
         Box::new({
             let mcp_server_url = mcp_server_url.map(str::to_owned);
@@ -331,6 +341,7 @@ mod tests {
                 steering_mode: SteeringMode::StepBoundary,
                 reasoning_levels: vec![],
                 acp_agent_id: None,
+                icon: None,
             },
             Box::new(move || {
                 counted.fetch_add(1, Ordering::SeqCst);

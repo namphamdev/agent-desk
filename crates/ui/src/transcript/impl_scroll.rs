@@ -2,6 +2,7 @@
 
 use gpui::{AnyElement, Context, div, prelude::*, px};
 
+use crate::dev_inspector::{InspectClickExt as _, InspectExt as _};
 
 use super::Transcript;
 impl Transcript {
@@ -54,6 +55,10 @@ impl Transcript {
         // thumb_top IS the thumb's position on screen.
         let thumb_top_for_down = thumb_top;
 
+        let track_inspect = crate::dev_inspector::inspect_meta("transcript-scrollbar-track");
+        let track_hover_tag = track_inspect.clone();
+        let thumb_inspect = crate::dev_inspector::inspect_meta("transcript-scrollbar-thumb");
+        let thumb_hover_tag = thumb_inspect.clone();
         div()
             .id("transcript-scrollbar-track")
             .absolute()
@@ -61,12 +66,14 @@ impl Transcript {
             .right_0()
             .bottom_0()
             .w(px(Self::SCROLLBAR_WIDTH))
-            .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+            .on_hover(cx.listener(move |this, hovered: &bool, window, cx| {
                 if this.scrollbar_hover != *hovered {
                     this.scrollbar_hover = *hovered;
                     cx.notify();
                 }
+                crate::dev_inspector::report_hover(&track_hover_tag, *hovered, window, cx);
             }))
+            .inspect_click(track_inspect)
             .child(
                 div()
                     .id("transcript-scrollbar-thumb")
@@ -78,12 +85,14 @@ impl Transcript {
                     .rounded_full()
                     .bg(thumb_color)
                     .cursor_pointer()
-                    .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                    .on_hover(cx.listener(move |this, hovered: &bool, window, cx| {
                         if this.scrollbar_hover != *hovered {
                             this.scrollbar_hover = *hovered;
                             cx.notify();
                         }
+                        crate::dev_inspector::report_hover(&thumb_hover_tag, *hovered, window, cx);
                     }))
+                    .inspect_click(thumb_inspect)
                     .on_mouse_down(
                         gpui::MouseButton::Left,
                         cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {

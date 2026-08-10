@@ -5,7 +5,7 @@ use gpui::{App, KeyBinding, Keystroke};
 use crate::settings::{KeymapConfig, platform_combo};
 use crate::terminal::panel::ToggleTerminal;
 
-use super::{ToggleChanges, ToggleSidebar, AddSpacePalette};
+use super::{AddSpacePalette, ToggleChanges, ToggleInspector, ToggleSidebar};
 pub(crate) fn titlebar_cluster_start(fullscreen: bool) -> f32 {
     if fullscreen { 12.0 } else { 88.0 }
 }
@@ -78,6 +78,8 @@ pub(crate) fn apply_keymap(cx: &mut App, keymap: &KeymapConfig) {
         // Fixed: ⌘K summons the add-space palette (the ⌘K chip in its search
         // bar); pressing it again dismisses.
         KeyBinding::new(&platform_combo("mod-k"), AddSpacePalette, None),
+        // Fixed: ⌘/Ctrl+Shift+I toggles the developer inspector.
+        KeyBinding::new(&platform_combo("mod-shift-i"), ToggleInspector, None),
     ]);
 }
 

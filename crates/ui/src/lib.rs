@@ -18,6 +18,7 @@ pub mod appearance;
 pub mod attachments;
 pub mod changes;
 pub mod composer;
+pub mod dev_inspector;
 pub mod edge_fade;
 pub mod frost;
 pub mod global_shortcuts;

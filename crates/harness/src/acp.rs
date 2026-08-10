@@ -745,10 +745,38 @@ impl TokioAcpAgent {
 
 impl ConnectTo<agent_client_protocol::Client> for TokioAcpAgent {
     async fn connect_to(self, client: impl ConnectTo<Agent>) -> agent_client_protocol::Result<()> {
-        let mut command = tokio::process::Command::new(self.config.command());
+        let program = self.config.command();
+        let program_args = self.config.arguments().to_vec();
+        let env = self.config.environment().clone();
+
+        // On Windows, `.cmd` and `.bat` files are batch scripts, not real
+        // executables. `CreateProcessW` (which underlies
+        // `tokio::process::Command::spawn`) cannot execute them directly and
+        // fails with OS error 193 ("%1 is not a valid Win32 application").
+        // Route them through `cmd.exe /C`, which handles batch scripts
+        // correctly.
+        #[cfg(windows)]
+        let mut command = if program
+            .extension()
+            .is_some_and(|ext| matches!(ext.to_str(), Some("cmd" | "bat")))
+        {
+            let mut cmd = tokio::process::Command::new("cmd");
+            cmd.arg("/C").arg(program).args(&program_args);
+            cmd
+        } else {
+            let mut cmd = tokio::process::Command::new(program);
+            cmd.args(&program_args);
+            cmd
+        };
+        #[cfg(not(windows))]
+        let mut command = {
+            let mut cmd = tokio::process::Command::new(program);
+            cmd.args(program_args);
+            cmd
+        };
+
         command
-            .args(self.config.arguments())
-            .envs(self.config.environment())
+            .envs(env)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
