@@ -186,26 +186,33 @@ impl Changes {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             return;
         };
+        // The git panel's own "last pick" memory wins over the selected
+        // chat's config: the panel is not harness-locked (unlike the
+        // composer), so a pick made here must survive app restarts even when
+        // boot auto-selects a chat that was created with a different harness
+        // (e.g. an ACP agent). The chat config is only the first-run fallback.
         let preferred = self
-            .state
-            .read(cx)
-            .selected_chat_row()
-            .and_then(|chat| chat.config.as_ref())
-            .map(|config| config.harness)
-            .or(self.generation_defaults.harness);
-        let preferred_model = self
-            .state
-            .read(cx)
-            .selected_chat_row()
-            .and_then(|chat| chat.config.as_ref())
-            .and_then(|config| config.model.clone())
+            .generation_defaults
+            .harness
             .or_else(|| {
-                preferred.and_then(|harness| {
-                    self.generation_defaults
-                        .model_for(harness)
-                        .map(|model| model.id.clone())
-                })
+                self.state
+                    .read(cx)
+                    .selected_chat_row()
+                    .and_then(|chat| chat.config.as_ref())
+                    .map(|config| config.harness)
             });
+        let preferred_model = preferred.and_then(|harness| {
+            self.generation_defaults
+                .model_for(harness)
+                .map(|model| model.id.clone())
+                .or_else(|| {
+                    self.state
+                        .read(cx)
+                        .selected_chat_row()
+                        .and_then(|chat| chat.config.as_ref())
+                        .and_then(|config| config.model.clone())
+                })
+        });
         self.generation_loading = true;
         let mut params = serde_json::Map::new();
         if let Some(target) = &target {
@@ -319,10 +326,32 @@ impl Changes {
                 match result {
                     Ok(value) => match serde_json::from_value::<Vec<Model>>(value) {
                         Ok(models) => {
-                            changes.selected_model = remembered_model
+                            let resolved = remembered_model
                                 .filter(|id| models.iter().any(|model| &model.id == id))
                                 .or_else(|| models.first().map(|model| model.id.clone()));
+                            changes.selected_model = resolved.clone();
                             changes.models = models;
+                            // Keep composer-defaults.json in sync with the
+                            // actually-selected model: an explicitly clicked
+                            // row persists itself, but an auto fallback (the
+                            // first model, or a remembered id the catalog no
+                            // longer offers) has no click handler — persist it
+                            // here so agent + model are always both on disk.
+                            if let Some(id) = resolved
+                                && changes
+                                    .generation_defaults
+                                    .model_for(harness)
+                                    .is_none_or(|m| m.id != id)
+                                && let Some(model) =
+                                    changes.models.iter().find(|m| m.id == id)
+                            {
+                                changes.generation_defaults.remember_model(
+                                    harness,
+                                    model.id.clone(),
+                                    model.label.clone(),
+                                );
+                                changes.save_generation_defaults();
+                            }
                         }
                         Err(error) => {
                             changes.error =
