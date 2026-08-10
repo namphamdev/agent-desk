@@ -158,6 +158,8 @@ impl Shell {
             tabs_scroll: gpui::ScrollHandle::new(),
             tabs_scrolled_to: None,
             sidebar_scroll: gpui::ScrollHandle::new(),
+            sidebar_chat_scroll: gpui::UniformListScrollHandle::new(),
+            sidebar_row_data: Vec::new(),
             space_boot_applied: false,
             sound_prev: std::collections::HashMap::new(),
             user_menu_open: false,

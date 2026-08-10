@@ -192,6 +192,7 @@ impl Shell {
         let rest_text = if selected { text } else { text.opacity(0.8) };
         div()
             .id(SharedString::from(format!("chat-{id}")))
+            .w_full()
             .flex()
             .flex_col()
             .gap(px(2.0))
@@ -316,10 +317,22 @@ impl Shell {
 
     /// Which sidebar-list edges have hidden overflow (offset from the LAST
     /// frame — the invisible one-frame lag every fade here rides).
+    /// In Projects mode the Sessions list is virtualized (uniform_list with
+    /// its own scroll handle); in Activity mode the whole region uses a plain
+    /// overflow_y_scroll.
     pub(super) fn sidebar_fade_zones(&self) -> (bool, bool) {
-        let scrolled = -f32::from(self.sidebar_scroll.offset().y);
-        let max_scroll = f32::from(self.sidebar_scroll.max_offset().y);
-        (scrolled > 1.0, scrolled < max_scroll - 1.0)
+        if self.activity_open {
+            let scrolled = -f32::from(self.sidebar_scroll.offset().y);
+            let max_scroll = f32::from(self.sidebar_scroll.max_offset().y);
+            (scrolled > 1.0, scrolled < max_scroll - 1.0)
+        } else {
+            // Projects mode: the uniform_list manages its own scroll.
+            let state = self.sidebar_chat_scroll.0.borrow();
+            let handle = &state.base_handle;
+            let scrolled = -f32::from(handle.offset().y);
+            let max_scroll = f32::from(handle.max_offset().y);
+            (scrolled > 1.0, scrolled < max_scroll - 1.0)
+        }
     }
 
     pub(super) fn render_activity_sidebar(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {

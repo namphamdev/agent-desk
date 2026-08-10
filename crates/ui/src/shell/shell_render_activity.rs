@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use gpui::{
     AnyElement, Context, IntoElement, SharedString, div, prelude::*, px,
+    uniform_list,
 };
 
 use gpui_tokio::Tokio;
@@ -23,10 +24,19 @@ impl Shell {
     pub(super) fn render_chat_sidebar(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let user = self.state.read(cx).auth_user().cloned();
 
-        // Keyed rows: (stable key, estimated height, element) — the key + height
-        // list drives the §1.6 resort FLIP diff below (attention-bucket
-        // promotions glide; cleared rows just go).
-        let keyed: Vec<(String, f32, AnyElement)> = self.render_active_rows(theme, cx);
+        // Collect row data (no element creation — cheap). Element creation is
+        // deferred into the virtualized list's visible range so off-screen rows
+        // cost nothing during scroll.
+        let row_data = if self.activity_open {
+            Vec::new()
+        } else {
+            self.collect_active_row_data(cx)
+        };
+        // Store on self so the uniform_list closure (which receives &mut Self)
+        // can access it without a separate borrow.
+        self.sidebar_row_data = row_data.clone();
+        let row_keys: Vec<String> =
+            row_data.iter().map(|r| format!("c:{}", r.chat_id)).collect();
 
         // Resort glide (§1.6 View Transitions parity): when the ORDER of a live
         // list changes (new activity resort, grouping flip), surviving rows
@@ -35,7 +45,10 @@ impl Shell {
         // over 260ms cubic-bezier(0.22,1,0.36,1). New rows fade in; removals
         // just go (matching the original). First fill and chat switches (which
         // don't reorder) never animate.
-        let order: Vec<(String, f32)> = keyed.iter().map(|(k, h, _)| (k.clone(), *h)).collect();
+        let order: Vec<(String, f32)> = row_keys
+            .iter()
+            .map(|k| (k.clone(), super::nav::CHAT_ROW_HEIGHT))
+            .collect();
         if self.sidebar_prev_order != order {
             if !self.sidebar_prev_order.is_empty() {
                 let offsets = resort_offsets(&self.sidebar_prev_order, &order, SIDEBAR_LIST_GAP);
@@ -57,26 +70,6 @@ impl Shell {
             }
             self.sidebar_prev_order = order;
         }
-        let epoch = self.resort_epoch;
-        let list_items: Vec<AnyElement> = keyed
-            .into_iter()
-            .map(|(key, _, element)| {
-                if let Some(dy) = self.sidebar_resort.get(&key).copied() {
-                    let id = SharedString::from(format!("resort-{epoch}-{key}"));
-                    div()
-                        .child(element)
-                        .with_animation(id, RESORT.animation(), move |el, t| {
-                            el.relative().top(px(dy * (1.0 - t)))
-                        })
-                        .into_any_element()
-                } else if self.sidebar_new_keys.contains(&key) {
-                    let id = SharedString::from(format!("row-in-{epoch}-{key}"));
-                    motion::fade_quick(id, div().child(element)).into_any_element()
-                } else {
-                    element
-                }
-            })
-            .collect();
 
         // Overflow edge fades for the lists scroll region — the tab strip's
         // idiom, vertical (offset from the LAST frame; the lag is invisible).
@@ -134,6 +127,7 @@ impl Shell {
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.activity_open = !this.activity_open;
                         this.sidebar_scroll = gpui::ScrollHandle::new();
+                        this.sidebar_chat_scroll = gpui::UniformListScrollHandle::new();
                         cx.notify();
                     }))
                     .child(
@@ -142,54 +136,11 @@ impl Shell {
                             .text_color(theme.text_muted),
                     ),
             );
-        let sidebar_content = if activity_open {
-            self.render_activity_sidebar(theme, cx)
-        } else {
-            div()
-                .flex()
-                .flex_col()
-                .child(spaces_section)
-                .child(
-                    div()
-                        .px(px(Theme::SPACE_SM))
-                        .pt(px(12.0))
-                        .pb(px(4.0))
-                        .text_size(px(11.0))
-                        .font_weight(gpui::FontWeight::MEDIUM)
-                        .text_color(theme.text_muted.opacity(0.6))
-                        .child(SharedString::from("Sessions")),
-                )
-                .child(if !list_items.is_empty() {
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap(px(2.0))
-                        .pb(px(Theme::SPACE_SM))
-                        .children(list_items)
-                        .into_any_element()
-                } else {
-                    div()
-                        .px(px(Theme::SPACE_SM))
-                        .pb(px(Theme::SPACE_SM))
-                        .text_size(px(12.0))
-                        .text_color(theme.text_faint)
-                        .child(SharedString::from("No sessions yet"))
-                        .into_any_element()
-                })
-                .into_any_element()
-        };
-
-        div()
-            .w(px(self.settings.sidebar_width))
-            .h_full()
-            .flex()
-            .flex_col()
-            // (No titlebar strip: the unified window titlebar spans the whole
-            // window above this column.)
-            // Spaces + the global Active list share one scroll region. On
-            // glass the whole region paints inside an EdgeFade scope — a true
-            // per-glyph gradient at active overflow edges.
-            .child(crate::edge_fade::edge_faded(
+        let sidebar_scroll_region = if activity_open {
+            // Activity mode: keep the original single overflow_y_scroll — the
+            // activity feed is typically short (grouped by status) and doesn't
+            // need virtualization.
+            crate::edge_fade::edge_faded(
                 SIDEBAR_GLASS_FADE_BAND,
                 glass && lists_fade_top,
                 glass && lists_fade_bottom,
@@ -207,7 +158,7 @@ impl Shell {
                             .flex()
                             .flex_col()
                             .child(surface_header)
-                            .child(sidebar_content),
+                            .child(self.render_activity_sidebar(theme, cx)),
                     )
                     .when(lists_fade_top && !glass, |el| {
                         el.child(div().absolute().top_0().left_0().right_0().h(px(24.0)).bg(
@@ -233,7 +184,142 @@ impl Shell {
                                 )),
                         )
                     }),
-            ))
+            )
+        } else {
+            // Projects mode: surface header + Spaces section stay fixed at the
+            // top; only the Sessions list scrolls (virtualized via uniform_list
+            // so off-screen chat rows cost zero per frame).
+            let chat_count = row_data.len();
+            let epoch = self.resort_epoch;
+            let resort_map = self.sidebar_resort.clone();
+            let new_keys = self.sidebar_new_keys.clone();
+            let theme_clone = theme.clone();
+            let selected = self.state.read(cx).selected_chat.clone();
+            let chat_list: AnyElement = if chat_count > 0 {
+                uniform_list(
+                    "sidebar-chat-list",
+                    chat_count,
+                    cx.processor(move |this: &mut Shell, range: std::ops::Range<usize>, _window, cx| {
+                        let theme = theme_clone.clone();
+                        let selected = selected.clone();
+                        let resort_map = resort_map.clone();
+                        let new_keys = new_keys.clone();
+                        range
+                            .map(|ix| {
+                                let row = &this.sidebar_row_data[ix];
+                                let key = format!("c:{}", row.chat_id);
+                                let is_selected =
+                                    selected.as_deref() == Some(row.chat_id.as_str());
+                                let element = this.render_chat_row(
+                                    row.chat_id.clone(),
+                                    row.title.clone(),
+                                    row.time_ago.clone(),
+                                    row.folder.clone(),
+                                    row.branch.clone(),
+                                    row.harness,
+                                    row.acp_agent_id.clone(),
+                                    row.status,
+                                    is_selected,
+                                    &theme,
+                                    cx,
+                                );
+                                if let Some(dy) = resort_map.get(&key).copied() {
+                                    let id =
+                                        SharedString::from(format!("resort-{epoch}-{key}"));
+                                    div()
+                                        .w_full()
+                                        .child(element)
+                                        .with_animation(
+                                            id,
+                                            RESORT.animation(),
+                                            move |el, t| {
+                                                el.relative().top(px(dy * (1.0 - t)))
+                                            },
+                                        )
+                                        .into_any_element()
+                                } else if new_keys.contains(&key) {
+                                    let id =
+                                        SharedString::from(format!("row-in-{epoch}-{key}"));
+                                    motion::fade_quick(id, div().w_full().child(element)).into_any_element()
+                                } else {
+                                    element
+                                }
+                            })
+                            .collect::<Vec<_>>()
+                    }),
+                )
+                .track_scroll(&self.sidebar_chat_scroll)
+                .with_sizing_behavior(gpui::ListSizingBehavior::Auto)
+                .flex_1()
+                .min_h_0()
+                .into_any_element()
+            } else {
+                div()
+                    .px(px(Theme::SPACE_SM))
+                    .pb(px(Theme::SPACE_SM))
+                    .text_size(px(12.0))
+                    .text_color(theme.text_faint)
+                    .child(SharedString::from("No sessions yet"))
+                    .into_any_element()
+            };
+
+            crate::edge_fade::edge_faded(
+                SIDEBAR_GLASS_FADE_BAND,
+                glass && lists_fade_top,
+                glass && lists_fade_bottom,
+                div()
+                    .relative()
+                    .flex_1()
+                    .min_h_0()
+                    .flex()
+                    .flex_col()
+                    .px(px(Theme::SPACE_SM))
+                    .child(surface_header)
+                    .child(spaces_section)
+                    .child(
+                        div()
+                            .px(px(Theme::SPACE_SM))
+                            .pt(px(12.0))
+                            .pb(px(4.0))
+                            .text_size(px(11.0))
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .text_color(theme.text_muted.opacity(0.6))
+                            .child(SharedString::from("Sessions")),
+                    )
+                    .child(chat_list)
+                    .when(lists_fade_top && !glass, |el| {
+                        el.child(div().absolute().top_0().left_0().right_0().h(px(24.0)).bg(
+                            gpui::linear_gradient(
+                                180.0,
+                                gpui::linear_color_stop(sidebar_fade, 0.0),
+                                gpui::linear_color_stop(sidebar_fade.opacity(0.0), 1.0),
+                            ),
+                        ))
+                    })
+                    .when(lists_fade_bottom && !glass, |el| {
+                        el.child(
+                            div()
+                                .absolute()
+                                .bottom_0()
+                                .left_0()
+                                .right_0()
+                                .h(px(24.0))
+                                .bg(gpui::linear_gradient(
+                                    0.0,
+                                    gpui::linear_color_stop(sidebar_fade, 0.0),
+                                    gpui::linear_color_stop(sidebar_fade.opacity(0.0), 1.0),
+                                )),
+                        )
+                    }),
+            )
+        };
+
+        div()
+            .w(px(self.settings.sidebar_width))
+            .h_full()
+            .flex()
+            .flex_col()
+            .child(sidebar_scroll_region)
             // Update strip (above the user menu; below the lists).
             .when_some(self.render_update_strip(theme, cx), |el, strip| {
                 el.child(strip)

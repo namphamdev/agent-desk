@@ -144,6 +144,15 @@ pub struct Shell {
     pub(crate) tabs_scrolled_to: Option<String>,
     /// Scroll position of the sidebar lists region (drives its edge fades).
     pub(crate) sidebar_scroll: gpui::ScrollHandle,
+    /// Virtualized scroll handle for the sidebar Sessions list. Only the
+    /// visible chat rows render each frame — without this `overflow_y_scroll`
+    /// built and laid out every row on every scroll tick, dropping FPS and
+    /// pinning CPU once the list grew past a few dozen sessions.
+    pub(crate) sidebar_chat_scroll: gpui::UniformListScrollHandle,
+    /// Pre-computed row data for the sidebar Sessions list, refreshed at the
+    /// top of each sidebar render pass. The virtualized `uniform_list` closure
+    /// reads from this to build elements only for the visible range.
+    pub(crate) sidebar_row_data: Vec<spaces::ActiveRowData>,
     /// `settings.last_space_id` applied once after the first spaces frame.
     pub(crate) space_boot_applied: bool,
     /// Last seen session status per chat — the chime trigger compares against

@@ -22,7 +22,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -90,6 +90,12 @@ struct CheckoutEntry {
     chats: Mutex<Vec<Chat>>,
     /// Last published checksum — unchanged snapshots publish nothing.
     checksum: Mutex<Option<String>>,
+    /// Cheap working-tree + index fingerprint at the time of the last capture
+    /// (mtime of `.git/HEAD`, `.git/index`, and the worktree root's own mtime).
+    /// The repair tick consults this before paying five git subprocesses: if
+    /// nothing has touched the tree since the last capture, the snapshot is
+    /// certain to be identical and the capture is skipped entirely.
+    fs_fingerprint: Mutex<Option<Fingerprint>>,
     /// Kick channel into the entry's debounce/sync task.
     kick_tx: mpsc::UnboundedSender<()>,
     /// Keeps the recursive fs watchers alive; dropped on entry close.
@@ -316,6 +322,7 @@ fn add_entry(inner: &Arc<DiffSyncInner>, identity: CheckoutIdentity, chats: Vec<
         identity,
         chats: Mutex::new(chats),
         checksum: Mutex::new(None),
+        fs_fingerprint: Mutex::new(None),
         kick_tx: kick_tx.clone(),
         _watchers: watchers,
     });
@@ -330,6 +337,9 @@ fn add_entry(inner: &Arc<DiffSyncInner>, identity: CheckoutIdentity, chats: Vec<
 
 /// Per-checkout task: trailing-debounce fs kicks, then compute + publish. Runs
 /// syncs sequentially — kicks during a sync accumulate and trigger another pass.
+/// FS-watcher kicks always force a capture (a real change was observed); the
+/// repair tick passes `force = false` so the [`Fingerprint`] gate can skip
+/// unchanged checkouts without spawning five git subprocesses.
 async fn entry_task(
     inner: Weak<DiffSyncInner>,
     entry: Weak<CheckoutEntry>,
@@ -347,7 +357,10 @@ async fn entry_task(
         let (Some(inner), Some(entry)) = (inner.upgrade(), entry.upgrade()) else {
             return;
         };
-        sync_entry(&inner, &entry).await;
+        // entry_task is driven ONLY by the entry's own kick channel, and every
+        // kick on it comes from a real fs watcher event (or the initial
+        // snapshot). So these are always forced.
+        sync_entry(&inner, &entry, true).await;
     }
 }
 
@@ -355,7 +368,21 @@ async fn entry_task(
 // Snapshot + publish
 // ---------------------------------------------------------------------------
 
-async fn sync_entry(inner: &Arc<DiffSyncInner>, entry: &Arc<CheckoutEntry>) {
+async fn sync_entry(inner: &Arc<DiffSyncInner>, entry: &Arc<CheckoutEntry>, force: bool) {
+    // Fingerprint gate (repair tick only): if the working tree + git index
+    // have not changed since the last capture, skip the five git subprocesses
+    // entirely. The fs watcher already kicks on real changes, so this gate
+    // only suppresses redundant repair captures.
+    if !force {
+        let current = Fingerprint::probe(&entry.identity.git_dir, &entry.identity.root);
+        let unchanged = lock(&entry.fs_fingerprint)
+            .as_ref()
+            .is_some_and(|prev| *prev == current);
+        if unchanged {
+            return;
+        }
+    }
+
     let snapshot = match capture_diff(&inner.repos, &entry.identity.root).await {
         Ok(snapshot) => snapshot,
         Err(err) => {
@@ -364,6 +391,11 @@ async fn sync_entry(inner: &Arc<DiffSyncInner>, entry: &Arc<CheckoutEntry>) {
             return;
         }
     };
+
+    // Stamp the fingerprint AFTER a successful capture so the next repair tick
+    // can compare against this point.
+    *lock(&entry.fs_fingerprint) =
+        Some(Fingerprint::probe(&entry.identity.git_dir, &entry.identity.root));
 
     // chat.branch upkeep — the git-dir watcher covers HEAD, so every snapshot
     // reconciles mismatched rows (repair tick covers dropped events).
@@ -487,12 +519,75 @@ async fn diff_sync_task(inner: Weak<DiffSyncInner>, mut chats_rx: watch::Receive
                 let Some(inner) = inner.upgrade() else { break };
                 let chats = chats_rx.borrow().clone();
                 reconcile(&inner, chats).await;
-                for entry in lock(&inner.entries).values() {
-                    let _ = entry.kick_tx.send(());
+                // Repair pass: call sync_entry directly (not via kick_tx) so
+                // the fingerprint gate applies — unchanged checkouts skip the
+                // five-subprocess capture entirely. FS watcher kicks bypass
+                // the gate via entry_task's force=true path.
+                let entries: Vec<Arc<CheckoutEntry>> =
+                    lock(&inner.entries).values().cloned().collect();
+                for entry in entries {
+                    sync_entry(&inner, &entry, false).await;
                 }
             }
         }
     }
+}
+
+/// Cheap fingerprint of the working tree + git index state, used to skip
+/// full `capture_diff` when nothing has changed since the last capture.
+///
+/// Probes the mtime (and inode via `FileId` when available) of:
+/// - `.git/HEAD` (branch checkout / HEAD moves)
+/// - `.git/index` (staging-area mutations — the dominant signal for tracked
+///   file changes, since `git diff` compares the worktree against the index)
+/// - `.git/refs` directory mtime (remote fetches, branch creation)
+/// - the worktree root directory's mtime (top-level untracked file
+///   add/remove; subdirectory churn is covered by the recursive `notify`
+///   watcher which kicks on real FS events)
+///
+/// This is NOT a perfect signal (a same-second touch with identical mtime
+/// resolution hides a change). It is a **gate on the repair tick only**,
+/// complementing the fs watcher. The watcher already kicks on every real
+/// change; the repair tick exists as a safety net for dropped/coalesced
+/// events. Skipping a repair capture when the fingerprint is unchanged means
+/// the worst case is one repair interval (~2 min) of staleness — exactly the
+/// latency the repair tick was designed to tolerate in the first place.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Fingerprint {
+    head: Option<(SystemTime, u64)>,
+    index: Option<(SystemTime, u64)>,
+    refs: Option<SystemTime>,
+    root: Option<(SystemTime, u64)>,
+}
+
+impl Fingerprint {
+    /// Probe the current state. `git_dir` is the canonical git directory
+    /// (worktree-specific for linked worktrees); `root` is the worktree root.
+    fn probe(git_dir: &Path, root: &Path) -> Self {
+        Self {
+            head: file_id(git_dir.join("HEAD")),
+            index: file_id(git_dir.join("index")),
+            refs: dir_mtime(git_dir.join("refs")),
+            root: file_id(root),
+        }
+    }
+}
+
+/// (mtime, len) of a file — `len` disambiguates a same-mtime rewrite.
+fn file_id(path: impl AsRef<Path>) -> Option<(SystemTime, u64)> {
+    let meta = std::fs::metadata(path.as_ref()).ok()?;
+    Some((
+        meta.modified().ok()?,
+        meta.len(),
+    ))
+}
+
+/// Directory mtime — bumps when an entry is added or removed (branch
+/// creation, ref updates that add a loose ref file).
+fn dir_mtime(path: impl AsRef<Path>) -> Option<SystemTime> {
+    std::fs::metadata(path.as_ref())
+        .ok()
+        .and_then(|m| m.modified().ok())
 }
 
 // ---------------------------------------------------------------------------
@@ -863,5 +958,64 @@ mod watch_budget_tests {
         // A self-referential symlink cycle must not send the walk into a spin.
         std::os::unix::fs::symlink(root.join("real"), root.join("real/inner/loop")).unwrap();
         assert!(!exceeds_watch_budget(root)); // terminates, under budget
+    }
+}
+
+#[cfg(test)]
+mod fingerprint_tests {
+    use super::Fingerprint;
+    use std::thread;
+    use std::time::Duration;
+
+    #[test]
+    fn fingerprint_is_stable_when_unchanged() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let git_dir = root.join(".git");
+        std::fs::create_dir_all(&git_dir).unwrap();
+        std::fs::write(git_dir.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        std::fs::write(git_dir.join("index"), b"\0\0\0\0").unwrap();
+
+        let a = Fingerprint::probe(&git_dir, root);
+        // Without any mutation, probing again must yield the same fingerprint.
+        let b = Fingerprint::probe(&git_dir, root);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn fingerprint_detects_index_change() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let git_dir = root.join(".git");
+        std::fs::create_dir_all(&git_dir).unwrap();
+        std::fs::write(git_dir.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        std::fs::write(git_dir.join("index"), b"old").unwrap();
+
+        let before = Fingerprint::probe(&git_dir, root);
+
+        // Sleep briefly to ensure mtime can change, then mutate the index.
+        thread::sleep(Duration::from_millis(20));
+        std::fs::write(git_dir.join("index"), b"new content here").unwrap();
+
+        let after = Fingerprint::probe(&git_dir, root);
+        assert_ne!(before, after, "index change must alter the fingerprint");
+    }
+
+    #[test]
+    fn fingerprint_detects_head_change() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let git_dir = root.join(".git");
+        std::fs::create_dir_all(&git_dir).unwrap();
+        std::fs::write(git_dir.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        std::fs::write(git_dir.join("index"), b"\0").unwrap();
+
+        let before = Fingerprint::probe(&git_dir, root);
+
+        thread::sleep(Duration::from_millis(20));
+        std::fs::write(git_dir.join("HEAD"), "ref: refs/heads/develop\n").unwrap();
+
+        let after = Fingerprint::probe(&git_dir, root);
+        assert_ne!(before, after, "HEAD change must alter the fingerprint");
     }
 }

@@ -34,6 +34,22 @@ struct SpaceDragPayload {
     pub(super) name: SharedString,
 }
 
+/// Pre-render data for one Sessions-list row: everything `render_chat_row`
+/// needs except the theme. Collected once for the whole list each frame;
+/// element creation is deferred to the virtualized list's visible range so
+/// off-screen rows pay zero cost.
+#[derive(Clone)]
+pub(crate) struct ActiveRowData {
+    pub(super) chat_id: String,
+    pub(super) title: SharedString,
+    pub(super) time_ago: SharedString,
+    pub(super) folder: SharedString,
+    pub(super) branch: Option<SharedString>,
+    pub(super) harness: Option<comet_proto::HarnessId>,
+    pub(super) acp_agent_id: Option<String>,
+    pub(super) status: ChatIndicator,
+}
+
 /// The floating row rendered at the cursor while dragging.
 struct SpaceGhost {
     pub(super) name: SharedString,
@@ -591,13 +607,14 @@ impl Shell {
             )
     }
 
-    /// The global "Sessions" list: every session across all spaces (idle
-    /// included), attention-sorted. Rows are keyed for the FLIP resort glide.
-    pub(super) fn render_active_rows(
-        &mut self,
-        theme: &Theme,
-        cx: &mut Context<Self>,
-    ) -> Vec<(String, f32, AnyElement)> {
+    /// Collect the data needed to render the Sessions list rows WITHOUT
+    /// building any gpui elements. The virtualized sidebar list calls this
+    /// once per frame (cheap: sort + string formatting) and defers element
+    /// creation to only the visible range inside `uniform_list`.
+    pub(super) fn collect_active_row_data(
+        &self,
+        cx: &Context<Self>,
+    ) -> Vec<ActiveRowData> {
         let now = Utc::now();
         let rows: Vec<(ChatIndicator, comet_proto::Chat, String, Option<String>)> = {
             let state = self.state.read(cx);
@@ -625,32 +642,24 @@ impl Shell {
                 })
                 .collect()
         };
-        let selected = self.state.read(cx).selected_chat.clone();
         rows.into_iter()
             .map(|(status, chat, folder, branch)| {
+                let title: SharedString = transcript::single_line(
+                    &chat.title.clone().unwrap_or_else(|| "New session".into()),
+                )
+                .into();
                 let time_ago: SharedString =
                     format_time_ago(chat.last_message_at.unwrap_or(chat.created_at), now).into();
-                let is_selected = selected.as_deref() == Some(chat.id.as_str());
-                let height = super::CHAT_ROW_HEIGHT;
-                let harness = chat.config.as_ref().map(|c| c.harness);
-                let acp_agent_id = chat.config.as_ref().and_then(|c| c.acp_agent_id.clone());
-                let element = self.render_chat_row(
-                    chat.id.clone(),
-                    transcript::single_line(
-                        &chat.title.clone().unwrap_or_else(|| "New session".into()),
-                    )
-                    .into(),
+                ActiveRowData {
+                    chat_id: chat.id.clone(),
+                    title,
                     time_ago,
-                    folder.into(),
-                    branch.map(SharedString::from),
-                    harness,
-                    acp_agent_id,
+                    folder: folder.into(),
+                    branch: branch.map(SharedString::from),
+                    harness: chat.config.as_ref().map(|c| c.harness),
+                    acp_agent_id: chat.config.as_ref().and_then(|c| c.acp_agent_id.clone()),
                     status,
-                    is_selected,
-                    theme,
-                    cx,
-                );
-                (format!("c:{}", chat.id), height, element)
+                }
             })
             .collect()
     }

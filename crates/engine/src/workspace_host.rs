@@ -766,6 +766,31 @@ impl WorkspaceHostInner {
         }
     }
 
+    /// Presence-tick publish: re-evaluates ONLY the device rows (the part
+    /// affected by ephemeral heartbeat decay) and pushes them if changed.
+    /// This avoids the full `read_all()` + `merge_obsolete_device_registrations`
+    /// that the doc-change [`publish`](Self::publish) path pays — the presence
+    /// tick fires every 15 seconds, and in steady state (all devices healthy,
+    /// no doc mutations) the vast majority of those ticks change nothing.
+    fn publish_presence(&self) {
+        let mut devices = match self.doc.read_devices() {
+            Ok(devices) => devices,
+            Err(err) => {
+                tracing::warn!(error = %err, "workspace device read failed");
+                return;
+            }
+        };
+        self.overlay_presence(&mut devices);
+        // Only push if the device rows actually changed. In steady state every
+        // device's heartbeat is fresh on every tick, so `last_seen_at` stamps
+        // are identical — `send_replace` is skipped, watchers are NOT woken,
+        // and the UI's online dot re-render is avoided.
+        let changed = !devices_eq(&self.devices_tx.borrow(), &devices);
+        if changed {
+            self.devices_tx.send_replace(devices);
+        }
+    }
+
     /// Detect and heal stale device registrations left behind when a cache wipe
     /// or app upgrade minted a new device id for this physical machine. Two
     /// merge paths, strongest signal first:
@@ -925,6 +950,32 @@ fn version_is_newer(candidate: &str, previous: &str) -> bool {
     }
 }
 
+/// Cheap equality for the presence-publish gate: compares only the fields
+/// that can change during a presence tick (`last_seen_at`). The immutable
+/// fields (id, name, platform, version, fingerprint) are set once on the doc
+/// and only change through doc commits (which trigger the full `publish()`
+/// path, not this gate).
+fn devices_eq(a: &[Device], b: &[Device]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    // Both slices come from `read_devices()` which iterates a Loro map — the
+    // iteration order is deterministic for a given doc state, but a doc commit
+    // between the two reads can insert/remove a row. Sort-free comparison on
+    // the id key handles that without requiring identical ordering.
+    for da in a {
+        match b.iter().find(|db| db.id == da.id) {
+            Some(db) => {
+                if da.last_seen_at != db.last_seen_at {
+                    return false;
+                }
+            }
+            None => return false,
+        }
+    }
+    true
+}
+
 /// Local live statuses win for this device's chats; every other device's rows come
 /// from the workspace doc. Sorted by chat id (stable stream output).
 fn merge_sessions(device_id: &str, rows: &[Session], local: &[Session]) -> Vec<Session> {
@@ -1055,10 +1106,15 @@ async fn workspace_task(weak: Weak<WorkspaceHostInner>, mut changed_rx: watch::R
             _ = presence.tick() => {
                 let Some(inner) = weak.upgrade() else { break };
                 inner.presence_tick();
-                // Re-publish on the same cadence: remote heartbeats decay when a
-                // device goes silent, and watchers (the UI online dot, "host
-                // offline" hints) need a tick to observe that staleness.
-                inner.publish();
+                // Re-evaluate device presence on the same cadence: remote
+                // heartbeats decay when a device goes silent, and watchers
+                // (the UI online dot, "host offline" hints) need a tick to
+                // observe that staleness. Uses the lightweight
+                // `publish_presence` path (devices-only, skip if unchanged)
+                // rather than the full `publish()` — in steady state this
+                // avoids a full doc re-read + merge + 4-channel send_replace
+                // every 15 seconds.
+                inner.publish_presence();
             }
         }
     }
