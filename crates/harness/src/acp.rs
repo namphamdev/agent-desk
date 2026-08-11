@@ -12,6 +12,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use agent_client_protocol::schema::ProtocolVersion;
+use anyhow::Context as _;
 use agent_client_protocol::schema::v1::{
     AuthenticateRequest, AuthMethod, CancelNotification, ClientCapabilities,
     ClientSessionCapabilities, ContentBlock, Implementation, InitializeRequest, InitializeResponse,
@@ -625,39 +626,157 @@ impl Harness for AcpHarness {
         }
         drop(cached_models);
 
+        // Grok-specific fast path: read the models cache file or run
+        // `grok models` instead of the ACP session/new handshake. Grok does
+        // not populate the standard configOptions field; its model list is
+        // only available via the CLI subcommand or the local cache file.
+        if is_grok_command(&command) {
+            // Try the cache file first — it doesn't require network access
+            // or XAI_API_KEY, which the daemon process may not have.
+            match grok_cached_models() {
+                Ok(models) if !models.is_empty() => {
+                    eprintln!("[TRACE:models] grok cache file returned {} models", models.len());
+                    let mut cached_models = self.discovered_models.lock().await;
+                    cached_models.insert(command, models.clone());
+                    return Ok(models);
+                }
+                Ok(_) => {
+                    eprintln!("[TRACE:models] grok cache file returned 0 models; trying CLI");
+                }
+                Err(error) => {
+                    eprintln!("[TRACE:models] grok cache file failed: {error}; trying CLI");
+                }
+            }
+            match grok_cli_models(&command).await {
+                Ok(models) if !models.is_empty() => {
+                    eprintln!("[TRACE:models] grok CLI returned {} models", models.len());
+                    let mut cached_models = self.discovered_models.lock().await;
+                    cached_models.insert(command, models.clone());
+                    return Ok(models);
+                }
+                Ok(_) => {
+                    eprintln!("[TRACE:models] grok CLI returned 0 models; falling back to ACP discovery");
+                }
+                Err(error) => {
+                    eprintln!("[TRACE:models] grok CLI failed: {error}; falling back to ACP discovery");
+                }
+            }
+        }
+
         let agent = AcpAgent::from_str(&command).map_err(|error| {
             HarnessError::Protocol(format!("invalid ACP agent config: {error}"))
         })?;
         let agent = TokioAcpAgent::new(agent);
         let discovered_models = Arc::new(Mutex::new(None));
+        let notification_config_options: Arc<Mutex<Vec<SessionConfigOption>>> =
+            Arc::new(Mutex::new(Vec::new()));
+        let probe_config_options = notification_config_options.clone();
         let discovery_result = agent_client_protocol::Client
             .builder()
+            .on_receive_notification(
+                {
+                    let probe_config_options = probe_config_options.clone();
+                    async move |notification: SessionNotification, _cx| {
+                        eprintln!(
+                            "[TRACE:models] notification: update_type={:?}",
+                            notification.update
+                        );
+                        if let agent_client_protocol::schema::v1::SessionUpdate::ConfigOptionUpdate(update) =
+                            &notification.update
+                        {
+                            eprintln!(
+                                "[TRACE:models] ConfigOptionUpdate notification: {} options",
+                                update.config_options.len()
+                            );
+                            probe_config_options
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .extend(update.config_options.iter().cloned());
+                        }
+                        Ok(())
+                    }
+                },
+                agent_client_protocol::on_receive_notification!(),
+            )
             .connect_with(agent, {
                 let discovered_models = discovered_models.clone();
                 move |connection: ConnectionTo<Agent>| async move {
                     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
-                    // Initialize, then try session/new to get configOptions
-                    // (the model list). Authenticating is attempted but
-                    // non-fatal: many ACP agents (Grok, Pi, etc.) return
-                    // configOptions on session/new even without authentication,
-                    // and authentication itself fails when the user hasn't
-                    // logged in yet (no cached token / API key). Treating auth
-                    // failure as non-fatal lets the picker show the model list
-                    // in the common case; if session/new also fails, discovery
-                    // degrades to the default model as before.
+                    // Initialize and authenticate. Grok (`grok agent stdio`)
+                    // requires a successful `authenticate` before `session/new`
+                    // will return `configOptions` (the model list). We use the
+                    // same hard-failing auth as the live run path so that auth
+                    // errors surface clearly instead of silently producing an
+                    // empty model list.
                     let init_response = initialize(&connection).await?;
-                    if let Err(error) = authenticate_if_needed(&connection, &init_response).await {
-                        tracing::debug!(
-                            error = %error,
-                            "ACP authentication failed during model discovery; \
-                             trying session/new anyway"
-                        );
+                    eprintln!(
+                        "[TRACE:models] initialize Ok: protocol={:?}, auth_methods={:?}",
+                        init_response.protocol_version,
+                        init_response.auth_methods,
+                    );
+                    match authenticate_if_needed(&connection, &init_response).await {
+                        Ok(()) => {
+                            eprintln!("[TRACE:models] authenticate_if_needed Ok");
+                        }
+                        Err(error) => {
+                            eprintln!(
+                                "[TRACE:models] authenticate_if_needed FAILED: {error}"
+                            );
+                            // For agents that advertise auth methods (e.g.
+                            // Grok), session/new won't return configOptions
+                            // without auth. Propagate the error so the caller
+                            // sees a clear message instead of silently getting
+                            // 0 models.
+                            if !init_response.auth_methods.is_empty() {
+                                return Err(error);
+                            }
+                            eprintln!(
+                                "[TRACE:models] agent has no auth methods; \
+                                 continuing to session/new despite auth error"
+                            );
+                        }
                     }
                     let response = connection
                         .send_request(NewSessionRequest::new(cwd))
                         .block_task()
                         .await?;
-                    let models = models_from_config_options(response.config_options.as_deref());
+                    // Serialize the full response to JSON so we can see ALL
+                    // fields, not just config_options. This helps diagnose
+                    // whether Grok returns configOptions under a different key
+                    // or format that the SDK's DefaultOnError deserializer
+                    // silently drops.
+                    let response_json = serde_json::to_string(&response)
+                        .unwrap_or_else(|_| "<serialize failed>".into());
+                    eprintln!(
+                        "[TRACE:models] session/new Ok: config_options count={}, full response JSON={}",
+                        response.config_options.as_deref().map(|opts| opts.len()).unwrap_or(0),
+                        response_json,
+                    );
+
+                    // If session/new returned no config_options, check whether
+                    // any ConfigOptionUpdate notifications arrived. Some agents
+                    // (e.g. Grok) may send config options via a session/update
+                    // notification instead of in the session/new response.
+                    let mut effective_config_options = response.config_options.clone();
+                    if effective_config_options.is_none() {
+                        // Give the agent a moment to send any pending
+                        // notifications before we check.
+                        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                        let notified = notification_config_options
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .clone();
+                        if !notified.is_empty() {
+                            eprintln!(
+                                "[TRACE:models] recovered {} config options from notifications",
+                                notified.len()
+                            );
+                            effective_config_options = Some(notified);
+                        }
+                    }
+
+                    let models = models_from_config_options(effective_config_options.as_deref());
+                    eprintln!("[TRACE:models] final model count: {}", models.len());
                     *discovered_models
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(models.clone());
@@ -683,6 +802,18 @@ impl Harness for AcpHarness {
                         "ACP agent exited after model discovery; using discovered models"
                     );
                     models
+                } else if is_codex_command_for(self.spec, &command) {
+                    // codex-acp requires CODEX_API_KEY or OPENAI_API_KEY for
+                    // authentication.  When neither is set the ACP authenticate
+                    // call fails before session/new returns configOptions.
+                    // Fall back to the curated catalog so the picker stays
+                    // usable; the key is enforced again at run time via the
+                    // custom-provider env or the inherited OPENAI_API_KEY.
+                    tracing::debug!(
+                        error = %error,
+                        "codex model discovery failed; using static catalog"
+                    );
+                    crate::codex::catalog::static_models()
                 } else {
                     tracing::debug!(
                         error = %error,
@@ -1646,17 +1777,302 @@ fn select_choices(
     }
 }
 
+/// Check whether an ACP command string represents a Grok agent.
+///
+/// Matches two forms:
+///   - npx-installed: JSON command whose args contain `@xai-official/grok`
+///   - custom install: plain string or JSON whose executable is `grok`/`grok.exe`
+fn is_grok_command(command: &str) -> bool {
+    if command.contains("@xai-official/grok") {
+        return true;
+    }
+    // Check whether the executable's file stem is `grok`.
+    let exe_stem = extract_executable(command)
+        .and_then(|path| {
+            std::path::Path::new(&path)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .map(str::to_ascii_lowercase)
+        });
+    exe_stem.is_some_and(|stem| stem == "grok")
+}
+
+/// Detect whether the resolved command launches codex-acp (by spec id,
+/// executable name, or npx package), so the caller can apply codex-specific
+/// fallbacks regardless of whether the harness was created via `codex()`
+/// (built-in spec) or the generic ACP path (installed agent).
+fn is_codex_command_for(spec: Option<AcpSpec>, command: &str) -> bool {
+    if spec.is_some_and(|s| s.id == HarnessId::Codex) {
+        return true;
+    }
+    if command.contains("@agentclientprotocol/codex-acp") {
+        return true;
+    }
+    extract_executable(command)
+        .and_then(|path| {
+            std::path::Path::new(&path)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .map(str::to_ascii_lowercase)
+        })
+        .is_some_and(|stem| stem == "codex-acp")
+}
+
+/// Extract the executable path from a command string (JSON or plain).
+fn extract_executable(command: &str) -> Option<String> {
+    let trimmed = command.trim();
+    if trimmed.starts_with('{') {
+        let value: serde_json::Value = serde_json::from_str(trimmed).ok()?;
+        value.get("command")?.as_str().map(String::from)
+    } else {
+        // Plain string: first whitespace-delimited token (the executable).
+        // Shell pipelines containing `|` are not supported.
+        if trimmed.contains('|') {
+            return None;
+        }
+        trimmed.split_whitespace().next().map(String::from)
+    }
+}
+
+/// Read Grok models from the local cache file (`~/.grok/models_cache.json`).
+///
+/// This avoids spawning a subprocess and does not require `XAI_API_KEY` in
+/// the process env, making it more reliable than `grok models` when the
+/// daemon's environment differs from the user's terminal.
+fn grok_cached_models() -> anyhow::Result<Vec<Model>> {
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+        .context("neither HOME nor USERPROFILE is set")?;
+    let cache_path = home.join(".grok").join("models_cache.json");
+    let content = std::fs::read_to_string(&cache_path)
+        .with_context(|| format!("read grok models cache: {}", cache_path.display()))?;
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct CacheFile {
+        models: std::collections::BTreeMap<String, CacheEntry>,
+    }
+    #[derive(serde::Deserialize)]
+    struct CacheEntry {
+        info: CacheInfo,
+    }
+    #[derive(serde::Deserialize)]
+    struct CacheInfo {
+        id: String,
+        #[serde(default)]
+        name: Option<String>,
+        #[serde(default)]
+        hidden: bool,
+    }
+    let cache: CacheFile =
+        serde_json::from_str(&content).context("parse grok models cache JSON")?;
+    let reasoning_levels = REASONING_LEVELS.to_vec();
+    let models = cache
+        .models
+        .into_iter()
+        .filter(|(_, entry)| !entry.info.hidden)
+        .map(|(_, entry)| {
+            let label = entry
+                .info
+                .name
+                .filter(|n| !n.trim().is_empty())
+                .unwrap_or_else(|| entry.info.id.clone());
+            Model {
+                id: entry.info.id,
+                label,
+                description: None,
+                reasoning_levels: reasoning_levels.clone(),
+                options: Vec::new(),
+            }
+        })
+        .collect::<Vec<_>>();
+    Ok(models)
+}
+
+/// Run `grok models` using the same executable and env as the ACP agent.
+///
+/// The ACP command JSON is `{"command":"...","args":[...,"agent","stdio"],
+/// "env":{...}}`. This function replaces the `agent stdio` suffix with
+/// `models`, runs the subprocess, and parses the output.
+///
+/// Output format (from `grok models`):
+/// ```text
+/// Default model: xai:grok-4.5
+///
+/// Available models:
+///   * xai:grok-4.5 (default)
+///   * xai:grok-codex
+/// ```
+async fn grok_cli_models(command: &str) -> anyhow::Result<Vec<Model>> {
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct CmdConfig {
+        command: String,
+        #[serde(default)]
+        args: Vec<String>,
+        #[serde(default)]
+        env: std::collections::BTreeMap<String, String>,
+    }
+
+    // Parse the command: JSON object or plain string.
+    let trimmed = command.trim();
+    let (executable, args, env) = if trimmed.starts_with('{') {
+        let config: CmdConfig =
+            serde_json::from_str(trimmed).context("parse Grok command JSON")?;
+        (config.command, config.args, config.env)
+    } else {
+        // Plain string like `C:\Users\Admin\.grok\bin\grok.exe agent stdio`.
+        // Shell pipelines containing `|` are not supported.
+        if trimmed.contains('|') {
+            anyhow::bail!("shell pipeline commands are not supported");
+        }
+        let mut parts = trimmed.split_whitespace();
+        let executable = parts
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("empty command"))?
+            .to_string();
+        let args: Vec<String> = parts.map(String::from).collect();
+        (executable, args, std::collections::BTreeMap::new())
+    };
+
+    // Build `models` args: keep everything before `agent`, then add `models`.
+    let mut models_args = args;
+    if let Some(idx) = models_args.iter().position(|arg| arg == "agent") {
+        models_args.truncate(idx);
+    }
+    models_args.push("models".into());
+
+    let mut cmd = tokio::process::Command::new(&executable);
+    cmd.args(&models_args);
+    for (key, value) in &env {
+        cmd.env(key, value);
+    }
+    eprintln!(
+        "[TRACE:grok_cli_models] XAI_API_KEY in process env: {}",
+        std::env::var("XAI_API_KEY").is_ok()
+    );
+    eprintln!(
+        "[TRACE:grok_cli_models] running: {} {:?}",
+        &executable, &models_args
+    );
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+    cmd.stdin(std::process::Stdio::null());
+
+    let output = cmd
+        .output()
+        .await
+        .context("run `grok models`")?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    eprintln!(
+        "[TRACE:grok_cli_models] exit_code={:?}, stdout_len={}, stderr_len={}, stderr={}",
+        output.status.code(),
+        stdout.len(),
+        stderr.len(),
+        &stderr[..stderr.len().min(500)],
+    );
+    eprintln!(
+        "[TRACE:grok_cli_models] first 500 chars of stdout: {}",
+        &stdout[..stdout.len().min(500)],
+    );
+    let models = parse_grok_models_output(&stdout, REASONING_LEVELS.to_vec());
+    eprintln!("[TRACE:grok_cli_models] parsed {} models", models.len());
+    Ok(models)
+}
+
+/// Parse the stdout of `grok models` into a list of models.
+///
+/// Accepts both `* <id>` and `- <id>` bullet styles (Grok uses `-` for
+/// regular entries and `*` for the default). The default model (from the
+/// "Default model:" header or a `(default)` suffix) is sorted first.
+fn parse_grok_models_output(stdout: &str, reasoning_levels: Vec<ReasoningLevel>) -> Vec<Model> {
+    let mut default_id: Option<String> = None;
+    let mut models: Vec<Model> = stdout
+        .lines()
+        .filter_map(|line| {
+            // Capture the default model id for sorting.
+            if let Some(rest) = line.trim().strip_prefix("Default model:") {
+                default_id = Some(rest.trim().to_string());
+            }
+            // Parse model entries: `  * <id>` or `  - <id>`, optionally
+            // followed by ` (default)`. Grok uses `-` for regular entries
+            // and `*` for the default model.
+            let trimmed = line.trim();
+            let rest = trimmed
+                .strip_prefix("* ")
+                .or_else(|| trimmed.strip_prefix("- "))?;
+            let rest = rest.trim();
+            let (id, is_default) = match rest.strip_suffix(" (default)") {
+                Some(id) => (id.trim(), true),
+                None => (rest, false),
+            };
+            let id = id.to_string();
+            if id.is_empty() {
+                return None;
+            }
+            // Use default_id from the header line if we haven't seen it yet.
+            if is_default && default_id.is_none() {
+                default_id = Some(id.clone());
+            }
+            Some(Model {
+                label: id.clone(),
+                id,
+                description: None,
+                reasoning_levels: reasoning_levels.clone(),
+                options: vec![],
+            })
+        })
+        .collect();
+
+    // Sort: default model first.
+    if let Some(default) = default_id {
+        models.sort_by_key(|m| m.id != default);
+    }
+    models
+}
+
 fn models_from_config_options(options: Option<&[SessionConfigOption]>) -> Vec<Model> {
+    eprintln!(
+        "[TRACE:models_from_config_options] options present={}, option_count={}",
+        options.is_some(),
+        options.map(|o| o.len()).unwrap_or(0)
+    );
+    if let Some(opts) = options {
+        for opt in opts {
+            eprintln!(
+                "[TRACE:models_from_config_options] option id={:?}, name={:?}, category={:?}, kind={:?}",
+                opt.id, opt.name, opt.category, std::mem::discriminant(&opt.kind)
+            );
+        }
+    }
     let reasoning_levels = reasoning_levels_from_config_options(options);
     let Some(option) = options.and_then(model_config_option) else {
+        eprintln!("[TRACE:models_from_config_options] no model config option found -> default model");
         return vec![default_acp_model(reasoning_levels)];
     };
+    eprintln!(
+        "[TRACE:models_from_config_options] found model option id={:?}, name={:?}, kind={:?}",
+        option.id, option.name, option.kind
+    );
     let SessionConfigKind::Select(select) = &option.kind else {
+        eprintln!("[TRACE:models_from_config_options] model option is not Select -> default model");
         return vec![default_acp_model(reasoning_levels)];
     };
     let mut choices = select_choices(option);
+    eprintln!(
+        "[TRACE:models_from_config_options] select choices count={}, current_value={:?}",
+        choices.len(),
+        select.current_value
+    );
     let current = select.current_value.to_string();
     choices.sort_by_key(|choice| choice.value.to_string() != current);
+    for choice in &choices {
+        eprintln!(
+            "[TRACE:models_from_config_options] choice value={:?}, name={:?}",
+            choice.value, choice.name
+        );
+    }
     let models = choices
         .into_iter()
         .map(|choice| Model {
@@ -2679,5 +3095,83 @@ mod tests {
             resolve_windows_executable("C:\\Users\\test\\bin\\droid.CMD").unwrap(),
             "C:\\Users\\test\\bin\\droid.CMD"
         );
+    }
+
+    #[test]
+    fn parse_grok_models_accepts_dash_and_asterisk_bullets() {
+        let output = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/grok_models_output.txt"
+        ))
+        .expect("test fixture grok_models_output.txt must exist");
+        let models = parse_grok_models_output(&output, REASONING_LEVELS.to_vec());
+        // The real `grok models` output has 196 entries: 195 `-` bullets
+        // plus 1 `*` (default) bullet. The old parser only matched `* ` and
+        // returned just 1 model.
+        assert_eq!(
+            models.len(),
+            196,
+            "expected all 196 models, got {}: {:?}",
+            models.len(),
+            models.iter().map(|m| &m.id).collect::<Vec<_>>()
+        );
+        // The `*` default entry must be sorted first.
+        assert_eq!(models[0].id, "zai:glm-5.2");
+        // Every model after the default comes from `-` bullets.
+        assert!(models[1..].iter().all(|m| m.id != "zai:glm-5.2"));
+    }
+
+    #[test]
+    fn parse_grok_models_uses_header_for_default_sort() {
+        // When no entry has a `(default)` suffix, the "Default model:" header
+        // line is the only source of the default id.
+        let output = "\
+Default model: xai:grok-4.5
+
+Available models:
+  - xai:grok-codex
+  - xai:grok-4.5
+";
+        let models = parse_grok_models_output(output, REASONING_LEVELS.to_vec());
+        assert_eq!(models[0].id, "xai:grok-4.5");
+        assert_eq!(models[1].id, "xai:grok-codex");
+    }
+
+    #[test]
+    fn parse_grok_models_empty_output() {
+        let models = parse_grok_models_output("", REASONING_LEVELS.to_vec());
+        assert!(models.is_empty());
+    }
+
+    #[test]
+    fn grok_cached_models_reads_local_cache() {
+        // This test reads the real ~/.grok/models_cache.json. It only works
+        // if grok is installed and has cached models. Skip otherwise.
+        match grok_cached_models() {
+            Ok(models) => {
+                eprintln!("grok_cached_models returned {} models", models.len());
+                assert!(!models.is_empty(), "cache should have at least 1 model");
+            }
+            Err(e) => {
+                eprintln!("grok_cached_models failed (skipping): {e}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn grok_cli_models_returns_full_list() {
+        // This test runs the real `grok models` CLI. It only works if grok is
+        // installed and XAI_API_KEY is set. Skip otherwise.
+        let command = "C:\\Users\\Admin\\.grok\\bin\\grok.exe agent stdio";
+        let result = grok_cli_models(command).await;
+        match result {
+            Ok(models) => {
+                eprintln!("grok_cli_models returned {} models", models.len());
+                assert!(!models.is_empty(), "should return at least 1 model");
+            }
+            Err(e) => {
+                eprintln!("grok_cli_models failed (skipping): {e}");
+            }
+        }
     }
 }
