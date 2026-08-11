@@ -14,7 +14,7 @@ use super::Changes;
 
 impl Changes {
     pub(super) fn render_generation_controls(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
-        let disabled = self.git_busy.is_some() || self.generation_loading;
+        let disabled = self.git_busy.is_some() || self.generation_loading || self.git_generating;
         let harness_label = self
             .selected_harness
             .and_then(|selected| {
@@ -310,7 +310,7 @@ impl Changes {
                                         this.generate_commit_message(cx);
                                     }))
                             })
-                            .child(SharedString::from(if self.git_busy == Some("generate") {
+                            .child(SharedString::from(if self.git_generating {
                                 "Generating…"
                             } else {
                                 "AI message"
@@ -322,6 +322,7 @@ impl Changes {
 
     pub(super) fn render_commit(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let can_commit = self.git_busy.is_none()
+            && !self.git_generating
             && !self.subject.read(cx).text().trim().is_empty()
             && self.git_status.as_ref().is_some_and(|status| {
                 status.is_repo && status.files.iter().any(|file| file.staged)

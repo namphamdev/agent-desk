@@ -73,6 +73,10 @@ use crate::workspace_host::WorkspaceHost;
 
 const FILE_SEARCH_RPC_TIMEOUT: Duration = Duration::from_secs(6);
 const FILE_SEARCH_FEATURED_PATHS: usize = 32;
+/// Ceiling for AI commit-message generation: LLM runs can stall (provider
+/// hang, network black hole), and an RPC that never replies would leave the
+/// Changes panel's busy state stuck on every client.
+const GIT_GENERATE_TIMEOUT: Duration = Duration::from_secs(120);
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1491,13 +1495,17 @@ impl RpcService for EngineRpc {
                     model: Option<String>,
                 }
                 let p: P = parse_params(params)?;
-                let message = crate::git::generate_commit_message(
-                    &self.registry,
-                    std::path::Path::new(&p.cwd),
-                    p.harness,
-                    p.model,
+                let message = tokio::time::timeout(
+                    GIT_GENERATE_TIMEOUT,
+                    crate::git::generate_commit_message(
+                        &self.registry,
+                        std::path::Path::new(&p.cwd),
+                        p.harness,
+                        p.model,
+                    ),
                 )
                 .await
+                .map_err(|_| RpcError::Failed("commit message generation timed out".into()))?
                 .map_err(|error| RpcError::Failed(error.to_string()))?;
                 RpcReply::value(&message)
             }

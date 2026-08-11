@@ -97,6 +97,9 @@ pub struct Changes {
     pub(super) git_context_key: Option<String>,
     pub(super) git_loading: bool,
     pub(super) git_busy: Option<&'static str>,
+    /// AI commit-message generation is tracked separately from [`git_busy`] so
+    /// a long-running LLM call doesn't lock the file list / stage actions.
+    pub(super) git_generating: bool,
     pub(super) git_info: Option<SharedString>,
     pub(super) generation_loading: bool,
     pub(super) generation_picker: Option<GitGenerationPicker>,

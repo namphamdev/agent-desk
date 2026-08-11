@@ -35,7 +35,7 @@ interface Props {
   onBack: () => void;
 }
 
-type BusyAction = 'stage' | 'unstage' | 'discard' | 'ignore' | 'commit' | 'push' | 'fetch' | 'generate' | null;
+type BusyAction = 'stage' | 'unstage' | 'discard' | 'ignore' | 'commit' | 'push' | 'fetch' | null;
 
 export function SpaceGitView({ model, spaceId, onBack }: Props) {
   useForceUpdateOnNotify(model);
@@ -48,6 +48,11 @@ export function SpaceGitView({ model, spaceId, onBack }: Props) {
   const [busy, setBusy] = useState<BusyAction>(null);
   const [info, setInfo] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  // AI generation runs in its own flag so it doesn't lock the rest of the
+  // panel: staging, discarding, fetch/push, etc. stay usable while the
+  // message is being generated.
+  const [generating, setGenerating] = useState(false);
 
   // Commit form
   const [subject, setSubject] = useState('');
@@ -243,26 +248,33 @@ export function SpaceGitView({ model, spaceId, onBack }: Props) {
 
   const doGenerate = async () => {
     if (!deviceId || !cwd || !selectedHarness || !selectedModel) return;
-    setBusy('generate');
-    void AsyncStorage.setItem('spaceGitHarness', selectedHarness);
-    void AsyncStorage.setItem('spaceGitModel', selectedModel);
-    const result: unknown = await model.gitGenerateCommitMessage(deviceId, cwd, selectedHarness, selectedModel);
-    setBusy(null);
-    if (result && typeof result === 'object' && typeof (result as Record<string, unknown>).subject === 'string') {
-      const msg = result as { subject: string; body?: string };
-      setSubject(msg.subject);
-      setBody(typeof msg.body === 'string' ? msg.body : '');
-      showInfo('AI message generated');
-    } else if (typeof result === 'string' && result.length > 0) {
-      setSubject(result);
-      showInfo('AI message generated');
-    } else {
-      showErr('Failed to generate commit message');
+    setGenerating(true);
+    try {
+      void AsyncStorage.setItem('spaceGitHarness', selectedHarness);
+      void AsyncStorage.setItem('spaceGitModel', selectedModel);
+      const result: unknown = await model.gitGenerateCommitMessage(deviceId, cwd, selectedHarness, selectedModel);
+      if (result && typeof result === 'object' && typeof (result as Record<string, unknown>).subject === 'string') {
+        const msg = result as { subject: string; body?: string };
+        setSubject(msg.subject);
+        setBody(typeof msg.body === 'string' ? msg.body : '');
+        showInfo('AI message generated');
+      } else if (typeof result === 'string' && result.length > 0) {
+        setSubject(result);
+        showInfo('AI message generated');
+      } else {
+        showErr('Failed to generate commit message');
+      }
+    } catch (err) {
+      showErr(err instanceof Error ? err.message : 'Failed to generate commit message');
+    } finally {
+      // Always release the generating flag so the button never stays stuck,
+      // even if the underlying RPC throws or hangs without settling.
+      setGenerating(false);
     }
   };
 
-  const canCommit = !busy && subject.trim().length > 0 && !!status && status.files.some((f) => f.staged);
-  const canGenerate = !busy && !!status && status.files.length > 0 && !!selectedHarness && !!selectedModel;
+  const canCommit = !busy && !generating && subject.trim().length > 0 && !!status && status.files.some((f) => f.staged);
+  const canGenerate = !busy && !generating && !!status && status.files.length > 0 && !!selectedHarness && !!selectedModel;
   const filteredModels = models.filter((m) => {
     const q = modelSearch.trim().toLowerCase();
     return q.length === 0 || `${m.label} ${m.id} ${m.description ?? ''}`.toLowerCase().includes(q);
@@ -414,11 +426,11 @@ export function SpaceGitView({ model, spaceId, onBack }: Props) {
               <View style={styles.aiRow}>
                 <Pressable
                   onPress={() => setShowHarnessPicker(true)}
-                  disabled={!!busy}
+                  disabled={!!busy || generating}
                   style={({ pressed }) => [
                     styles.aiSelector,
                     pressed && styles.aiSelectorPressed,
-                    !!busy && styles.aiSelectorDisabled,
+                    (!!busy || generating) && styles.aiSelectorDisabled,
                   ]}
                 >
                   <Text style={styles.aiSelectorText} numberOfLines={1}>
@@ -428,11 +440,11 @@ export function SpaceGitView({ model, spaceId, onBack }: Props) {
                 </Pressable>
                 <Pressable
                   onPress={() => setShowModelPicker(true)}
-                  disabled={!!busy || models.length === 0}
+                  disabled={!!busy || generating || models.length === 0}
                   style={({ pressed }) => [
                     styles.aiSelector,
                     pressed && styles.aiSelectorPressed,
-                    (!!busy || models.length === 0) && styles.aiSelectorDisabled,
+                    (!!busy || generating || models.length === 0) && styles.aiSelectorDisabled,
                   ]}
                 >
                   <Text style={styles.aiSelectorText} numberOfLines={1}>
@@ -449,13 +461,13 @@ export function SpaceGitView({ model, spaceId, onBack }: Props) {
                     !canGenerate && styles.aiButtonDisabled,
                   ]}
                 >
-                  {busy === 'generate' ? (
+                  {generating ? (
                     <ActivityIndicator size="small" color={Theme.text} />
                   ) : (
                     <LineIcon icon="sparkles" size={14} color={canGenerate ? Theme.text : Theme.textFaint} />
                   )}
                   <Text style={[styles.aiButtonText, !canGenerate && styles.aiButtonTextDisabled]}>
-                    {busy === 'generate' ? '' : 'AI'}
+                    {generating ? '' : 'AI'}
                   </Text>
                 </Pressable>
               </View>

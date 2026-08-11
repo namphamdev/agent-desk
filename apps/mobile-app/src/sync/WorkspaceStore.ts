@@ -426,6 +426,9 @@ export class WorkspaceStore {
       return await this.relay(deviceId).call<{ subject: string; body: string } | null>(
         'GitGenerateCommitMessage',
         params,
+        // LLM generation routinely takes longer than the default 10s RPC
+        // timeout; give it two minutes before failing.
+        120_000,
       );
     } catch {
       return null;

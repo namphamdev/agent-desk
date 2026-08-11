@@ -22,6 +22,11 @@ export class RelayError extends Error {
   }
 }
 
+/** Default per-RPC timeout: how long to wait for a reply before failing. */
+const RPC_TIMEOUT_MS = 10_000;
+/** Timeout for establishing the relay WebSocket connection. */
+const CONNECT_TIMEOUT_MS = 10_000;
+
 interface PendingCall {
   resolve: (data: Uint8Array) => void;
   reject: (err: RelayError) => void;
@@ -55,10 +60,14 @@ export class DeviceRelayClient {
 
   // MARK: RPC
 
-  async call<T>(method: string, params: Record<string, unknown>): Promise<T> {
+  async call<T>(
+    method: string,
+    params: Record<string, unknown>,
+    timeoutMs: number = RPC_TIMEOUT_MS,
+  ): Promise<T> {
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
-        return await this.callOnce<T>(method, params);
+        return await this.callOnce<T>(method, params, timeoutMs);
       } catch (err) {
         if (!(err instanceof RelayError)) throw err;
         if (attempt >= 2) throw err;
@@ -77,7 +86,11 @@ export class DeviceRelayClient {
     this.teardown('notConnected');
   }
 
-  private async callOnce<T>(method: string, params: Record<string, unknown>): Promise<T> {
+  private async callOnce<T>(
+    method: string,
+    params: Record<string, unknown>,
+    timeoutMs: number,
+  ): Promise<T> {
     await this.connect();
     const id = this.nextId++;
     const frame = JSON.stringify({ id, method, params });
@@ -88,7 +101,7 @@ export class DeviceRelayClient {
       this.pending.set(id, {
         resolve,
         reject,
-        timer: setTimeout(() => this.timeoutCall(id), 10_000),
+        timer: setTimeout(() => this.timeoutCall(id), timeoutMs),
       });
       this.send(data, id);
     });
@@ -105,20 +118,35 @@ export class DeviceRelayClient {
     if (!url) throw new RelayError('notConnected');
 
     await new Promise<void>((resolve, reject) => {
+      let settled = false;
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        this.teardown('timeout');
+        reject(new RelayError('timeout', 'relay connect timed out'));
+      }, CONNECT_TIMEOUT_MS);
+      const finish = (err: RelayError | null): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        if (err) reject(err);
+        else resolve();
+      };
       const socket = openSocket(url, {
         onOpen: () => {
+          if (settled) return;
           this.connected = true;
           this.armPing();
-          resolve();
+          finish(null);
         },
         onMessage: (msg) => this.handleInbound(msg),
         onClose: () => {
           this.teardown('hostOffline');
-          if (!this.connected) reject(new RelayError('hostOffline'));
+          finish(new RelayError('hostOffline'));
         },
         onError: () => {
           this.teardown('hostOffline');
-          if (!this.connected) reject(new RelayError('hostOffline'));
+          finish(new RelayError('hostOffline'));
         },
       });
       this.socket = socket;

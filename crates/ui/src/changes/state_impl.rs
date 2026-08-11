@@ -54,6 +54,7 @@ impl Changes {
             git_context_key: None,
             git_loading: false,
             git_busy: None,
+            git_generating: false,
             git_info: None,
             generation_loading: false,
             generation_picker: None,
@@ -370,7 +371,7 @@ impl Changes {
     }
 
     pub(super) fn generate_commit_message(&mut self, cx: &mut Context<Self>) {
-        if self.git_busy.is_some() {
+        if self.git_busy.is_some() || self.git_generating {
             return;
         }
         let Some(harness) = self.selected_harness else {
@@ -384,7 +385,9 @@ impl Changes {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             return;
         };
-        self.git_busy = Some("generate");
+        // Generation runs on its own flag (not `git_busy`) so staging and the
+        // other file actions stay usable while the LLM is working.
+        self.git_generating = true;
         self.error = None;
         self.git_info = None;
         let params = Self::with_git_target(
@@ -401,7 +404,7 @@ impl Changes {
                 .call_as::<GeneratedCommitMessage>(methods::GIT_GENERATE_COMMIT_MESSAGE, params)
                 .await;
             this.update(cx, |changes, cx| {
-                changes.git_busy = None;
+                changes.git_generating = false;
                 match result {
                     Ok(message) => {
                         changes
