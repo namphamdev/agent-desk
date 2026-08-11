@@ -600,7 +600,13 @@ fn find_executable(name: &str) -> Option<PathBuf> {
     ]);
 
     let extensions = if cfg!(windows) {
-        let mut exts = vec!["".to_string()];
+        // On Windows, npm/node install extensionless bash shims alongside
+        // .cmd shims. The extensionless file causes os error 193
+        // ("%1 is not a valid Win32 application") if spawned directly.
+        // Try real executable extensions FIRST, and only fall back to the
+        // extensionless name last (for tools that genuinely have no
+        // extension, like downloaded binaries).
+        let mut exts = Vec::new();
         if let Some(pathext) = std::env::var_os("PATHEXT") {
             for ext in std::env::split_paths(&pathext) {
                 let ext_str = ext.to_string_lossy().to_string();
@@ -613,17 +619,18 @@ fn find_executable(name: &str) -> Option<PathBuf> {
                 }
             }
         }
-        if exts.len() == 1 {
+        if exts.is_empty() {
             exts.extend([
                 ".exe".to_string(),
                 ".cmd".to_string(),
                 ".bat".to_string(),
-                ".ps1".to_string(),
             ]);
         }
+        // Extensionless name last — avoids matching npm/node shims first.
+        exts.push(String::new());
         exts
     } else {
-        vec!["".to_string()]
+        vec![String::new()]
     };
 
     for dir in search_dirs {
@@ -1054,5 +1061,32 @@ mod tests {
     fn normalize_preserves_valid_json_without_type() {
         let input = r#"{"command":"/usr/local/bin/agent","args":[]}"#;
         assert_eq!(normalize_custom_command(input), input);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn find_executable_prefers_cmd_over_extensionless_shim() {
+        // npm/node install both an extensionless bash shim and a .cmd shim.
+        // find_executable must return the .cmd, not the extensionless file
+        // that causes os error 193 ("not a valid Win32 application").
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path();
+        std::fs::write(dir.join("fake-cli"), "#!/bin/sh").unwrap();
+        std::fs::write(dir.join("fake-cli.cmd"), "@echo off").unwrap();
+
+        let old_path = std::env::var_os("PATH");
+        // SAFETY: single-threaded test.
+        unsafe { std::env::set_var("PATH", dir) };
+
+        let result = find_executable("fake-cli");
+
+        // SAFETY: single-threaded test.
+        unsafe { std::env::set_var("PATH", old_path.unwrap_or_default()) };
+
+        let found = result.expect("should find fake-cli");
+        assert!(
+            found.ends_with("fake-cli.cmd"),
+            "expected .cmd shim, got: {found:?}"
+        );
     }
 }

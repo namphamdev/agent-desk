@@ -1,4 +1,4 @@
-//! Generic Agent Client Protocol harness.
+﻿//! Generic Agent Client Protocol harness.
 //!
 //! `COMET_ACP_AGENT` accepts the command string or JSON configuration understood
 //! by the official `agent-client-protocol` Rust SDK's [`AcpAgent`]. The adapter
@@ -13,11 +13,12 @@ use std::sync::{Arc, Mutex};
 
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
-    CancelNotification, ClientCapabilities, ClientSessionCapabilities, ContentBlock,
-    Implementation, InitializeRequest, LoadSessionRequest, McpServer, McpServerHttp,
-    NewSessionRequest, PermissionOption, PermissionOptionKind, Plan, PlanEntryStatus,
-    PromptRequest, RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
-    SelectedPermissionOutcome, SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory,
+    AuthenticateRequest, AuthMethod, CancelNotification, ClientCapabilities,
+    ClientSessionCapabilities, ContentBlock, Implementation, InitializeRequest, InitializeResponse,
+    LoadSessionRequest, McpServer, McpServerHttp, NewSessionRequest, PermissionOption,
+    PermissionOptionKind, Plan, PlanEntryStatus, PromptRequest, RequestPermissionOutcome,
+    RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome,
+    SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory,
     SessionConfigOptionsCapabilities, SessionConfigSelectOptions, SessionId, SessionInfoUpdate,
     SessionNotification, SessionUpdate, SetSessionConfigOptionRequest, StopReason, TextContent,
     ToolCall, ToolCallStatus, ToolKind, UsageUpdate,
@@ -64,7 +65,7 @@ struct AcpSpec {
     display_name: &'static str,
     executable: &'static str,
     env_override: &'static str,
-    /// `npx -y <package>` fallback when the binary isn't installed — pinned
+    /// `npx -y <package>` fallback when the binary isn't installed â€” pinned
     /// so a cold launch is reproducible (npx caches after the first run).
     npx_package: Option<&'static str>,
     install_hint: &'static str,
@@ -194,7 +195,7 @@ fn resolve_spec_command(spec: &AcpSpec) -> Result<String, HarnessError> {
 
 /// Convert a resolved binary path into the command string `AcpAgent::from_str`
 /// accepts. On Windows, `.cmd` and `.bat` files are batch scripts, not real
-/// executables — spawning them directly fails with "program not found" or OS
+/// executables â€” spawning them directly fails with "program not found" or OS
 /// error 193. Wrapping them in a JSON config makes the SDK spawn them through
 /// `cmd.exe /C`, which handles batch scripts correctly. Real `.exe` files
 /// (and all Unix paths) are passed through as bare strings.
@@ -219,8 +220,11 @@ fn command_string_for_path(path: &Path) -> String {
 /// `COMET_ACP_AGENT`) into a form `AcpAgent::from_str` can spawn reliably.
 ///
 /// The command may be:
-/// - JSON (`{"command":"...","args":[...]}`) — returned as-is (already
-///   structured; the SDK spawns the named program directly).
+/// - JSON (`{"command":"...","args":[...]}`) â€” on Unix, returned as-is (already
+///   structured; the SDK spawns the named program directly). On Windows, the
+///   `"command"` field is resolved to a full `.exe`/`.cmd`/`.bat` path and
+///   PATH is injected into `"env"` (npm shims like `grok` and `pi` install
+///   extensionless scripts that fail with os error 193 when spawned directly).
 /// - A bare executable name or path with optional args (`omp acp`,
 ///   `pi-acp.cmd`, `/usr/local/bin/agent --acp`).
 ///
@@ -235,22 +239,35 @@ fn command_string_for_path(path: &Path) -> String {
 /// spawn time with an opaque "program not found" I/O error.
 fn resolve_agent_command_string(command: &str) -> Result<String, HarnessError> {
     let trimmed = command.trim();
-    // JSON commands are already structured — leave them for the SDK.
+    // Compose a full PATH for the child: the resolved executable's directory
+    // first, then our own PATH, then the login-shell PATH snapshot. npm-shim
+    // CLIs are `#!/usr/bin/env node` scripts, and agents like OMP shell out to
+    // runtimes (bun) that a daemon/service launch's PATH may lack.
+    let composed_path = composed_child_path_string();
+
+    // JSON commands need platform-specific resolution. On Windows the
+    // "command" field may be a bare name like "grok" or "pi" that resolves to
+    // an extensionless npm shim â€” spawning that directly fails with os error
+    // 193 ("%1 is not a valid Win32 application"). On Unix the JSON is fine
+    // as-is.
     if trimmed.starts_with('{') {
-        return Ok(command.to_string());
+        #[cfg(not(windows))]
+        {
+            let _ = composed_path;
+            return Ok(command.to_string());
+        }
+        #[cfg(windows)]
+        {
+            return resolve_json_command_windows(trimmed, &composed_path);
+        }
     }
+
     // Split into program + rest. The program is the first token.
     let mut parts = trimmed.split_whitespace();
     let Some(program) = parts.next() else {
         return Ok(command.to_string());
     };
     let args: Vec<&str> = parts.collect();
-
-    // Compose a full PATH for the child: the resolved executable's directory
-    // first, then our own PATH, then the login-shell PATH snapshot. npm-shim
-    // CLIs are `#!/usr/bin/env node` scripts, and agents like OMP shell out to
-    // runtimes (bun) that a daemon/service launch's PATH may lack.
-    let composed_path = composed_child_path_string();
 
     #[cfg(not(windows))]
     {
@@ -261,36 +278,122 @@ fn resolve_agent_command_string(command: &str) -> Result<String, HarnessError> {
     }
     #[cfg(windows)]
     {
-        // On Windows the program must be found so we can produce a JSON config
-        // with its full path. If it's not on PATH, fail early with a clear
-        // message rather than letting the SDK spawn a bare name that the OS
-        // can't resolve.
-        let resolved = find_on_paths(program).ok_or_else(|| {
+        resolve_bare_command_windows(program, &args, &composed_path)
+    }
+}
+
+/// On Windows, resolve a JSON ACP command's `"command"` field to a full
+/// executable path and inject PATH into the child env. The SDK's
+/// `AcpAgent::from_str` calls `std::process::Command::new(command)`, which on
+/// Windows may find the extensionless npm shim (e.g. `grok` instead of
+/// `grok.cmd`) and fail with os error 193. Resolving the full `.cmd`/`.bat`/
+/// `.exe` path here avoids that.
+#[cfg(windows)]
+fn resolve_json_command_windows(
+    json_str: &str,
+    composed_path: &str,
+) -> Result<String, HarnessError> {
+    let mut value: serde_json::Value =
+        serde_json::from_str(json_str).map_err(|_| HarnessError::NotInstalled(
+            "ACP agent command is invalid JSON".into(),
+        ))?;
+    let program = value
+        .get("command")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| HarnessError::NotInstalled(
+            "ACP agent JSON command missing 'command' field".into(),
+        ))?;
+
+    let resolved_path = resolve_windows_executable(program)?;
+
+    value["command"] = serde_json::Value::String(resolved_path);
+    // Inject PATH so the child can find runtimes (node, bun) it shells out to.
+    // Create the env object if missing; fail only if it exists but isn't an
+    // object (malformed user input).
+    if value.get("env").is_none() {
+        value["env"] = serde_json::json!({});
+    }
+    let env = value
+        .get_mut("env")
+        .and_then(|v| v.as_object_mut())
+        .ok_or_else(|| {
+            HarnessError::NotInstalled("ACP agent JSON command has invalid 'env' field".into())
+        })?;
+    env.insert("PATH".to_string(), serde_json::Value::String(composed_path.to_string()));
+    Ok(value.to_string())
+}
+
+/// On Windows, resolve an executable name or path to a real Win32 executable.
+///
+/// npm/node install both an extensionless bash shim and a `.cmd` shim for
+/// CLI tools. `std::process::Command::new` may find the extensionless file
+/// first, causing os error 193 ("%1 is not a valid Win32 application").
+///
+/// This function:
+/// 1. Passes through paths that already have `.exe`/`.cmd`/`.bat`.
+/// 2. If the path exists as-is but has no executable extension, tries
+///    appending `.exe`/`.cmd`/`.bat` (the shim siblings).
+/// 3. Falls back to `find_on_paths` for bare names.
+#[cfg(windows)]
+fn resolve_windows_executable(program: &str) -> Result<String, HarnessError> {
+    // Already has a valid executable extension (case-insensitive — Windows
+    // PATHEXT stores `.EXE`/`.CMD`/`.BAT` in uppercase, and the file system
+    // treats extensions case-insensitively).
+    if Path::new(program)
+        .extension()
+        .is_some_and(|ext| matches!(ext.to_str(), Some(e) if matches!(e.to_ascii_lowercase().as_str(), "exe" | "cmd" | "bat")))
+    {
+        return Ok(program.to_string());
+    }
+
+    // The program may be an absolute path to the extensionless shim
+    // (e.g. `C:\Program Files\nodejs\npx`). Try the executable extensions
+    // as siblings before falling back to a PATH search.
+    for ext in &[".exe", ".cmd", ".bat"] {
+        let candidate = format!("{program}{ext}");
+        if Path::new(&candidate).is_file() {
+            return Ok(candidate);
+        }
+    }
+
+    // Bare name â€” search PATH for a real executable.
+    find_on_paths(program)
+        .map(|p| p.display().to_string())
+        .ok_or_else(|| {
             HarnessError::NotInstalled(format!(
                 "ACP agent command program '{program}' was not found on PATH. \
                  Update the agent command in Settings > ACP agents to point to \
                  an installed executable."
             ))
-        })?;
+        })
+}
 
-        // Always wrap in JSON on Windows so we can inject PATH into the
-        // child environment. Without this, agents that shell out to bun,
-        // node, or other runtimes fail ("'bun' is not recognized") because
-        // the daemon's PATH may not include those install dirs.
-        let cmd_path = resolved.display().to_string();
-        let mut json = serde_json::json!({ "command": cmd_path, "env": { "PATH": composed_path } });
-        if !args.is_empty() {
-            json["args"] = serde_json::Value::Array(
-                args.iter().map(|a| serde_json::Value::String((*a).to_string())).collect(),
-            );
-        }
-        Ok(json.to_string())
+/// On Windows, resolve a bare command (program + args) to a JSON config with
+/// the full executable path and PATH injected into the env.
+#[cfg(windows)]
+fn resolve_bare_command_windows(
+    program: &str,
+    args: &[&str],
+    composed_path: &str,
+) -> Result<String, HarnessError> {
+    let cmd_path = resolve_windows_executable(program)?;
+
+    // Always wrap in JSON on Windows so we can inject PATH into the
+    // child environment. Without this, agents that shell out to bun,
+    // node, or other runtimes fail ("'bun' is not recognized") because
+    // the daemon's PATH may not include those install dirs.
+    let mut json = serde_json::json!({ "command": cmd_path, "env": { "PATH": composed_path } });
+    if !args.is_empty() {
+        json["args"] = serde_json::Value::Array(
+            args.iter().map(|a| serde_json::Value::String((*a).to_string())).collect(),
+        );
     }
+    Ok(json.to_string())
 }
 
 /// Build the PATH string a child process should receive: the resolved
 /// executable's directory (if known), then our own PATH, then the login-shell
-/// PATH snapshot — deduped.
+/// PATH snapshot â€” deduped.
 fn composed_child_path_string() -> String {
     let mut paths: Vec<std::path::PathBuf> = Vec::new();
     // Our own PATH
@@ -338,7 +441,7 @@ impl AcpHarness {
         Self::default()
     }
 
-    /// Claude Code over ACP — the org-maintained `claude-agent-acp` adapter
+    /// Claude Code over ACP â€” the org-maintained `claude-agent-acp` adapter
     /// on the Claude Agent SDK.
     pub fn claude() -> Self {
         Self {
@@ -347,7 +450,7 @@ impl AcpHarness {
         }
     }
 
-    /// Codex over ACP — the org-maintained `codex-acp` adapter wrapping the
+    /// Codex over ACP â€” the org-maintained `codex-acp` adapter wrapping the
     /// codex app-server.
     pub fn codex() -> Self {
         Self {
@@ -393,41 +496,59 @@ impl AcpHarness {
     /// device's active agent. Spec-backed harnesses (`claude()`, `codex()`)
     /// resolve their adapter binary through this path instead.
     fn command_for(&self, agent_id: Option<&str>) -> Result<String, HarnessError> {
+        eprintln!("[TRACE:command_for] agent_id={:?}", agent_id);
         if let Some(spec) = &self.spec {
             // An explicit command override (tests) wins over spec resolution.
             if let Some(cmd) = &self.command {
+                eprintln!("[TRACE:command_for] spec with explicit command override");
                 return Ok(cmd.clone());
             }
+            eprintln!("[TRACE:command_for] spec-backed, resolving spec command");
             return resolve_spec_command(spec);
         }
+        eprintln!("[TRACE:command_for] config_file={:?}, command={:?}", self.config_file, self.command);
         let result = self
             .command
             .clone()
             .or_else(|| std::env::var(ENV_AGENT).ok())
             .or_else(|| {
                 let file = self.config_file.as_ref()?;
+                eprintln!("[TRACE:command_for] reading config file: {:?}", file);
                 let json = std::fs::read_to_string(file).ok()?;
+                eprintln!("[TRACE:command_for] config file read OK, {} bytes", json.len());
                 let config: AcpHarnessConfig = serde_json::from_str(&json).ok()?;
+                eprintln!("[TRACE:command_for] parsed config: {} agents, active={:?}", config.agents.len(), config.active_agent_id);
                 // Prefer the explicitly requested agent id; fall back to active.
                 let wanted = agent_id
                     .filter(|id| config.agents.iter().any(|a| &a.id == id))
                     .or(config.active_agent_id.as_deref());
+                eprintln!("[TRACE:command_for] wanted agent id = {:?}", wanted);
                 config
                     .agents
                     .into_iter()
                     .find(|agent| Some(agent.id.as_str()) == wanted)
-                    .map(|agent| agent.command)
+                    .map(|agent| {
+                        eprintln!("[TRACE:command_for] found agent: id={} command={}", agent.id, &agent.command[..agent.command.len().min(200)]);
+                        agent.command
+                    })
             });
         let command = result
             .map(normalize_acp_command)
             .filter(|command| !command.trim().is_empty())
             .ok_or_else(|| {
+                eprintln!("[TRACE:command_for] ERROR: no command resolved");
                 HarnessError::NotInstalled(format!(
                     "ACP agent is not configured; add one in Settings > ACP agents or set \
                      {ENV_AGENT}"
                 ))
             })?;
-        resolve_agent_command_string(&command)
+        eprintln!("[TRACE:command_for] resolving agent command string...");
+        let resolved = resolve_agent_command_string(&command);
+        match &resolved {
+            Ok(cmd) => eprintln!("[TRACE:command_for] resolved OK"),
+            Err(e) => eprintln!("[TRACE:command_for] resolve ERROR: {e}"),
+        }
+        resolved
     }
 }
 
@@ -494,11 +615,15 @@ impl Harness for AcpHarness {
     }
 
     async fn models(&self, acp_agent_id: Option<&str>) -> Result<Vec<Model>, HarnessError> {
+        eprintln!("[TRACE:models] called acp_agent_id={:?}", acp_agent_id);
         let command = self.command_for(acp_agent_id)?;
+        eprintln!("[TRACE:models] resolved command: {}", &command[..command.len().min(200)]);
         let mut cached_models = self.discovered_models.lock().await;
         if let Some(models) = cached_models.get(&command) {
+            eprintln!("[TRACE:models] cache hit: {} models", models.len());
             return Ok(models.clone());
         }
+        drop(cached_models);
 
         let agent = AcpAgent::from_str(&command).map_err(|error| {
             HarnessError::Protocol(format!("invalid ACP agent config: {error}"))
@@ -510,8 +635,24 @@ impl Harness for AcpHarness {
             .connect_with(agent, {
                 let discovered_models = discovered_models.clone();
                 move |connection: ConnectionTo<Agent>| async move {
-                    initialize(&connection).await?;
                     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
+                    // Initialize, then try session/new to get configOptions
+                    // (the model list). Authenticating is attempted but
+                    // non-fatal: many ACP agents (Grok, Pi, etc.) return
+                    // configOptions on session/new even without authentication,
+                    // and authentication itself fails when the user hasn't
+                    // logged in yet (no cached token / API key). Treating auth
+                    // failure as non-fatal lets the picker show the model list
+                    // in the common case; if session/new also fails, discovery
+                    // degrades to the default model as before.
+                    let init_response = initialize(&connection).await?;
+                    if let Err(error) = authenticate_if_needed(&connection, &init_response).await {
+                        tracing::debug!(
+                            error = %error,
+                            "ACP authentication failed during model discovery; \
+                             trying session/new anyway"
+                        );
+                    }
                     let response = connection
                         .send_request(NewSessionRequest::new(cwd))
                         .block_task()
@@ -527,7 +668,7 @@ impl Harness for AcpHarness {
 
         let models = match discovery_result {
             Ok(models) => {
-                eprintln!("[models] discovery Ok — {} models", models.len());
+                eprintln!("[models] discovery Ok â€” {} models", models.len());
                 models
             }
             Err(error) => {
@@ -551,6 +692,7 @@ impl Harness for AcpHarness {
                 }
             }
         };
+        let mut cached_models = self.discovered_models.lock().await;
         cached_models.insert(command, models.clone());
         Ok(models)
     }
@@ -789,7 +931,7 @@ impl ConnectTo<agent_client_protocol::Client> for TokioAcpAgent {
         let mut child = command.spawn().map_err(acp_io_error)?;
 
         // Windows has no `/bin/sh` exec-replace shim, so capture the spawned
-        // child's PID directly — it is the root of the agent's process tree.
+        // child's PID directly â€” it is the root of the agent's process tree.
         #[cfg(not(unix))]
         if let (Some(pid_file), Some(pid)) = (self.pid_file.as_ref(), child.id()) {
             let pid_file = pid_file.to_path_buf();
@@ -1178,7 +1320,7 @@ async fn run_connection(
     harness_id: HarnessId,
     live_updates: Arc<AtomicBool>,
 ) -> agent_client_protocol::Result<()> {
-    initialize(&connection).await?;
+    initialize_and_authenticate(&connection).await?;
 
     let cwd = absolute_cwd(&request.cwd);
     let mcp_servers = mcp_servers(mcp_server_url.as_deref());
@@ -1354,7 +1496,27 @@ async fn run_connection(
     }
 }
 
-async fn initialize(connection: &ConnectionTo<Agent>) -> agent_client_protocol::Result<()> {
+/// Complete the ACP `initialize` handshake and, when the agent advertises
+/// authentication methods, the `authenticate` round-trip that follows it.
+///
+/// Agents that handle auth internally (claude-agent-acp, codex-acp, the test
+/// fixture) advertise `authMethods: []`, so this is a no-op for them. Agents
+/// like Grok (`grok agent stdio`) require an explicit `authenticate` request
+/// before `session/new`; without it, `session/new` fails or returns no
+/// `configOptions`. This function is used by the live `run` path. Model
+/// discovery calls `authenticate_if_needed` non-fatally (catching auth
+/// failures) so the model list is available even when the user hasn't logged
+/// in yet.
+async fn initialize_and_authenticate(
+    connection: &ConnectionTo<Agent>,
+) -> agent_client_protocol::Result<()> {
+    let response = initialize(connection).await?;
+    authenticate_if_needed(connection, &response).await
+}
+
+async fn initialize(
+    connection: &ConnectionTo<Agent>,
+) -> agent_client_protocol::Result<InitializeResponse> {
     let capabilities = ClientCapabilities::new().session(
         ClientSessionCapabilities::new().config_options(SessionConfigOptionsCapabilities::new()),
     );
@@ -1367,8 +1529,60 @@ async fn initialize(connection: &ConnectionTo<Agent>) -> agent_client_protocol::
                 ),
         )
         .block_task()
+        .await
+}
+
+async fn authenticate_if_needed(
+    connection: &ConnectionTo<Agent>,
+    response: &InitializeResponse,
+) -> agent_client_protocol::Result<()> {
+    if response.auth_methods.is_empty() {
+        return Ok(());
+    }
+    let Some(method_id) = pick_auth_method(response) else {
+        let methods = response
+            .auth_methods
+            .iter()
+            .map(|method| method.id().to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(agent_client_protocol::Error::internal_error().data(format!(
+            "ACP agent requires authentication but none of its advertised methods \
+             ({methods}) are supported"
+        )));
+    };
+    // `headless: true` mirrors the official Grok client flow: authenticate with
+    // the agent's cached credentials or API key instead of opening an
+    // interactive flow. Unknown `_meta` keys are ignored by other agents.
+    let mut meta = agent_client_protocol::schema::v1::Meta::new();
+    meta.insert("headless".into(), serde_json::Value::Bool(true));
+    connection
+        .send_request(AuthenticateRequest::new(method_id.clone()).meta(meta))
+        .block_task()
         .await?;
+    tracing::debug!(method = %method_id, "ACP agent authenticated");
     Ok(())
+}
+
+/// Choose which advertised authentication method to use. Prefer the
+/// locally-authenticated flow (the agent's cached CLI credentials), fall back
+/// to the API-key flow (the agent reads `XAI_API_KEY` from its own env), then
+/// any agent-handled method as a last resort.
+fn pick_auth_method(response: &InitializeResponse) -> Option<String> {
+    for preferred in ["cached_token", "xai.api_key"] {
+        if let Some(id) = response
+            .auth_methods
+            .iter()
+            .find(|method| method.id().to_string() == preferred)
+        {
+            return Some(id.id().to_string());
+        }
+    }
+    response
+        .auth_methods
+        .iter()
+        .find(|method| matches!(method, AuthMethod::Agent(_)))
+        .map(|method| method.id().to_string())
 }
 
 fn model_config_option(options: &[SessionConfigOption]) -> Option<&SessionConfigOption> {
@@ -1766,7 +1980,7 @@ fn normalize_update(
         SessionUpdate::UsageUpdate(usage) => vec![normalize_usage(&usage)],
         SessionUpdate::SessionInfoUpdate(info) => normalize_session_info(&info),
         SessionUpdate::Plan(plan) => normalize_plan(&plan),
-        // Echo of the user's own message — the engine already persists the
+        // Echo of the user's own message â€” the engine already persists the
         // prompt; re-streaming it would duplicate the user turn.
         SessionUpdate::UserMessageChunk(_) => vec![],
         // Config/mode/command updates are session-internal metadata with no
@@ -2117,6 +2331,112 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn resolve_json_command_returns_error_for_missing_program() {
+        // A JSON command with a bare program name that doesn't exist on PATH
+        // must fail with NotInstalled, not pass through to the SDK where it
+        // would produce a confusing os error 193.
+        let json = r#"{"command":"nonexistent-grok-binary","args":["agent","stdio"]}"#;
+        let result = resolve_agent_command_string(json);
+        assert!(result.is_err(), "expected error for non-existent JSON program");
+        let error = result.unwrap_err();
+        assert!(
+            matches!(error, HarnessError::NotInstalled(ref msg) if msg.contains("nonexistent-grok-binary")),
+            "expected NotInstalled error mentioning the program name, got: {error:?}"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn resolve_json_command_passes_through_existing_exe_extension() {
+        // When the JSON command already has a .exe path, it should not fail
+        // even if find_on_paths can't locate it (it's an absolute path).
+        let json = r#"{"command":"C:\\Tools\\my-agent.exe","args":["--acp"]}"#;
+        let result = resolve_agent_command_string(json);
+        assert!(result.is_ok(), "expected ok for .exe command, got: {result:?}");
+        let resolved = result.unwrap();
+        assert!(
+            resolved.contains("my-agent.exe"),
+            "expected .exe path preserved, got: {resolved}"
+        );
+        // PATH should be injected into env.
+        assert!(
+            resolved.contains("\"PATH\""),
+            "expected PATH injection in env, got: {resolved}"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn resolve_json_command_resolves_cmd_shim_and_injects_path() {
+        // Simulate a grok-style agent installed as a .cmd shim. We create a
+        // fake .cmd file on PATH and verify the JSON command resolves to it
+        // instead of the extensionless file that causes os error 193.
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path();
+        // Create BOTH an extensionless file (the problematic npm shim) and a
+        // .cmd file (the real entry point).
+        std::fs::write(dir.join("fake-grok"), "#!/bin/sh").unwrap();
+        std::fs::write(dir.join("fake-grok.cmd"), "@echo off").unwrap();
+
+        let old_path = std::env::var_os("PATH");
+        // SAFETY: This test runs single-threaded.
+        unsafe { std::env::set_var("PATH", dir) };
+
+        let json = r#"{"command":"fake-grok","args":["agent","stdio"]}"#;
+        let result = resolve_agent_command_string(json);
+
+        // SAFETY: This test runs single-threaded.
+        unsafe { std::env::set_var("PATH", old_path.unwrap_or_default()) };
+
+        let resolved = result.expect("should resolve");
+        assert!(
+            resolved.contains("fake-grok.cmd"),
+            "expected resolution to .cmd shim, got: {resolved}"
+        );
+        assert!(
+            !resolved.contains("\"fake-grok\""),
+            "should not contain the bare extensionless name"
+        );
+        assert!(
+            resolved.contains("\"PATH\""),
+            "expected PATH injection, got: {resolved}"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn resolve_json_command_resolves_extensionless_abs_path_to_cmd_shim() {
+        // Simulate the real-world Grok/Pi failure: the config has an absolute
+        // path to the extensionless npm shim (e.g. C:\Program Files\nodejs\npx
+        // or C:\Users\...\npm\pi-acp). The fix should find the .cmd sibling.
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path();
+        // Create both the extensionless shim and the .cmd sibling.
+        let ext_less = dir.join("npx");
+        std::fs::write(&ext_less, "#!/bin/sh").unwrap();
+        std::fs::write(dir.join("npx.cmd"), "@echo off").unwrap();
+
+        let abs_path = ext_less.display().to_string();
+        let json = serde_json::json!({
+            "command": abs_path,
+            "args": ["-y", "@agentclientprotocol/grok-build-acp", "agent", "stdio"]
+        })
+        .to_string();
+        let result = resolve_agent_command_string(&json).unwrap();
+        let resolved: serde_json::Value = serde_json::from_str(&result).unwrap();
+        let cmd = resolved["command"].as_str().unwrap();
+        assert!(
+            cmd.ends_with("npx.cmd"),
+            "expected resolution to npx.cmd, got: {cmd}"
+        );
+        assert!(
+            !cmd.ends_with("npx\""),
+            "should not resolve to the extensionless shim"
+        );
+    }
+
     #[cfg(not(windows))]
     #[test]
     fn resolve_agent_command_string_passes_through_on_unix() {
@@ -2340,6 +2660,24 @@ mod tests {
         assert!(
             json.get("mcpServers").is_some(),
             "NewSessionRequest must include mcpServers in JSON output, got: {json}"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn resolve_windows_executable_accepts_uppercase_extension() {
+        // PATHEXT on Windows stores extensions in uppercase (`.EXE`, `.CMD`).
+        // When find_executable discovers a binary via PATHEXT, the stored path
+        // carries the uppercase extension. resolve_windows_executable must
+        // treat `.EXE` identically to `.exe` — otherwise the agent fails with
+        // a spurious "not found on PATH" error at run time.
+        assert_eq!(
+            resolve_windows_executable("C:\\Users\\test\\bin\\droid.EXE").unwrap(),
+            "C:\\Users\\test\\bin\\droid.EXE"
+        );
+        assert_eq!(
+            resolve_windows_executable("C:\\Users\\test\\bin\\droid.CMD").unwrap(),
+            "C:\\Users\\test\\bin\\droid.CMD"
         );
     }
 }

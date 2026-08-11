@@ -25,9 +25,11 @@ impl Pickers {
             return;
         }
         let Some(engine) = self.engine(cx) else {
+            eprintln!("[TRACE:UI:ensure_harnesses] no engine, skipping");
             return;
         };
         let target = self.space_target(cx);
+        eprintln!("[TRACE:UI:ensure_harnesses] starting load, target={:?}", target);
         self.harnesses = Loadable::Loading;
         self.load_task = Some(cx.spawn(async move |this, cx| {
             let mut params = serde_json::Map::new();
@@ -37,17 +39,34 @@ impl Pickers {
                     serde_json::Value::String(target.clone()),
                 );
             }
+            eprintln!("[TRACE:UI:ensure_harnesses] sending LIST_HARNESSES RPC...");
             let result = engine
                 .client()
                 .call(methods::LIST_HARNESSES, serde_json::Value::Object(params))
                 .await;
+            eprintln!("[TRACE:UI:ensure_harnesses] RPC result: {}", match &result {
+                Ok(v) => format!("Ok({})", v),
+                Err(e) => format!("Err({e})"),
+            });
             this.update(cx, |pickers, cx| {
                 pickers.harnesses = match result {
                     Ok(value) => match serde_json::from_value::<Vec<HarnessDescriptor>>(value) {
-                        Ok(list) => Loadable::Ready(list),
-                        Err(err) => Loadable::Error(err.to_string()),
+                        Ok(list) => {
+                            eprintln!("[TRACE:UI:ensure_harnesses] parsed {} descriptors", list.len());
+                            for d in &list {
+                                eprintln!("[TRACE:UI:ensure_harnesses]   id={:?} name={} acp_agent_id={:?}", d.id, d.name, d.acp_agent_id);
+                            }
+                            Loadable::Ready(list)
+                        }
+                        Err(err) => {
+                            eprintln!("[TRACE:UI:ensure_harnesses] parse error: {err}");
+                            Loadable::Error(err.to_string())
+                        }
                     },
-                    Err(err) => Loadable::Error(err.to_string()),
+                    Err(err) => {
+                        eprintln!("[TRACE:UI:ensure_harnesses] RPC error: {err}");
+                        Loadable::Error(err.to_string())
+                    }
                 };
                 if let Some(harness) = pickers.effective_harness(cx) {
                     let acp_agent_id = pickers.effective_acp_agent_id(cx);

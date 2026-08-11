@@ -26,7 +26,8 @@ gpui UI ─ in-proc/localhost RPC ─ engine A ══ DeviceRoom DO relay ══
   diff sync, doc hosting. Pure Rust daemon, fully functional headless.
 - **UI = viewport** (was Electron): gpui app rendering engine state. Talks the same typed RPC
   whether the engine is in-process or a separate daemon. Organized around **spaces** — synced
-  (device, folder) pairs: the sidebar lists spaces plus a global attention-sorted Active list;
+  (device, folder) pairs: the sidebar's Projects mode is a collapsible tree (spaces as parents,
+  their sessions as children, RECENT on top); Activity mode is a flat attention-sorted feed;
   the main area shows the selected space's sessions as horizontal tabs (closing a tab archives);
   new sessions are minted onto the space's device via relay-forwardable RPCs.
 - **Edge (TypeScript, ported from comet `apps/edge`)**: Worker + SessionRoom DO (per chat) +

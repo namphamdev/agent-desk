@@ -5,6 +5,7 @@ use comet_rpc::methods;
 use gpui::{
     AnyElement, Context, Entity, SharedString, Subscription, Task, Window, div, prelude::*, px,
 };
+use std::time::Duration;
 
 use crate::composer::{ComposerInput, ComposerInputEvent};
 use crate::dev_inspector::InspectExt as _;
@@ -15,6 +16,15 @@ use crate::theme::{Theme, white_alpha};
 
 pub struct AcpAgentsPage {
     state: Entity<AppState>,
+    /// Which device's agents are shown; `None` = this device (no passthrough).
+    /// Retargeted by the page-header device switcher — ACP agent RPCs are
+    /// relay-forwardable, and agents are per-device (the executables must
+    /// exist on the device that runs the sessions).
+    target_device: Option<String>,
+    device_menu_open: bool,
+    /// Outside-click dismissal instant — suppresses the trigger click that
+    /// follows the same mouse-down from instantly reopening the menu.
+    device_menu_dismissed_at: Option<std::time::Instant>,
     snapshot: Loadable<AcpAgentsSnapshot>,
     harness_health: Loadable<Vec<HarnessHealth>>,
     busy_agent: Option<String>,
@@ -48,6 +58,9 @@ impl AcpAgentsPage {
         );
         let mut page = Self {
             state,
+            target_device: None,
+            device_menu_open: false,
+            device_menu_dismissed_at: None,
             snapshot: Loadable::Idle,
             harness_health: Loadable::Idle,
             busy_agent: None,
@@ -63,6 +76,184 @@ impl AcpAgentsPage {
         page
     }
 
+    /// Retarget the page at another device's agents: every ACP agent RPC is
+    /// relay-forwardable, so the whole page follows the passthrough.
+    fn set_target_device(&mut self, target: Option<String>, cx: &mut Context<Self>) {
+        self.device_menu_open = false;
+        if self.target_device == target {
+            cx.notify();
+            return;
+        }
+        self.target_device = target;
+        self.busy_agent = None;
+        self.error = None;
+        self.editor = None;
+        self.load(cx);
+    }
+
+    /// Params with the `targetDeviceId` passthrough merged in.
+    fn params(&self, value: serde_json::Value) -> serde_json::Value {
+        let mut value = value;
+        if let (Some(target), Some(object)) = (&self.target_device, value.as_object_mut()) {
+            object.insert("targetDeviceId".into(), serde_json::json!(target));
+        }
+        value
+    }
+
+    /// The page-header device switcher: a quiet trigger — platform glyph ·
+    /// name · presence dot · sort glyph — opening a dropdown of every
+    /// registered device. Selecting one retargets the page at that device's
+    /// ACP agents.
+    fn render_device_switcher(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        use crate::icons::{self, icon};
+        let (mut devices, local_id) = {
+            let s = self.state.read(cx);
+            (s.devices.clone(), s.local_device_id.clone())
+        };
+        devices = crate::settings::devices::devices_for_display(devices, local_id.as_deref());
+        devices.sort_by(|a, b| {
+            a.created_at
+                .cmp(&b.created_at)
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        let effective = self.target_device.clone().or_else(|| local_id.clone());
+        let selected = devices
+            .iter()
+            .find(|d| Some(d.id.as_str()) == effective.as_deref())
+            .cloned();
+        let platform_glyph = |platform: &str| match platform {
+            "macos" | "darwin" => icons::LAPTOP,
+            "ios" | "android" => icons::SMARTPHONE,
+            _ => icons::MONITOR,
+        };
+        let trigger_glyph = platform_glyph(
+            selected
+                .as_ref()
+                .map(|d| d.platform.as_str())
+                .unwrap_or("macos"),
+        );
+        let trigger_label: SharedString = selected
+            .as_ref()
+            .map(|d| d.name.clone().into())
+            .unwrap_or_else(|| SharedString::from("This device"));
+        let emerald = theme.success;
+        let open = self.device_menu_open;
+
+        let mut trigger =
+            div()
+                .id("acp-device-switcher")
+                .flex_none()
+                .h(px(28.0))
+                .px(px(8.0))
+                .rounded(px(6.0))
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(6.0))
+                .cursor_pointer()
+                .bg(if open {
+                    crate::theme::ink(0.06)
+                } else {
+                    gpui::transparent_black()
+                })
+                .when(!open, |el| el.hover(|s| s.bg(crate::theme::ink(0.04))))
+                .on_click(cx.listener(|this, _, _, cx| {
+                    let just_dismissed = this
+                        .device_menu_dismissed_at
+                        .is_some_and(|at| at.elapsed() < Duration::from_millis(400));
+                    this.device_menu_open = !this.device_menu_open && !just_dismissed;
+                    this.device_menu_dismissed_at = None;
+                    cx.notify();
+                }))
+                .child(
+                    icon(trigger_glyph)
+                        .size(px(16.0))
+                        .flex_none()
+                        .text_color(theme.text_muted),
+                )
+                .child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .text_size(px(12.5))
+                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .text_color(theme.text)
+                        .child(trigger_label),
+                )
+                .child(div().size(px(6.0)).rounded_full().flex_none().bg(
+                    if effective == local_id {
+                        emerald
+                    } else {
+                        crate::theme::ink(0.2)
+                    },
+                ))
+                .child(
+                    icon(icons::SORT_VERTICAL)
+                        .size(px(14.0))
+                        .flex_none()
+                        .text_color(theme.text_muted.opacity(if open { 0.9 } else { 0.4 })),
+                );
+
+        if open {
+            let menu = popover::popover_card(theme)
+                .w(px(220.0))
+                .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                    this.device_menu_open = false;
+                    this.device_menu_dismissed_at = Some(std::time::Instant::now());
+                    cx.notify();
+                }))
+                .flex()
+                .flex_col()
+                .gap(px(2.0))
+                .child(popover::menu_heading(theme, "Devices"))
+                .children(devices.into_iter().enumerate().map(|(ix, d)| {
+                    let is_active = Some(d.id.as_str()) == effective.as_deref();
+                    let is_local = local_id.as_deref() == Some(d.id.as_str());
+                    let glyph = platform_glyph(&d.platform);
+                    let name: SharedString = d.name.clone().into();
+                    let pick_local = is_local;
+                    let pick_id = d.id.clone();
+                    popover::menu_row(theme, is_active, format!("acp-device-row-{ix}"))
+                        .id(("acp-device-row", ix))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            let target = (!pick_local).then(|| pick_id.clone());
+                            this.set_target_device(target, cx);
+                        }))
+                        .child(
+                            icon(glyph)
+                                .size(px(16.0))
+                                .flex_none()
+                                .text_color(theme.text_muted),
+                        )
+                        .child(div().flex_1().min_w_0().truncate().child(name))
+                        .when(is_local, |el| {
+                            el.child(
+                                div()
+                                    .flex_none()
+                                    .text_size(px(10.5))
+                                    .text_color(theme.text_muted.opacity(0.35))
+                                    .child(SharedString::from("You")),
+                            )
+                        })
+                        .when(is_active, |el| el.child(popover::menu_check(theme)))
+                        .child(
+                            div()
+                                .size(px(6.0))
+                                .rounded_full()
+                                .flex_none()
+                                .bg(if is_local {
+                                    emerald
+                                } else {
+                                    crate::theme::ink(0.2)
+                                }),
+                        )
+                }))
+                .into_any_element();
+            trigger = trigger.child(popover::anchored_menu("acp-device-menu", menu));
+        }
+        trigger.into_any_element()
+    }
+
     fn load(&mut self, cx: &mut Context<Self>) {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             self.snapshot = Loadable::Error("Engine not connected".into());
@@ -71,14 +262,16 @@ impl AcpAgentsPage {
         };
         self.snapshot = Loadable::Loading;
         self.harness_health = Loadable::Loading;
+        let acp_params = self.params(serde_json::json!({}));
+        let health_params = self.params(serde_json::json!({}));
         self.load_task = Some(cx.spawn(async move |this, cx| {
             let (acp_result, health_result) = futures::future::join(
                 engine
                     .client()
-                    .call(methods::LIST_ACP_AGENTS, serde_json::json!({})),
+                    .call(methods::LIST_ACP_AGENTS, acp_params),
                 engine
                     .client()
-                    .call(methods::CHECK_HARNESS_HEALTH, serde_json::json!({})),
+                    .call(methods::CHECK_HARNESS_HEALTH, health_params),
             )
             .await;
             this.update(cx, |page, cx| {
@@ -97,10 +290,11 @@ impl AcpAgentsPage {
         };
         self.busy_agent = Some(agent_id.clone());
         self.error = None;
+        let params = self.params(serde_json::json!({ "agentId": agent_id }));
         self.action_task = Some(cx.spawn(async move |this, cx| {
             let result = engine
                 .client()
-                .call(method, serde_json::json!({ "agentId": agent_id }))
+                .call(method, params)
                 .await;
             this.update(cx, |page, cx| {
                 page.busy_agent = None;
@@ -124,13 +318,11 @@ impl AcpAgentsPage {
         };
         self.installing_harness = Some(id);
         self.error = None;
+        let params = self.params(serde_json::json!({ "harness": id }));
         self.action_task = Some(cx.spawn(async move |this, cx| {
             let result = engine
                 .client()
-                .call(
-                    methods::INSTALL_HARNESS,
-                    serde_json::json!({ "harness": id }),
-                )
+                .call(methods::INSTALL_HARNESS, params)
                 .await;
             this.update(cx, |page, cx| {
                 page.installing_harness = None;
@@ -147,10 +339,11 @@ impl AcpAgentsPage {
                         let engine = page.state.read(cx).engine().cloned();
                         if let Some(engine) = engine {
                             page.harness_health = Loadable::Loading;
+                            let health_params = page.params(serde_json::json!({}));
                             page.load_task = Some(cx.spawn(async move |this, cx| {
                                 let health_result = engine
                                     .client()
-                                    .call(methods::CHECK_HARNESS_HEALTH, serde_json::json!({}))
+                                    .call(methods::CHECK_HARNESS_HEALTH, health_params)
                                     .await;
                                 this.update(cx, |page, cx| {
                                     page.harness_health = decode_health(health_result);
@@ -267,18 +460,25 @@ impl AcpAgentsPage {
         self.busy_agent = Some("__custom__".into());
         self.error = None;
         let editing = agent_id.clone();
+        let target_device = self.target_device.clone();
         self.action_task = Some(cx.spawn(async move |this, cx| {
+            let merge_target = |mut value: serde_json::Value| {
+                if let (Some(target), Some(obj)) = (&target_device, value.as_object_mut()) {
+                    obj.insert("targetDeviceId".into(), serde_json::json!(target));
+                }
+                value
+            };
             let result = if let Some(agent_id) = editing {
                 engine
                     .client()
                     .call(
                         methods::UPDATE_CUSTOM_ACP_AGENT,
-                        serde_json::json!({
+                        merge_target(serde_json::json!({
                             "agentId": agent_id,
                             "name": name,
                             "command": command,
                             "icon": icon
-                        }),
+                        })),
                     )
                     .await
             } else {
@@ -286,7 +486,7 @@ impl AcpAgentsPage {
                     .client()
                     .call(
                         methods::ADD_CUSTOM_ACP_AGENT,
-                        serde_json::json!({ "name": name, "command": command, "icon": icon }),
+                        merge_target(serde_json::json!({ "name": name, "command": command, "icon": icon })),
                     )
                     .await
             };
@@ -806,10 +1006,15 @@ impl gpui::Render for AcpAgentsPage {
                         )
                     })
                     .collect::<Vec<_>>();
+                let device_label = if self.target_device.is_some() {
+                    "Added on selected device"
+                } else {
+                    "Added on this device"
+                };
                 vec![
                     div()
                         .mt(px(24.0))
-                        .child(widgets::row_title(&theme, "Added on this device"))
+                        .child(widgets::row_title(&theme, device_label))
                         .child(
                             widgets::section_card(&theme)
                                 .mt(px(8.0))
@@ -902,6 +1107,7 @@ impl gpui::Render for AcpAgentsPage {
                             .flex()
                             .items_center()
                             .child(widgets::page_header(&theme, "ACP agents", count))
+                            .child(self.render_device_switcher(&theme, cx))
                             .child(div().flex_1())
                             .child(
                                 widgets::ghost_action(&theme)
@@ -940,7 +1146,14 @@ impl gpui::Render for AcpAgentsPage {
                     )
                     .child(widgets::page_subtitle(
                         &theme,
-                        "Add ACP-compatible coding agents. Any installed agent can be selected when starting a session; one is the default.",
+                        if self.target_device.is_some() {
+                            "ACP agents are installed per-device. Use the switcher above to manage \
+                             agents on a different device. Agents must be installed on the device \
+                             that hosts the space."
+                        } else {
+                            "Add ACP-compatible coding agents. Any installed agent can be selected \
+                             when starting a session; one is the default."
+                        },
                     ))
                     .when_some(self.snapshot.error().map(str::to_string), |page, error| {
                         page.child(

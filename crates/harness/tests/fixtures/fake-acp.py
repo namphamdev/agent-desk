@@ -16,6 +16,18 @@ known_sessions = {"acp-session-1"}
 # must fall back to session/new.
 load_fail = bool(os.environ.get("FAKE_ACP_LOAD_FAIL"))
 
+# When FAKE_ACP_REQUIRE_AUTH is set, the fixture advertises authentication
+# methods on initialize (mirroring Grok's `grok agent stdio` server) and
+# rejects session/new and session/load until the client sends authenticate.
+require_auth = bool(os.environ.get("FAKE_ACP_REQUIRE_AUTH"))
+authenticated = not require_auth
+# When FAKE_ACP_AUTH_LOG is set, the authenticate request params are recorded
+# so tests can assert which method the harness picked.
+auth_log = os.environ.get("FAKE_ACP_AUTH_LOG")
+# When FAKE_ACP_AUTH_FAIL is set, authenticate returns an error — the harness
+# must degrade to the default model instead of surfacing raw protocol errors.
+auth_fail = bool(os.environ.get("FAKE_ACP_AUTH_FAIL"))
+
 
 def send(message):
     print(json.dumps(message), flush=True)
@@ -33,11 +45,45 @@ for line in sys.stdin:
             "result": {
                 "protocolVersion": 1,
                 "agentCapabilities": {},
-                "authMethods": [],
+                "authMethods": (
+                    [
+                        {"id": "cached_token", "name": "Cached token"},
+                        {"id": "xai.api_key", "name": "xAI API key"},
+                    ]
+                    if require_auth
+                    else []
+                ),
                 "agentInfo": {"name": "fake-acp", "version": "1.0"},
             },
         })
+    elif method == "authenticate":
+        if auth_fail:
+            send({
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "error": {"code": -32001, "message": "Auth failed"},
+            })
+            sys.exit(1)
+        authenticated = True
+        if auth_log:
+            with open(auth_log, "w") as log:
+                json.dump(message.get("params", {}), log)
+        send({
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "result": {},
+        })
     elif method == "session/new":
+        if not authenticated:
+            send({
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "error": {
+                    "code": -32001,
+                    "message": "Not authenticated: send authenticate first",
+                },
+            })
+            sys.exit(1)
         if discovery_log := os.environ.get("FAKE_ACP_DISCOVERY_LOG"):
             with open(discovery_log, "a") as log:
                 log.write("session/new\n")
@@ -110,6 +156,16 @@ for line in sys.stdin:
         if os.environ.get("FAKE_ACP_EXIT_AFTER_SESSION_NEW"):
             sys.exit(1)
     elif method == "session/load":
+        if not authenticated:
+            send({
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "error": {
+                    "code": -32001,
+                    "message": "Not authenticated: send authenticate first",
+                },
+            })
+            sys.exit(1)
         load_session_id = message.get("params", {}).get("sessionId", "")
         if load_fail or load_session_id not in known_sessions:
             send({

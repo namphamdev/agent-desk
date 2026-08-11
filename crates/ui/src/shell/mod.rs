@@ -26,7 +26,6 @@ pub(crate) use layout::{
 pub(crate) use nav::{
     NavHistory, WidthTween, SplashPhase, UpdateFlow,
     OrgGateUi, SidebarResize,
-    CHAT_ROW_HEIGHT,
     RenameChatDialog,
 };
 
@@ -155,6 +154,27 @@ pub struct Shell {
     /// top of each sidebar render pass. The virtualized `uniform_list` closure
     /// reads from this to build elements only for the visible range.
     pub(crate) sidebar_row_data: Vec<spaces::ActiveRowData>,
+    /// Same row data keyed by chat id — the sidebar tree's session nodes look
+    /// their row data up by id (a collapsed space's children aren't in the
+    /// flat list, so an index can't reach them).
+    pub(crate) sidebar_chat_map: std::collections::HashMap<String, spaces::ActiveRowData>,
+    /// The flattened sidebar tree (space nodes + expanded spaces' session
+    /// children), rebuilt at the top of each sidebar render pass — the
+    /// virtualized list indexes this instead of the old flat chat list.
+    pub(crate) sidebar_tree: Vec<spaces::SidebarTreeNode>,
+    /// Sidebar tree: space ids the user has manually expanded this session.
+    /// The active space is always expanded (override); spaces absent from both
+    /// this set and `settings.sidebar_collapsed_spaces` render expanded too.
+    pub(crate) sidebar_expanded_spaces: std::collections::HashSet<String>,
+    /// Space ids the user expanded past the 5-session cap ("View more");
+    /// runtime only — restarts return to the capped view.
+    pub(crate) sidebar_space_show_all: std::collections::HashSet<String>,
+    /// Scroll offset saved when a space collapses (space id → offset.y), so
+    /// expanding it again restores the view instead of jumping.
+    pub(crate) sidebar_space_scroll: std::collections::HashMap<String, f32>,
+    /// Chat id last auto-scrolled into view in the tree — scroll-to-selected
+    /// fires once per selection change (mirrors `tabs_scrolled_to`).
+    pub(crate) sidebar_tree_scrolled_to: Option<String>,
     /// `settings.last_space_id` applied once after the first spaces frame.
     pub(crate) space_boot_applied: bool,
     /// Last seen session status per chat — the chime trigger compares against

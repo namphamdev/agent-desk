@@ -164,6 +164,12 @@ impl Shell {
             sidebar_scroll: gpui::ScrollHandle::new(),
             sidebar_chat_scroll: gpui::UniformListScrollHandle::new(),
             sidebar_row_data: Vec::new(),
+            sidebar_chat_map: std::collections::HashMap::new(),
+            sidebar_tree: Vec::new(),
+            sidebar_expanded_spaces: std::collections::HashSet::new(),
+            sidebar_space_show_all: std::collections::HashSet::new(),
+            sidebar_space_scroll: std::collections::HashMap::new(),
+            sidebar_tree_scrolled_to: None,
             space_boot_applied: false,
             sound_prev: std::collections::HashMap::new(),
             user_menu_open: false,
@@ -376,6 +382,11 @@ impl Shell {
                 self.schedule_save(cx);
             }
         }
+        // Sidebar tree: the active space is always expanded — selecting a
+        // space (or a chat, which implies its space) auto-expands it so the
+        // user always sees the sessions of the space they're working in.
+        // Idempotent + no notify: this rides the state change's own frame.
+        self.ensure_active_space_expanded(cx);
         // Chat switch: restore THAT chat's panel state (per-session open flags;
         // snap, no tween — the panels belong to the destination chat).
         let selected = state.read(cx).selected_chat.clone().unwrap_or_default();

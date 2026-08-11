@@ -1130,26 +1130,39 @@ impl RpcService for EngineRpc {
         match method {
             methods::LIST_HARNESSES => {
                 let mut descriptors = self.registry.descriptors();
+                eprintln!("[TRACE:LIST_HARNESSES] registry descriptors: {} entries", descriptors.len());
+                for d in &descriptors {
+                    eprintln!("[TRACE:LIST_HARNESSES]   id={:?} name={} acp_agent_id={:?}", d.id, d.name, d.acp_agent_id);
+                }
                 // Expand the generic ACP slot into one entry per installed
                 // agent (each carrying its `acp_agent_id`). The generic slot
                 // is kept only when no agents are installed.
                 match self.acp_agents.list().await {
-                    Ok(snapshot) if !snapshot.installed.is_empty() => {
-                        let acp_base = descriptors.iter().find(|d| d.id == HarnessId::Acp).cloned();
-                        descriptors.retain(|d| d.id != HarnessId::Acp);
-                        if let Some(base) = acp_base {
-                            for agent in &snapshot.installed {
-                                descriptors.push(HarnessDescriptor {
-                                    name: agent.name.clone(),
-                                    acp_agent_id: Some(agent.id.clone()),
-                                    icon: agent.icon.clone(),
-                                    ..base.clone()
-                                });
+                    Ok(snapshot) => {
+                        eprintln!("[TRACE:LIST_HARNESSES] acp list Ok: {} installed, {} registry agents", snapshot.installed.len(), snapshot.registry.len());
+                        for a in &snapshot.installed {
+                            eprintln!("[TRACE:LIST_HARNESSES]   installed agent: id={} name={}", a.id, a.name);
+                        }
+                        if !snapshot.installed.is_empty() {
+                            let acp_base = descriptors.iter().find(|d| d.id == HarnessId::Acp).cloned();
+                            descriptors.retain(|d| d.id != HarnessId::Acp);
+                            if let Some(base) = acp_base {
+                                for agent in &snapshot.installed {
+                                    descriptors.push(HarnessDescriptor {
+                                        name: agent.name.clone(),
+                                        acp_agent_id: Some(agent.id.clone()),
+                                        icon: agent.icon.clone(),
+                                        ..base.clone()
+                                    });
+                                }
                             }
                         }
                     }
-                    _ => {} // no agents installed: keep the generic ACP slot
+                    Err(e) => {
+                        eprintln!("[TRACE:LIST_HARNESSES] acp list ERROR: {e}");
+                    }
                 }
+                eprintln!("[TRACE:LIST_HARNESSES] returning {} descriptors", descriptors.len());
                 RpcReply::value(&descriptors)
             }
             methods::GET_PROJECT_HARNESS => {
@@ -1169,14 +1182,23 @@ impl RpcService for EngineRpc {
             }
             methods::LIST_MODELS => {
                 let p: ListModelsParams = parse_params(params)?;
+                eprintln!("[TRACE:LIST_MODELS] harness={:?} acp_agent_id={:?}", p.harness, p.acp_agent_id);
                 let harness = self
                     .registry
                     .resolve(p.harness)
-                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                    .map_err(|e| {
+                        eprintln!("[TRACE:LIST_MODELS] registry resolve ERROR: {e}");
+                        RpcError::Failed(e.to_string())
+                    })?;
+                eprintln!("[TRACE:LIST_MODELS] resolved harness id={:?} name={}", harness.id(), harness.display_name());
                 let mut models = harness
                     .models(p.acp_agent_id.as_deref())
                     .await
-                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                    .map_err(|e| {
+                        eprintln!("[TRACE:LIST_MODELS] models() ERROR: {e}");
+                        RpcError::Failed(e.to_string())
+                    })?;
+                eprintln!("[TRACE:LIST_MODELS] got {} models", models.len());
 
                 // When a custom provider is selected for Codex, merge its
                 // available models into the picker so the user can select

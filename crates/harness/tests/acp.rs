@@ -66,7 +66,7 @@ async fn samples_live_process_tree_memory() {
 
 #[tokio::test]
 async fn lists_models_exposed_by_the_acp_agent() {
-    let harness = AcpHarness::with_command(fixture_path().display().to_string());
+    let harness = AcpHarness::new().with_command(fixture_path().display().to_string());
     let models = harness.models(None).await.unwrap();
 
     assert_eq!(
@@ -91,7 +91,7 @@ async fn lists_models_exposed_by_the_acp_agent() {
 #[tokio::test]
 async fn caches_models_discovered_from_the_acp_agent() {
     let log = tempfile::NamedTempFile::new().unwrap();
-    let harness = AcpHarness::with_command(
+    let harness = AcpHarness::new().with_command(
         serde_json::json!({
             "command": fixture_path(),
             "env": { "FAKE_ACP_DISCOVERY_LOG": log.path() },
@@ -109,9 +109,22 @@ async fn caches_models_discovered_from_the_acp_agent() {
     );
 }
 
+/// Grok's `grok agent stdio` ACP server advertises auth methods on initialize
+/// and rejects `session/new` until the client sends `authenticate`. The
+/// harness must complete that handshake before model discovery, or the picker
+/// only ever shows "Agent default".
 #[tokio::test]
-async fn preserves_models_when_the_agent_exits_after_discovery() {
-    let harness = AcpHarness::with_command(exiting_fixture_command());
+async fn authenticates_before_model_discovery_when_the_agent_requires_auth() {
+    let auth_log = tempfile::NamedTempFile::new().unwrap();
+    let command = serde_json::json!({
+        "command": fixture_path(),
+        "env": {
+            "FAKE_ACP_REQUIRE_AUTH": "1",
+            "FAKE_ACP_AUTH_LOG": auth_log.path(),
+        },
+    })
+    .to_string();
+    let harness = AcpHarness::new().with_command(command);
     let models = harness.models(None).await.unwrap();
 
     assert_eq!(
@@ -121,26 +134,29 @@ async fn preserves_models_when_the_agent_exits_after_discovery() {
             .collect::<Vec<_>>(),
         vec!["acp-fast", "acp-smart"]
     );
+
+    // The harness picked the locally-authenticated method and passed
+    // `headless: true`, mirroring the official Grok client flow.
+    let recorded: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(auth_log.path()).expect("auth log should exist"),
+    )
+    .expect("auth log should be valid JSON");
+    assert_eq!(recorded["methodId"], "cached_token");
+    assert_eq!(recorded["_meta"]["headless"], true);
 }
 
+/// The same handshake must happen on the live-run path (`run`), not just
+/// during discovery: a session that starts without `authenticate` is rejected
+/// by Grok.
 #[tokio::test]
-async fn does_not_attach_mcp_servers_during_model_discovery() {
-    let harness = AcpHarness::with_command(mcp_rejecting_fixture_command())
-        .with_mcp_server("http://127.0.0.1:6699/mcp");
-    let models = harness.models(None).await.unwrap();
-
-    assert_eq!(
-        models
-            .iter()
-            .map(|model| model.id.as_str())
-            .collect::<Vec<_>>(),
-        vec!["acp-fast", "acp-smart"]
+async fn authenticates_before_running_a_session_when_the_agent_requires_auth() {
+    let harness = AcpHarness::new().with_command(
+        serde_json::json!({
+            "command": fixture_path(),
+            "env": { "FAKE_ACP_REQUIRE_AUTH": "1" },
+        })
+        .to_string(),
     );
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn parked_acp_session_does_not_busy_poll() {
-    let harness = AcpHarness::with_command(fixture_path().display().to_string());
     let (steer_tx, steer_rx) = mpsc::channel(1);
     let controls = RunControls {
         request_input: Box::new(|_| {
@@ -165,7 +181,107 @@ async fn parked_acp_session_does_not_busy_poll() {
         seed_role: None,
         seed_purpose: None,
         harness: None,
-            acp_agent_id: None,
+        acp_agent_id: None,
+        custom_provider: None,
+    };
+
+    let stream = harness.run(request, controls).await.unwrap();
+    drop(steer_tx);
+    let events = tokio::time::timeout(
+        Duration::from_secs(10),
+        stream.map(Result::unwrap).collect::<Vec<_>>(),
+    )
+    .await
+    .expect("ACP fixture should finish an authenticated session");
+
+    assert!(events.contains(&AgentEvent::TextDelta {
+        text: "Hello from ACP (medium)".into(),
+    }));
+}
+
+/// When the agent's `authenticate` itself fails (e.g. no cached credentials),
+/// discovery degrades to the single default model instead of surfacing a raw
+/// protocol error — the picker still works, just without a model list.
+#[tokio::test]
+async fn falls_back_to_default_model_when_authentication_fails() {
+    let harness = AcpHarness::new().with_command(
+        serde_json::json!({
+            "command": fixture_path(),
+            "env": {
+                "FAKE_ACP_REQUIRE_AUTH": "1",
+                "FAKE_ACP_AUTH_FAIL": "1",
+            },
+        })
+        .to_string(),
+    );
+    let models = harness.models(None).await.unwrap();
+
+    assert_eq!(
+        models
+            .iter()
+            .map(|model| model.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["default"]
+    );
+}
+
+#[tokio::test]
+async fn preserves_models_when_the_agent_exits_after_discovery() {
+    let harness = AcpHarness::new().with_command(exiting_fixture_command());
+    let models = harness.models(None).await.unwrap();
+
+    assert_eq!(
+        models
+            .iter()
+            .map(|model| model.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["acp-fast", "acp-smart"]
+    );
+}
+
+#[tokio::test]
+async fn does_not_attach_mcp_servers_during_model_discovery() {
+    let harness = AcpHarness::new().with_command(mcp_rejecting_fixture_command())
+        .with_mcp_server("http://127.0.0.1:6699/mcp");
+    let models = harness.models(None).await.unwrap();
+
+    assert_eq!(
+        models
+            .iter()
+            .map(|model| model.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["acp-fast", "acp-smart"]
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn parked_acp_session_does_not_busy_poll() {
+    let harness = AcpHarness::new().with_command(fixture_path().display().to_string());
+    let (steer_tx, steer_rx) = mpsc::channel(1);
+    let controls = RunControls {
+        request_input: Box::new(|_| {
+            let (_tx, rx) = oneshot::channel();
+            rx
+        }),
+        steering: steer_rx,
+        interrupt: CancellationToken::new(),
+        report_memory: Box::new(|_| {}),
+    };
+    let request = RunRequest {
+        prompt: "Say hello".into(),
+        model: None,
+        reasoning: None,
+        model_options: serde_json::Map::new(),
+        cwd: "/tmp".into(),
+        sandbox: SandboxLevel::WorkspaceWrite,
+        auto_approve: true,
+        resume: None,
+        attachments: vec![],
+        seed: None,
+        seed_role: None,
+        seed_purpose: None,
+        harness: None,
+        acp_agent_id: None,
         custom_provider: None,
     };
 
@@ -194,7 +310,7 @@ async fn parked_acp_session_does_not_busy_poll() {
 
 #[tokio::test]
 async fn streams_and_normalizes_an_acp_session() {
-    let harness = AcpHarness::with_command(fixture_path().display().to_string());
+    let harness = AcpHarness::new().with_command(fixture_path().display().to_string());
     let (steer_tx, steer_rx) = mpsc::channel(1);
     let controls = RunControls {
         request_input: Box::new(|questions| {
@@ -228,7 +344,7 @@ async fn streams_and_normalizes_an_acp_session() {
         seed_role: None,
         seed_purpose: None,
         harness: None,
-            acp_agent_id: None,
+        acp_agent_id: None,
         custom_provider: None,
     };
 
@@ -279,7 +395,7 @@ async fn streams_and_normalizes_an_acp_session() {
 
 #[tokio::test]
 async fn emits_a_turn_boundary_for_a_steer_after_completion() {
-    let harness = AcpHarness::with_command(fixture_path().display().to_string());
+    let harness = AcpHarness::new().with_command(fixture_path().display().to_string());
     let (steer_tx, steer_rx) = mpsc::channel(1);
     let controls = RunControls {
         request_input: Box::new(|_| {
@@ -304,7 +420,7 @@ async fn emits_a_turn_boundary_for_a_steer_after_completion() {
         seed_role: None,
         seed_purpose: None,
         harness: None,
-            acp_agent_id: None,
+        acp_agent_id: None,
         custom_provider: None,
     };
 
@@ -351,7 +467,7 @@ async fn emits_a_turn_boundary_for_a_steer_after_completion() {
 /// config options — proving the resume path uses the stored session id.
 #[tokio::test]
 async fn resumes_an_acp_session_via_session_load() {
-    let harness = AcpHarness::with_command(fixture_path().display().to_string());
+    let harness = AcpHarness::new().with_command(fixture_path().display().to_string());
     let (steer_tx, steer_rx) = mpsc::channel(1);
     let controls = RunControls {
         request_input: Box::new(|_| {
@@ -415,7 +531,7 @@ async fn falls_back_to_new_session_when_load_fails() {
         "env": { "FAKE_ACP_LOAD_FAIL": "1" },
     })
     .to_string();
-    let harness = AcpHarness::with_command(command);
+    let harness = AcpHarness::new().with_command(command);
     let (steer_tx, steer_rx) = mpsc::channel(1);
     let controls = RunControls {
         request_input: Box::new(|_| {
@@ -498,7 +614,7 @@ async fn passes_custom_provider_env_to_acp_agent() {
     })
     .to_string();
 
-    let harness = AcpHarness::with_command(command);
+    let harness = AcpHarness::new().with_command(command);
     let (steer_tx, steer_rx) = mpsc::channel(1);
     let controls = RunControls {
         request_input: Box::new(|_| {

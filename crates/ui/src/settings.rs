@@ -65,6 +65,11 @@ pub struct UiSettings {
     /// are skipped; new spaces append in creation order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub space_order: Vec<String>,
+    /// Sidebar tree: spaces the user manually collapsed (sidebar tree §3.3).
+    /// The active space auto-expands regardless; a space absent from this set
+    /// renders expanded by default. Empty = all expanded (no migration cost).
+    #[serde(default, skip_serializing_if = "std::collections::HashSet::is_empty")]
+    pub sidebar_collapsed_spaces: std::collections::HashSet<String>,
     /// Session notification chimes (done / awaiting-input). `COMET_DISABLE_SOUND`
     /// overrides.
     pub sound_enabled: bool,
@@ -101,6 +106,7 @@ impl Default for UiSettings {
             last_space_id: None,
             tab_order: std::collections::HashMap::new(),
             space_order: Vec::new(),
+            sidebar_collapsed_spaces: std::collections::HashSet::new(),
             sound_enabled: true,
             notifications_enabled: true,
             right_pane_width: RIGHT_PANE_DEFAULT,
@@ -402,6 +408,7 @@ mod tests {
                 vec!["b".to_string(), "a".to_string()],
             )]),
             space_order: vec!["space-2".to_string(), "space-1".to_string()],
+            sidebar_collapsed_spaces: std::collections::HashSet::from(["space-2".to_string()]),
             sound_enabled: false,
             notifications_enabled: false,
             right_pane_width: 700.0,

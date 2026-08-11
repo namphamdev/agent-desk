@@ -124,12 +124,13 @@ pub fn resort_offsets(
     offsets
 }
 
-/// Estimated sidebar row height for the resort diff (title line 17px inside
-/// 6px vertical padding + the location subline's 14px line + 2px gap — Active
-/// rows always carry the folder · device subline).
-/// Session row height (FLIP estimate): space line + title + meta line
-/// (harness mark, plus branch for worktrees).
-pub(crate) const CHAT_ROW_HEIGHT: f32 = 61.0;
+/// Estimated sidebar session-row height (sidebar tree §3.4): the compact
+/// 2-line row — title line 17px + 2px gap + meta line 13px inside 5px
+/// vertical padding. Also the uniform slot height for the virtualized tree
+/// list (space rows fill the same slot, §3.8 option A).
+pub(crate) const CHAT_ROW_HEIGHT: f32 = 44.0;
+/// Session-child indent under a space parent (px of left padding).
+pub(crate) const TREE_INDENT: f32 = 14.0;
 /// Flex gap between sidebar list items.
 pub(crate) const SIDEBAR_LIST_GAP: f32 = 2.0;
 

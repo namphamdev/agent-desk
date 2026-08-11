@@ -1,6 +1,6 @@
-﻿//! Spaces sidebar: the spaces list (folder + device rows), the global
-//! Sessions list, and the add-space palette (⌘K-style: device tabs + filtered
-//! folder browser).
+﻿//! Spaces sidebar: the sidebar tree (spaces as collapsible parents, their
+//! sessions as children), the RECENT section, and the add-space palette
+//! (⌘K-style: device tabs + filtered folder browser).
 //!
 //! A space = a synced (device, folder) pair; the sidebar's job is switching
 //! between them and surfacing which sessions want attention. Child module of
@@ -10,18 +10,15 @@ use super::*;
 use crate::dev_inspector::InspectClickExt as _;
 use crate::motion::TAB_SLIDE;
 use crate::pickers::{breadcrumbs, browser_rows, is_absolute_path, parent_path};
-use crate::terminal::panel::{drop_index, reorder_tabs, slide_offset};
+use crate::terminal::panel::{reorder_tabs, slide_offset};
 use comet_proto::{
-    ApplyHarnessResult, ChatIndicator, Device, FolderListing, ProjectHarness, Space,
+    ApplyHarnessResult, Chat, ChatIndicator, Device, FolderListing, ProjectHarness, Space,
 };
 use gpui::FocusHandle;
 
-/// Space-row slot height for drag drop-index math: py(6)×2 + 17px line ≈ 29,
-/// plus the 2px column gap.
-const SPACE_ROW_SLOT: f32 = 31.0;
-
 /// Drag-reorder state for the spaces list; `epoch` keys the 150ms slide
-/// animation restarts (the session-tab idiom, vertical).
+/// animation restarts (the session-tab idiom, vertical). Indices are SPACE
+/// ordinals within the flattened tree, not flat node indices.
 pub(super) struct SpaceDragState {
     pub(super) from: usize,
     pub(super) over: usize,
@@ -29,26 +26,214 @@ pub(super) struct SpaceDragState {
     pub(super) prev_over: usize,
 }
 
-/// The dragged-row payload (gpui drag-and-drop).
-struct SpaceDragPayload {
+/// The dragged-row payload (gpui drag-and-drop). `from` is the SPACE ordinal
+/// within the flattened tree.
+pub(crate) struct SpaceDragPayload {
     pub(super) from: usize,
     pub(super) name: SharedString,
 }
 
-/// Pre-render data for one Sessions-list row: everything `render_chat_row`
-/// needs except the theme. Collected once for the whole list each frame;
-/// element creation is deferred to the virtualized list's visible range so
-/// off-screen rows pay zero cost.
+/// Pre-render data for one session row: everything `render_chat_row` needs
+/// except the theme. Collected once for the whole sidebar each frame; element
+/// creation is deferred to the virtualized list's visible range so off-screen
+/// rows pay zero cost.
 #[derive(Clone)]
 pub(crate) struct ActiveRowData {
     pub(super) chat_id: String,
     pub(super) title: SharedString,
     pub(super) time_ago: SharedString,
-    pub(super) folder: SharedString,
     pub(super) branch: Option<SharedString>,
     pub(super) harness: Option<comet_proto::HarnessId>,
     pub(super) acp_agent_id: Option<String>,
     pub(super) status: ChatIndicator,
+}
+
+// ---------------------------------------------------------------------------
+// Sidebar tree (Projects mode): spaces as expandable parents, their sessions
+// as children, flattened into one virtualized list (sidebar-tree plan §3.1).
+//
+// A space always appears (collapsed or expanded); an expanded space's
+// sessions follow it as child rows; a collapsed space contributes no children;
+// an empty space contributes no children either (no "no sessions" filler).
+// The flat order is the render order of the uniform_list.
+// ---------------------------------------------------------------------------
+
+/// Session children shown under an expanded space before the "View more"
+/// disclosure kicks in (the rest stay hidden behind a toggle row).
+pub(crate) const MAX_TREE_SESSIONS: usize = 5;
+
+/// One row of the flattened sidebar tree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SidebarTreeNode {
+    /// Space header row.
+    Space {
+        /// 0-based space ordinal (drag payloads + drop-slot math).
+        ordinal: usize,
+        space_id: String,
+        expanded: bool,
+        /// Visible session count (children of this node when expanded).
+        child_count: usize,
+        /// Aggregate attention dot (most urgent live member wins).
+        attention: Option<ChatIndicator>,
+    },
+    /// Session child row — only present when its space is expanded.
+    Session {
+        space_id: String,
+        chat_id: String,
+        /// Index within the space (tab order), for future per-space ordering.
+        in_space_ix: usize,
+    },
+    /// "View more (N) / Hide more" disclosure row under an expanded space
+    /// with more sessions than [`MAX_TREE_SESSIONS`]. `shown` is the visible
+    /// child count (== `total` when show-all is on, which renders "Hide more").
+    ShowMore {
+        space_id: String,
+        shown: usize,
+        total: usize,
+    },
+}
+
+/// FLIP key of a tree node: `s:{space_id}` / `c:{chat_id}` / `m:{space_id}` —
+/// stable across rebuilds so surviving rows glide (never re-fade) on resort.
+pub(crate) fn tree_node_key(node: &SidebarTreeNode) -> String {
+    match node {
+        SidebarTreeNode::Space { space_id, .. } => format!("s:{space_id}"),
+        SidebarTreeNode::Session { chat_id, .. } => format!("c:{chat_id}"),
+        SidebarTreeNode::ShowMore { space_id, .. } => format!("m:{space_id}"),
+    }
+}
+
+/// Build the flattened tree from ordered spaces + per-space sessions.
+///
+/// Pure — unit-tested (`spaces::tests::tree_*`). `space_order` is the manual
+/// drag order (device-local); missing spaces are skipped, new spaces append in
+/// creation order (same resolution as the session tabs). `show_all` holds the
+/// space ids the user expanded past the [`MAX_TREE_SESSIONS`] cap; capped
+/// spaces append a [`SidebarTreeNode::ShowMore`] disclosure row.
+pub(crate) fn build_sidebar_tree(
+    spaces: &[Space],
+    expanded: &std::collections::HashSet<String>,
+    sessions_by_space: &std::collections::HashMap<String, Vec<&Chat>>,
+    attention: &std::collections::HashMap<String, ChatIndicator>,
+    space_order: &[String],
+    show_all: &std::collections::HashSet<String>,
+) -> Vec<SidebarTreeNode> {
+    let created: Vec<String> = spaces.iter().map(|s| s.id.clone()).collect();
+    let order = super::tabs::resolve_tab_order(&created, space_order);
+    let mut by_id: std::collections::HashMap<&str, &Space> =
+        spaces.iter().map(|s| (s.id.as_str(), s)).collect();
+    let mut tree = Vec::new();
+    for (ordinal, space_id) in order.into_iter().enumerate() {
+        let Some(space) = by_id.remove(space_id.as_str()) else {
+            continue;
+        };
+        let children = sessions_by_space
+            .get(&space.id)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[]);
+        let total = children.len();
+        let is_expanded = expanded.contains(&space.id);
+        let shown = if show_all.contains(&space.id) {
+            total
+        } else {
+            total.min(MAX_TREE_SESSIONS)
+        };
+        tree.push(SidebarTreeNode::Space {
+            ordinal,
+            space_id: space.id.clone(),
+            expanded: is_expanded,
+            child_count: shown,
+            attention: attention.get(&space.id).copied(),
+        });
+        if is_expanded {
+            for (in_space_ix, chat) in children.iter().take(shown).enumerate() {
+                tree.push(SidebarTreeNode::Session {
+                    space_id: space.id.clone(),
+                    chat_id: chat.id.clone(),
+                    in_space_ix,
+                });
+            }
+            if total > MAX_TREE_SESSIONS {
+                tree.push(SidebarTreeNode::ShowMore {
+                    space_id: space.id.clone(),
+                    shown,
+                    total,
+                });
+            }
+        }
+    }
+    tree
+}
+
+/// Which space row a drag hovering at `content_y` (inside the tree's content,
+/// scroll already applied) would land on: the ordinal of the space node whose
+/// uniform slot contains the pointer; a pointer over a space's session
+/// children counts as its parent. Clamped to the last space ordinal.
+pub(crate) fn tree_drop_over(tree: &[SidebarTreeNode], content_y: f32) -> usize {
+    let total = tree
+        .iter()
+        .filter(|n| matches!(n, SidebarTreeNode::Space { .. }))
+        .count();
+    if total == 0 {
+        return 0;
+    }
+    let node_ix = (content_y / super::nav::CHAT_ROW_HEIGHT)
+        .floor()
+        .max(0.0) as usize;
+    let mut spaces_seen = 0usize;
+    for node in tree.iter().take(node_ix.saturating_add(1)) {
+        if matches!(node, SidebarTreeNode::Space { .. }) {
+            spaces_seen += 1;
+        }
+    }
+    spaces_seen.saturating_sub(1).min(total - 1)
+}
+
+/// One RECENT-section row (owned — the renderer needs it after the state
+/// borrow ends, so chats are reduced to the few fields the row shows).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RecentRow {
+    pub chat_id: String,
+    pub space_id: Option<String>,
+    pub title: SharedString,
+    pub time_ago: SharedString,
+    pub status: ChatIndicator,
+}
+
+/// The 3 most recent sessions across all live spaces, pure recency order
+/// (the RECENT section — global discovery above the tree).
+pub(crate) fn recent_sessions(
+    state: &crate::state::AppState,
+    now: chrono::DateTime<chrono::Utc>,
+    limit: usize,
+) -> Vec<RecentRow> {
+    let mut rows: Vec<(ChatIndicator, &Chat)> = state
+        .visible_chats()
+        .filter(|c| {
+            c.space_id
+                .as_deref()
+                .is_some_and(|id| state.space_row(id).is_some())
+        })
+        .map(|c| (state.display_status_for(c, now), c))
+        .collect();
+    rows.sort_by(|(_, a), (_, b)| {
+        b.last_message_at
+            .or(Some(b.created_at))
+            .cmp(&a.last_message_at.or(Some(a.created_at)))
+    });
+    rows.truncate(limit);
+    rows.into_iter()
+        .map(|(status, chat)| RecentRow {
+            chat_id: chat.id.clone(),
+            space_id: chat.space_id.clone(),
+            title: transcript::single_line(
+                &chat.title.clone().unwrap_or_else(|| "New session".into()),
+            )
+            .into(),
+            time_ago: format_time_ago(chat.last_message_at.unwrap_or(chat.created_at), now).into(),
+            status,
+        })
+        .collect()
 }
 
 /// The floating row rendered at the cursor while dragging.
@@ -195,96 +380,23 @@ impl Shell {
         self.state.update(cx, |s, cx| s.select_chat(target, cx));
         self.settings.last_space_id = Some(space_id);
         self.schedule_save(cx);
+        // The space you land in shows its sessions — auto-expand.
+        self.ensure_active_space_expanded(cx);
         cx.notify();
     }
 
     // ---- sidebar sections ----
 
-    /// The "Spaces" section: tracked header + add button, then a row per space.
+    /// The "Spaces" section header: tracked label + add button, plus the
+    /// empty-state ghost row. The space ROWS themselves live in the
+    /// virtualized sidebar tree (`build_sidebar_tree` + `render_tree_space_row`),
+    /// so the whole tree scrolls as one list.
     pub(super) fn render_spaces_section(
         &mut self,
         theme: &Theme,
         cx: &mut Context<Self>,
+        spaces_empty: bool,
     ) -> AnyElement {
-        // A drag that ended off-list (no drop event) must not strand the
-        // sibling slide offsets.
-        if self.space_drag.is_some() && !cx.has_active_drag() {
-            self.space_drag = None;
-        }
-        let (spaces, selected, device_names, offline_devices, attention): (
-            Vec<Space>,
-            Option<String>,
-            std::collections::HashMap<String, String>,
-            std::collections::HashSet<String>,
-            std::collections::HashMap<String, ChatIndicator>,
-        ) = {
-            let now = Utc::now();
-            let state = self.state.read(cx);
-            let spaces = state.spaces.clone();
-            let device_names = spaces
-                .iter()
-                .map(|s| {
-                    (
-                        s.device_id.clone(),
-                        state
-                            .device_name(&s.device_id)
-                            .unwrap_or("Unknown device")
-                            .to_string(),
-                    )
-                })
-                .collect();
-            // Host-presence (the revived "Remote" signal): a remote space whose
-            // device heartbeat lapsed shows offline — a host outage, not slow sync.
-            let offline_devices = spaces
-                .iter()
-                .map(|s| s.device_id.clone())
-                .filter(|id| !state.device_online(id, now))
-                .collect();
-            // Spaces with a live/awaiting session get an aggregate dot (the
-            // most urgent member status wins) so the attention signal survives
-            // even with the Sessions list scrolled off.
-            let mut attention: std::collections::HashMap<String, ChatIndicator> =
-                std::collections::HashMap::new();
-            for chat in state.visible_chats() {
-                let status = state.display_status_for(chat, now);
-                if !matches!(
-                    status,
-                    ChatIndicator::Working | ChatIndicator::AwaitingInput
-                ) {
-                    continue;
-                }
-                let Some(space_id) = chat.space_id.clone() else {
-                    continue;
-                };
-                attention
-                    .entry(space_id)
-                    .and_modify(|held| {
-                        if crate::state::attention_rank(status)
-                            < crate::state::attention_rank(*held)
-                        {
-                            *held = status;
-                        }
-                    })
-                    .or_insert(status);
-            }
-            (
-                spaces,
-                state.selected_space.clone(),
-                device_names,
-                offline_devices,
-                attention,
-            )
-        };
-        // Manual (drag) order overrides the synced creation order — device-
-        // local, resolved exactly like the session-tab order.
-        let spaces: Vec<Space> = {
-            let created: Vec<String> = spaces.iter().map(|s| s.id.clone()).collect();
-            let order = super::tabs::resolve_tab_order(&created, &self.settings.space_order);
-            let mut by_id: std::collections::HashMap<String, Space> =
-                spaces.into_iter().map(|s| (s.id.clone(), s)).collect();
-            order.iter().filter_map(|id| by_id.remove(id)).collect()
-        };
-
         let header = div()
             .flex()
             .flex_row()
@@ -330,7 +442,7 @@ impl Shell {
             });
 
         let mut column = div().flex().flex_col().child(header);
-        if spaces.is_empty() {
+        if spaces_empty {
             // Ghost row: the empty-state affordance mirrors a space row.
             column = column.child(
                 div()
@@ -364,92 +476,108 @@ impl Shell {
                     )
                     .child(SharedString::from("Add space")),
             );
-        } else {
-            let count = spaces.len();
-            let drag = self
-                .space_drag
-                .as_ref()
-                .map(|d| (d.from, d.over, d.epoch, d.prev_over));
-            let rows: Vec<AnyElement> = spaces
-                .into_iter()
-                .enumerate()
-                .map(|(ix, space)| {
-                    let id = space.id.clone();
-                    let device_name = device_names
-                        .get(&space.device_id)
-                        .cloned()
-                        .unwrap_or_else(|| "Unknown device".to_string());
-                    let host_offline = offline_devices.contains(&space.device_id);
-                    let is_selected = selected.as_deref() == Some(space.id.as_str());
-                    let attention = attention.get(&space.id).copied();
-                    let row = self.render_space_row(
-                        ix,
-                        space,
-                        device_name,
-                        host_offline,
-                        is_selected,
-                        attention,
-                        theme,
-                        cx,
-                    );
-                    // Sliding transform while a sibling is dragged over —
-                    // the session-tab idiom, vertical.
-                    match drag {
-                        Some((from, over, epoch, prev_over)) if ix != from => {
-                            let target = slide_offset(ix, from, over) * SPACE_ROW_SLOT;
-                            let start = slide_offset(ix, from, prev_over) * SPACE_ROW_SLOT;
-                            div()
-                                .relative()
-                                .child(row.with_animation(
-                                    SharedString::from(format!("space-slide-{id}-{epoch}")),
-                                    TAB_SLIDE.animation(),
-                                    move |el, t| el.top(px(motion::lerp(start, target, t))),
-                                ))
-                                .into_any_element()
-                        }
-                        // The dragged row renders as an invisible spacer; the
-                        // cursor ghost represents it.
-                        Some((from, ..)) if ix == from => div()
-                            .h(px(SPACE_ROW_SLOT - 2.0))
-                            .flex_none()
-                            .into_any_element(),
-                        _ => row.into_any_element(),
-                    }
-                })
-                .collect();
-            column = column.child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(2.0))
-                    .on_drag_move::<SpaceDragPayload>(cx.listener(
-                        move |this, event: &gpui::DragMoveEvent<SpaceDragPayload>, _, cx| {
-                            let from = event.drag(cx).from;
-                            let rel_y =
-                                f32::from(event.event.position.y) - f32::from(event.bounds.top());
-                            let over = drop_index(rel_y, SPACE_ROW_SLOT, count);
-                            this.update_space_drag_over(from, over, cx);
-                        },
-                    ))
-                    .on_drop::<SpaceDragPayload>(cx.listener(
-                        move |this, payload: &SpaceDragPayload, _, cx| {
-                            let to = this
-                                .space_drag
-                                .as_ref()
-                                .map(|d| d.over)
-                                .unwrap_or(payload.from);
-                            this.commit_space_reorder(payload.from, to, cx);
-                        },
-                    ))
-                    .children(rows),
-            );
         }
         column.into_any_element()
     }
 
-    /// Track the drop slot while a space row is dragged over the list (150ms
-    /// sibling slides restart per committed `over` change).
-    fn update_space_drag_over(&mut self, from: usize, over: usize, cx: &mut Context<Self>) {
+    /// Aggregate attention dot per space (most urgent live member wins) — the
+    /// signal survives on collapsed space rows so a busy session is never
+    /// hidden behind a chevron.
+    pub(super) fn sidebar_space_attention(&self, cx: &Context<Self>) -> std::collections::HashMap<String, ChatIndicator> {
+        let now = Utc::now();
+        let state = self.state.read(cx);
+        let mut attention: std::collections::HashMap<String, ChatIndicator> =
+            std::collections::HashMap::new();
+        for chat in state.visible_chats() {
+            let status = state.display_status_for(chat, now);
+            if !matches!(
+                status,
+                ChatIndicator::Working | ChatIndicator::AwaitingInput
+            ) {
+                continue;
+            }
+            let Some(space_id) = chat.space_id.clone() else {
+                continue;
+            };
+            attention
+                .entry(space_id)
+                .and_modify(|held| {
+                    if crate::state::attention_rank(status)
+                        < crate::state::attention_rank(*held)
+                    {
+                        *held = status;
+                    }
+                })
+                .or_insert(status);
+        }
+        attention
+    }
+
+    // ---- sidebar tree expand/collapse ----
+
+    /// Effective expanded state of a space row: the ACTIVE space is always
+    /// expanded (auto-expand override — the user is working there), a space
+    /// manually expanded this session is expanded, and everything else follows
+    /// the persisted collapse choice (default: expanded).
+    pub(super) fn space_expanded(&self, space_id: &str, cx: &Context<Self>) -> bool {
+        if self.state.read(cx).selected_space.as_deref() == Some(space_id) {
+            return true;
+        }
+        if self.sidebar_expanded_spaces.contains(space_id) {
+            return true;
+        }
+        !self.settings.sidebar_collapsed_spaces.contains(space_id)
+    }
+
+    /// Toggle a space's expand/collapse. Collapsing stashes the current list
+    /// scroll offset (restored on expand); both directions persist the manual
+    /// choice. The ACTIVE space never visibly collapses — the auto-expand
+    /// override keeps it open, so toggling it is a no-op.
+    pub(super) fn toggle_space_expand(&mut self, space_id: &str, cx: &mut Context<Self>) {
+        let is_active = self
+            .state
+            .read(cx)
+            .selected_space
+            .as_deref()
+            == Some(space_id);
+        if self.space_expanded(space_id, cx) && !is_active {
+            // Collapse: record the choice + stash the view.
+            self.sidebar_expanded_spaces.remove(space_id);
+            self.settings
+                .sidebar_collapsed_spaces
+                .insert(space_id.to_string());
+            let offset = f32::from(self.sidebar_chat_scroll.0.borrow().base_handle.offset().y);
+            self.sidebar_space_scroll.insert(space_id.to_string(), offset);
+        } else {
+            // Expand: clear the persisted collapse + restore the pre-collapse
+            // view (a saved offset from an earlier collapse of the same space).
+            self.sidebar_expanded_spaces.insert(space_id.to_string());
+            self.settings.sidebar_collapsed_spaces.remove(space_id);
+            if let Some(saved) = self.sidebar_space_scroll.get(space_id).copied() {
+                self.sidebar_chat_scroll
+                    .0
+                    .borrow_mut()
+                    .base_handle
+                    .set_offset(gpui::point(px(0.0), px(saved)));
+            }
+        }
+        self.schedule_save(cx);
+        cx.notify();
+    }
+
+    /// Auto-expand the active space (called on every state change — selecting
+    /// a chat implies its space, so this covers boot, space switches, and
+    /// chat picks from the tab strip alike). Idempotent.
+    pub(super) fn ensure_active_space_expanded(&mut self, cx: &Context<Self>) {
+        if let Some(space_id) = self.state.read(cx).selected_space.clone() {
+            self.sidebar_expanded_spaces.insert(space_id);
+        }
+    }
+
+    /// Track the drop slot while a space row is dragged over the tree (150ms
+    /// sibling slides restart per committed `over` change). `from`/`over` are
+    /// space ordinals.
+    pub(super) fn update_space_drag_over(&mut self, from: usize, over: usize, cx: &mut Context<Self>) {
         match &mut self.space_drag {
             Some(drag) if drag.from == from => {
                 if drag.over != over {
@@ -472,7 +600,7 @@ impl Shell {
     }
 
     /// Commit a drag: persist the new visual order (device-local).
-    fn commit_space_reorder(&mut self, from: usize, to: usize, cx: &mut Context<Self>) {
+    pub(super) fn commit_space_reorder(&mut self, from: usize, to: usize, cx: &mut Context<Self>) {
         let created: Vec<String> = self
             .state
             .read(cx)
@@ -490,16 +618,22 @@ impl Shell {
         cx.notify();
     }
 
-    /// One space row: folder icon + folder name, device name subline.
-    /// `host_offline` marks a remote host whose presence heartbeat lapsed.
+    /// One tree space row: chevron + status dot + folder icon + folder name,
+    /// device tag. Click activates the space AND toggles its expansion (the
+    /// active space's auto-expand override keeps it visible regardless);
+    /// right-click opens the context menu; dragging reorders spaces.
+    /// `ordinal` is the space's index among spaces (drag payload + slide
+    /// math); the row fills the uniform tree slot (`CHAT_ROW_HEIGHT`) so the
+    /// virtualized list stays uniform-height (§3.8 option A).
     #[allow(clippy::too_many_arguments)]
     fn render_space_row(
         &self,
-        ix: usize,
+        ordinal: usize,
         space: Space,
         device_name: String,
         host_offline: bool,
         selected: bool,
+        expanded: bool,
         attention: Option<ChatIndicator>,
         theme: &Theme,
         cx: &mut Context<Self>,
@@ -526,13 +660,16 @@ impl Shell {
         let space_hover_tag = space_inspect.clone();
         div()
             .id(SharedString::from(format!("space-{id}")))
+            // The uniform tree slot: every node (space or session) is exactly
+            // CHAT_ROW_HEIGHT tall so the virtualized list can lay them out at
+            // a fixed stride (items_center floats the shorter space row).
+            .h(px(super::nav::CHAT_ROW_HEIGHT))
             .flex()
             .flex_row()
             .items_center()
             .gap(px(Theme::SPACE_SM))
             .rounded(px(8.0))
             .px(px(Theme::SPACE_SM))
-            .py(px(6.0))
             .text_color(motion::hover_blend(&fade_key, rest_text, theme.text))
             // Selected rows pin their hover target to the selected fill — see
             // the chat-row comment in shell.rs (light hover sits below the
@@ -557,6 +694,7 @@ impl Shell {
             .cursor_pointer()
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.activate_space(select_id.clone(), cx);
+                this.toggle_space_expand(&select_id, cx);
             }))
             .on_mouse_down(
                 MouseButton::Right,
@@ -567,7 +705,7 @@ impl Shell {
             )
             .on_drag(
                 SpaceDragPayload {
-                    from: ix,
+                    from: ordinal,
                     name: name.clone(),
                 },
                 |payload, _point, _, cx| {
@@ -576,9 +714,21 @@ impl Shell {
                     cx.new(|_| SpaceGhost { name })
                 },
             )
-            // Status dot LEADS the row (like session rows) so its position is
-            // stable — appearing/disappearing at the right edge made the row
-            // jitter (user request). Faint at rest, colored under attention.
+            // Chevron LEADS the row (before the status dot) so its position is
+            // stable while toggling — the collapse affordance never moves.
+            .child(
+                icon(if expanded {
+                    icons::ALT_ARROW_DOWN
+                } else {
+                    icons::ALT_ARROW_RIGHT
+                })
+                .size(px(12.0))
+                .flex_none()
+                .text_color(theme.text_muted),
+            )
+            // Status dot next (like session rows): faint at rest, colored
+            // under attention — appearing/disappearing at the right edge made
+            // the row jitter (user request).
             .child(
                 div().size(px(6.0)).rounded_full().flex_none().bg(attention
                     .map(|status| status_dot_color(status, theme))
@@ -620,8 +770,186 @@ impl Shell {
             )
     }
 
-    /// Collect the data needed to render the Sessions list rows WITHOUT
-    /// building any gpui elements. The virtualized sidebar list calls this
+    /// Render one flattened-tree node (space row, session child, or the
+    /// invisible spacer for the row being dragged) inside the virtualized
+    /// list. `drag` is the in-flight space drag `(from, over, epoch, prev_over)`
+    /// — the dragged space's slot goes empty and siblings slide one slot
+    /// toward it (the session-tab idiom, vertical).
+    pub(super) fn render_tree_node(
+        &self,
+        node: &SidebarTreeNode,
+        drag: Option<(usize, usize, usize, usize)>,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        match node {
+            SidebarTreeNode::Space { ordinal, space_id, .. } => {
+                // The dragged row renders as an invisible spacer; the cursor
+                // ghost represents it (its session children stay visible until
+                // the drop commits, when the FLIP resort glides everything).
+                if drag.is_some_and(|(from, ..)| from == *ordinal) {
+                    return div().h(px(super::nav::CHAT_ROW_HEIGHT)).into_any_element();
+                }
+                let mut row = self.render_tree_space_row(node, theme, cx);
+                if let Some((from, over, epoch, prev_over)) = drag {
+                    let target =
+                        slide_offset(*ordinal, from, over) * super::nav::CHAT_ROW_HEIGHT;
+                    let start =
+                        slide_offset(*ordinal, from, prev_over) * super::nav::CHAT_ROW_HEIGHT;
+                    row = div()
+                        .w_full()
+                        .child(row)
+                        .with_animation(
+                            SharedString::from(format!("space-slide-{space_id}-{epoch}")),
+                            TAB_SLIDE.animation(),
+                            move |el, t| el.relative().top(px(motion::lerp(start, target, t))),
+                        )
+                        .into_any_element();
+                }
+                row
+            }
+            SidebarTreeNode::Session { .. } => self.render_tree_session_row(node, theme, cx),
+            SidebarTreeNode::ShowMore {
+                space_id,
+                shown,
+                total,
+            } => self.render_tree_show_more_row(space_id, *shown, *total, theme, cx),
+        }
+    }
+
+    /// The tree's space node: reads the live space row + device presence and
+    /// delegates to [`Self::render_space_row`].
+    pub(super) fn render_tree_space_row(
+        &self,
+        node: &SidebarTreeNode,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let SidebarTreeNode::Space {
+            ordinal,
+            space_id,
+            expanded,
+            attention,
+            ..
+        } = node
+        else {
+            unreachable!("tree session node rendered as a space row")
+        };
+        let now = Utc::now();
+        let (space, device_name, host_offline, selected) = {
+            let state = self.state.read(cx);
+            let space = state.space_row(space_id);
+            let device_name = space
+                .and_then(|s| state.device_name(&s.device_id))
+                .unwrap_or("Unknown device")
+                .to_string();
+            let host_offline = space.is_some_and(|s| !state.device_online(&s.device_id, now));
+            let selected = state.selected_space.as_deref() == Some(space_id.as_str());
+            (space.cloned(), device_name, host_offline, selected)
+        };
+        let Some(space) = space else {
+            // Space vanished mid-frame — inert placeholder keeps the list
+            // index-stable for this frame.
+            return div().h(px(super::nav::CHAT_ROW_HEIGHT)).into_any_element();
+        };
+        self.render_space_row(
+            *ordinal,
+            space,
+            device_name,
+            host_offline,
+            selected,
+            *expanded,
+            *attention,
+            theme,
+            cx,
+        )
+        .into_any_element()
+    }
+
+    /// The tree's session child: the compact 2-line chat row, indented under
+    /// its space parent (the parent already names the folder — no repeat).
+    pub(super) fn render_tree_session_row(
+        &self,
+        node: &SidebarTreeNode,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let SidebarTreeNode::Session { chat_id, .. } = node else {
+            unreachable!("tree space node rendered as a session row")
+        };
+        let Some(data) = self.sidebar_chat_map.get(chat_id) else {
+            return div().h(px(super::nav::CHAT_ROW_HEIGHT)).into_any_element();
+        };
+        let selected = self.state.read(cx).selected_chat.as_deref() == Some(chat_id.as_str());
+        div()
+            .h(px(super::nav::CHAT_ROW_HEIGHT))
+            .pl(px(super::nav::TREE_INDENT))
+            .child(self.render_chat_row(
+                chat_id.clone(),
+                data.title.clone(),
+                data.time_ago.clone(),
+                SharedString::from(""),
+                data.branch.clone(),
+                data.harness,
+                data.acp_agent_id.clone(),
+                data.status,
+                selected,
+                theme,
+                cx,
+            ))
+            .into_any_element()
+    }
+
+    /// The "View more (N) / Hide more" disclosure row under a space with more
+    /// sessions than the [`MAX_TREE_SESSIONS`] cap. Clicking toggles that
+    /// space's show-all state (runtime only — restarts return to the capped
+    /// view). Indented to align under the session titles.
+    fn render_tree_show_more_row(
+        &self,
+        space_id: &str,
+        shown: usize,
+        total: usize,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let show_all = self.sidebar_space_show_all.contains(space_id);
+        let label = if show_all {
+            "Hide more".to_string()
+        } else {
+            format!("View more ({})", total - shown)
+        };
+        let select_id = space_id.to_string();
+        let fade_key = format!("show-more-{space_id}");
+        div()
+            .id(SharedString::from(fade_key.clone()))
+            .h(px(super::nav::CHAT_ROW_HEIGHT))
+            // Align under the session title: TREE_INDENT + row px + rail(6) + gap(8).
+            .pl(px(super::nav::TREE_INDENT + Theme::SPACE_SM + 14.0))
+            .flex()
+            .flex_row()
+            .items_center()
+            .text_size(px(11.0))
+            .text_color(motion::hover_blend(
+                &fade_key,
+                theme.text_muted.opacity(0.7),
+                theme.text_muted,
+            ))
+            .cursor_pointer()
+            .on_hover(motion::hover_listener(&fade_key))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                if this.sidebar_space_show_all.contains(&select_id) {
+                    this.sidebar_space_show_all.remove(&select_id);
+                } else {
+                    this.sidebar_space_show_all.insert(select_id.clone());
+                }
+                cx.notify();
+            }))
+            .child(SharedString::from(label))
+            .into_any_element()
+    }
+
+    /// Collect the data needed to render the sidebar session rows WITHOUT
+    /// building any gpui elements. The virtualized sidebar tree calls this
     /// once per frame (cheap: sort + string formatting) and defers element
     /// creation to only the visible range inside `uniform_list`.
     pub(super) fn collect_active_row_data(
@@ -629,20 +957,12 @@ impl Shell {
         cx: &Context<Self>,
     ) -> Vec<ActiveRowData> {
         let now = Utc::now();
-        let rows: Vec<(ChatIndicator, comet_proto::Chat, String, Option<String>)> = {
+        let rows: Vec<(ChatIndicator, comet_proto::Chat, Option<String>)> = {
             let state = self.state.read(cx);
             state
                 .overview_chats(now)
                 .into_iter()
                 .map(|(status, chat)| {
-                    let space = state.space_for_chat(chat);
-                    let mut folder = space
-                        .map(|s| s.display_name().to_string())
-                        .unwrap_or_else(|| "?".to_string());
-                    // Unknown device → no fragment, same as the archived list.
-                    if let Some(device) = state.device_name(&chat.device_id) {
-                        folder = format!("{folder}@{device}");
-                    }
                     // The branch shows whenever the engine has stamped one —
                     // main-checkout sessions included, not just worktrees.
                     let branch = chat
@@ -651,12 +971,12 @@ impl Shell {
                         .map(str::trim)
                         .filter(|b| !b.is_empty())
                         .map(str::to_string);
-                    (status, chat.clone(), folder, branch)
+                    (status, chat.clone(), branch)
                 })
                 .collect()
         };
         rows.into_iter()
-            .map(|(status, chat, folder, branch)| {
+            .map(|(status, chat, branch)| {
                 let title: SharedString = transcript::single_line(
                     &chat.title.clone().unwrap_or_else(|| "New session".into()),
                 )
@@ -667,7 +987,6 @@ impl Shell {
                     chat_id: chat.id.clone(),
                     title,
                     time_ago,
-                    folder: folder.into(),
                     branch: branch.map(SharedString::from),
                     harness: chat.config.as_ref().map(|c| c.harness),
                     acp_agent_id: chat.config.as_ref().and_then(|c| c.acp_agent_id.clone()),
@@ -2200,5 +2519,433 @@ impl Shell {
         }
 
         overlays
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::AppState;
+    use chrono::{TimeDelta, Utc};
+    use comet_proto::Chat;
+
+    fn space(id: &str) -> Space {
+        Space {
+            id: id.to_string(),
+            device_id: "d1".to_string(),
+            path: format!("/repo/{id}"),
+            name: None,
+            git_detected: true,
+            git_checked_at: None,
+            checkout_id: None,
+            created_at: Utc::now(),
+        }
+    }
+
+    fn chat(id: &str, space_id: &str, last_at: chrono::DateTime<chrono::Utc>) -> Chat {
+        Chat {
+            id: id.to_string(),
+            device_id: "d1".to_string(),
+            title: Some(format!("Title {id}")),
+            archived: false,
+            cwd: None,
+            branch: None,
+            checkout_id: None,
+            config: None,
+            last_message_preview: None,
+            last_message_at: Some(last_at),
+            created_at: last_at,
+            harness_session_id: None,
+            harness_session_cwd: None,
+            space_id: Some(space_id.to_string()),
+            last_seen_at: None,
+            settled_at: None,
+        }
+    }
+
+    fn sessions_by_space<'a>(
+        spaces: &[Space],
+        chats: &'a [Chat],
+    ) -> std::collections::HashMap<String, Vec<&'a Chat>> {
+        let mut map: std::collections::HashMap<String, Vec<&'a Chat>> =
+            std::collections::HashMap::new();
+        for space in spaces {
+            map.insert(
+                space.id.clone(),
+                chats
+                    .iter()
+                    .filter(|c| c.space_id.as_deref() == Some(space.id.as_str()))
+                    .collect(),
+            );
+        }
+        map
+    }
+
+    fn node_ids(tree: &[SidebarTreeNode]) -> Vec<String> {
+        tree.iter()
+            .map(|n| match n {
+                SidebarTreeNode::Space { space_id, .. } => format!("s:{space_id}"),
+                SidebarTreeNode::Session { chat_id, .. } => format!("c:{chat_id}"),
+                SidebarTreeNode::ShowMore { space_id, .. } => format!("m:{space_id}"),
+            })
+            .collect()
+    }
+
+    // ---- build_sidebar_tree ----
+
+    #[test]
+    fn tree_empty_with_no_spaces() {
+        let tree = build_sidebar_tree(
+            &[],
+            &std::collections::HashSet::new(),
+            &std::collections::HashMap::new(),
+            &std::collections::HashMap::new(),
+            &[],
+            &std::collections::HashSet::new(),
+        );
+        assert!(tree.is_empty());
+    }
+
+    #[test]
+    fn tree_single_space_collapsed_has_no_children() {
+        let spaces = vec![space("s1")];
+        let chats = vec![chat("c1", "s1", Utc::now())];
+        let by_space = sessions_by_space(&spaces, &chats);
+        let tree = build_sidebar_tree(
+            &spaces,
+            &std::collections::HashSet::new(),
+            &by_space,
+            &std::collections::HashMap::new(),
+            &[],
+            &std::collections::HashSet::new(),
+        );
+        assert_eq!(node_ids(&tree), vec!["s:s1"]);
+        assert_eq!(tree.len(), 1);
+    }
+
+    #[test]
+    fn tree_expanded_space_lists_children_in_tab_order() {
+        let spaces = vec![space("s1")];
+        let chats = vec![
+            chat("c1", "s1", Utc::now()),
+            chat("c2", "s1", Utc::now()),
+        ];
+        let by_space = sessions_by_space(&spaces, &chats);
+        let expanded: std::collections::HashSet<String> = ["s1".to_string()].into();
+        let tree = build_sidebar_tree(
+            &spaces,
+            &expanded,
+            &by_space,
+            &std::collections::HashMap::new(),
+            &[],
+            &std::collections::HashSet::new(),
+        );
+        assert_eq!(node_ids(&tree), vec!["s:s1", "c:c1", "c:c2"]);
+        // Children carry their in-space index + parent space id.
+        assert!(matches!(
+            &tree[1],
+            SidebarTreeNode::Session {
+                space_id,
+                chat_id,
+                in_space_ix
+            } if space_id == "s1" && chat_id == "c1" && *in_space_ix == 0
+        ));
+    }
+
+    #[test]
+    fn tree_mixed_expanded_and_collapsed() {
+        let spaces = vec![space("s1"), space("s2")];
+        let chats = vec![
+            chat("c1", "s1", Utc::now()),
+            chat("c2", "s1", Utc::now()),
+            chat("c3", "s2", Utc::now()),
+        ];
+        let by_space = sessions_by_space(&spaces, &chats);
+        // Only s1 expanded.
+        let expanded: std::collections::HashSet<String> = ["s1".to_string()].into();
+        let tree = build_sidebar_tree(
+            &spaces,
+            &expanded,
+            &by_space,
+            &std::collections::HashMap::new(),
+            &[],
+            &std::collections::HashSet::new(),
+        );
+        assert_eq!(node_ids(&tree), vec!["s:s1", "c:c1", "c:c2", "s:s2"]);
+        // Space ordinals are contiguous even with children interleaved.
+        assert!(matches!(
+            &tree[3],
+            SidebarTreeNode::Space { ordinal: 1, .. }
+        ));
+    }
+
+    #[test]
+    fn tree_empty_space_has_no_children_even_when_expanded() {
+        let spaces = vec![space("s1")];
+        let by_space = sessions_by_space(&spaces, &[]);
+        let expanded: std::collections::HashSet<String> = ["s1".to_string()].into();
+        let tree = build_sidebar_tree(
+            &spaces,
+            &expanded,
+            &by_space,
+            &std::collections::HashMap::new(),
+            &[],
+            &std::collections::HashSet::new(),
+        );
+        assert_eq!(node_ids(&tree), vec!["s:s1"]);
+    }
+
+    #[test]
+    fn tree_respects_manual_space_order() {
+        let spaces = vec![space("a"), space("b")];
+        let tree = build_sidebar_tree(
+            &spaces,
+            &std::collections::HashSet::new(),
+            &std::collections::HashMap::new(),
+            &std::collections::HashMap::new(),
+            &["b".to_string(), "a".to_string()],
+            &std::collections::HashSet::new(),
+        );
+        assert_eq!(node_ids(&tree), vec!["s:b", "s:a"]);
+    }
+
+    #[test]
+    fn tree_keys_are_unique_and_prefixed() {
+        let spaces = vec![space("a"), space("b")];
+        let chats = vec![chat("c1", "a", Utc::now())];
+        let by_space = sessions_by_space(&spaces, &chats);
+        let expanded: std::collections::HashSet<String> = ["a".to_string()].into();
+        let tree = build_sidebar_tree(
+            &spaces,
+            &expanded,
+            &by_space,
+            &std::collections::HashMap::new(),
+            &[],
+            &std::collections::HashSet::new(),
+        );
+        let keys: std::collections::HashSet<String> =
+            tree.iter().map(tree_node_key).collect();
+        assert_eq!(keys.len(), tree.len(), "space and chat keys must not collide");
+        // A space named like a chat id must still key distinctly.
+        assert!(tree.iter().all(|n| match n {
+            SidebarTreeNode::Space { .. } => tree_node_key(n).starts_with("s:"),
+            SidebarTreeNode::Session { .. } => tree_node_key(n).starts_with("c:"),
+            SidebarTreeNode::ShowMore { .. } => tree_node_key(n).starts_with("m:"),
+        }));
+    }
+
+    // ---- build_sidebar_tree: session cap + View more/Hide more ----
+
+    #[test]
+    fn tree_truncates_sessions_beyond_cap() {
+        let spaces = vec![space("s1")];
+        let chats: Vec<Chat> = (0..7)
+            .map(|ix| chat(&format!("c{ix}"), "s1", Utc::now()))
+            .collect();
+        let by_space = sessions_by_space(&spaces, &chats);
+        let expanded: std::collections::HashSet<String> = ["s1".to_string()].into();
+        let tree = build_sidebar_tree(
+            &spaces,
+            &expanded,
+            &by_space,
+            &std::collections::HashMap::new(),
+            &[],
+            &std::collections::HashSet::new(),
+        );
+        // Space + first 5 sessions + disclosure row.
+        assert_eq!(
+            node_ids(&tree),
+            vec!["s:s1", "c:c0", "c:c1", "c:c2", "c:c3", "c:c4", "m:s1"]
+        );
+        assert!(matches!(
+            &tree[6],
+            SidebarTreeNode::ShowMore {
+                space_id,
+                shown,
+                total
+            } if space_id == "s1" && *shown == 5 && *total == 7
+        ));
+        // The space node counts only the visible children.
+        assert!(matches!(
+            &tree[0],
+            SidebarTreeNode::Space { child_count, .. } if *child_count == 5
+        ));
+    }
+
+    #[test]
+    fn tree_show_all_lists_every_session() {
+        let spaces = vec![space("s1")];
+        let chats: Vec<Chat> = (0..7)
+            .map(|ix| chat(&format!("c{ix}"), "s1", Utc::now()))
+            .collect();
+        let by_space = sessions_by_space(&spaces, &chats);
+        let expanded: std::collections::HashSet<String> = ["s1".to_string()].into();
+        let show_all: std::collections::HashSet<String> = ["s1".to_string()].into();
+        let tree = build_sidebar_tree(
+            &spaces,
+            &expanded,
+            &by_space,
+            &std::collections::HashMap::new(),
+            &[],
+            &show_all,
+        );
+        assert_eq!(
+            node_ids(&tree),
+            vec![
+                "s:s1",
+                "c:c0",
+                "c:c1",
+                "c:c2",
+                "c:c3",
+                "c:c4",
+                "c:c5",
+                "c:c6",
+                "m:s1"
+            ]
+        );
+        // shown == total → the row renders "Hide more".
+        assert!(matches!(
+            &tree[8],
+            SidebarTreeNode::ShowMore { shown, total, .. } if *shown == 7 && *total == 7
+        ));
+    }
+
+    #[test]
+    fn tree_under_cap_has_no_show_more() {
+        let spaces = vec![space("s1")];
+        let chats: Vec<Chat> = (0..3)
+            .map(|ix| chat(&format!("c{ix}"), "s1", Utc::now()))
+            .collect();
+        let by_space = sessions_by_space(&spaces, &chats);
+        let expanded: std::collections::HashSet<String> = ["s1".to_string()].into();
+        let tree = build_sidebar_tree(
+            &spaces,
+            &expanded,
+            &by_space,
+            &std::collections::HashMap::new(),
+            &[],
+            &std::collections::HashSet::new(),
+        );
+        assert_eq!(node_ids(&tree), vec!["s:s1", "c:c0", "c:c1", "c:c2"]);
+    }
+
+    #[test]
+    fn tree_cap_does_not_leak_into_collapsed_spaces() {
+        // A collapsed space with > 5 sessions shows only the space row — no
+        // children and no disclosure (it would imply children are visible).
+        let spaces = vec![space("s1")];
+        let chats: Vec<Chat> = (0..7)
+            .map(|ix| chat(&format!("c{ix}"), "s1", Utc::now()))
+            .collect();
+        let by_space = sessions_by_space(&spaces, &chats);
+        let tree = build_sidebar_tree(
+            &spaces,
+            &std::collections::HashSet::new(),
+            &by_space,
+            &std::collections::HashMap::new(),
+            &[],
+            &std::collections::HashSet::new(),
+        );
+        assert_eq!(node_ids(&tree), vec!["s:s1"]);
+    }
+
+    // ---- tree_drop_over ----
+
+    #[test]
+    fn drop_over_maps_children_to_parent_space() {
+        let spaces = vec![space("s1"), space("s2"), space("s3")];
+        let chats = vec![
+            chat("c1", "s1", Utc::now()),
+            chat("c2", "s1", Utc::now()),
+        ];
+        let by_space = sessions_by_space(&spaces, &chats);
+        let expanded: std::collections::HashSet<String> = ["s1".to_string()].into();
+        let tree = build_sidebar_tree(
+            &spaces,
+            &expanded,
+            &by_space,
+            &std::collections::HashMap::new(),
+            &[],
+            &std::collections::HashSet::new(),
+        );
+        let slot = super::nav::CHAT_ROW_HEIGHT;
+        // Pointer on s1's own row → s1 (0).
+        assert_eq!(tree_drop_over(&tree, 0.0), 0);
+        // Pointer on s1's session children → still s1 (0).
+        assert_eq!(tree_drop_over(&tree, slot * 1.0), 0);
+        assert_eq!(tree_drop_over(&tree, slot * 2.0 - 1.0), 0);
+        // Pointer on s2's row → s2 (1).
+        assert_eq!(tree_drop_over(&tree, slot * 3.0), 1);
+        // Pointer on s3's row → s3 (2).
+        assert_eq!(tree_drop_over(&tree, slot * 4.0), 2);
+        // Past the last row clamps to the last space.
+        assert_eq!(tree_drop_over(&tree, slot * 100.0), 2);
+    }
+
+    #[test]
+    fn drop_over_empty_tree_is_zero() {
+        assert_eq!(tree_drop_over(&[], 42.0), 0);
+    }
+
+    // ---- recent_sessions ----
+
+    #[test]
+    fn recent_sessions_sorts_by_recency_and_limits() {
+        let mut state = AppState::new();
+        state.spaces = vec![space("s1"), space("s2")];
+        let now = Utc::now();
+        state.chats = vec![
+            chat("old", "s1", now - TimeDelta::hours(2)),
+            chat("mid", "s2", now - TimeDelta::hours(1)),
+            chat("new", "s1", now - TimeDelta::minutes(5)),
+        ];
+        let rows = recent_sessions(&state, now, 3);
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].chat_id, "new");
+        assert_eq!(rows[1].chat_id, "mid");
+        assert_eq!(rows[2].chat_id, "old");
+        assert_eq!(rows[0].space_id.as_deref(), Some("s1"));
+    }
+
+    #[test]
+    fn recent_sessions_respects_limit() {
+        let mut state = AppState::new();
+        state.spaces = vec![space("s1")];
+        let now = Utc::now();
+        state.chats = (0..5)
+            .map(|ix| chat(&format!("c{ix}"), "s1", now - TimeDelta::minutes(ix as i64)))
+            .collect();
+        let rows = recent_sessions(&state, now, 3);
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].chat_id, "c0");
+    }
+
+    #[test]
+    fn recent_sessions_excludes_archived_and_dangling() {
+        let mut state = AppState::new();
+        state.spaces = vec![space("s1")];
+        let now = Utc::now();
+        state.chats = vec![
+            chat("ok", "s1", now - TimeDelta::minutes(2)),
+            chat("archived", "s1", now - TimeDelta::minutes(1)),
+            chat("dangling", "ghost-space", now - TimeDelta::minutes(1)),
+        ];
+        state.chats[1].archived = true;
+        let rows = recent_sessions(&state, now, 5);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].chat_id, "ok");
+    }
+
+    #[test]
+    fn recent_rows_carry_display_fields() {
+        let mut state = AppState::new();
+        state.spaces = vec![space("s1")];
+        let now = Utc::now();
+        state.chats = vec![chat("c1", "s1", now - TimeDelta::minutes(2))];
+        let rows = recent_sessions(&state, now, 3);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].title, "Title c1");
+        assert!(!rows[0].time_ago.is_empty());
+        assert_eq!(rows[0].status, ChatIndicator::Completed);
     }
 }

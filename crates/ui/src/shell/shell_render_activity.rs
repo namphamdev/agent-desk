@@ -1,8 +1,9 @@
 ﻿use std::path::PathBuf;
 use std::time::Duration;
 
+use chrono::Utc;
 use gpui::{
-    AnyElement, Context, IntoElement, SharedString, div, prelude::*, px,
+    AnyElement, App, Context, IntoElement, SharedString, Window, div, prelude::*, px,
     uniform_list,
 };
 
@@ -25,6 +26,12 @@ impl Shell {
     pub(super) fn render_chat_sidebar(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let user = self.state.read(cx).auth_user().cloned();
 
+        // A drag that ended off-list (no drop event) must not strand the
+        // sibling slide offsets.
+        if self.space_drag.is_some() && !cx.has_active_drag() {
+            self.space_drag = None;
+        }
+
         // Collect row data (no element creation — cheap). Element creation is
         // deferred into the virtualized list's visible range so off-screen rows
         // cost nothing during scroll.
@@ -36,19 +43,71 @@ impl Shell {
         // Store on self so the uniform_list closure (which receives &mut Self)
         // can access it without a separate borrow.
         self.sidebar_row_data = row_data.clone();
-        let row_keys: Vec<String> =
-            row_data.iter().map(|r| format!("c:{}", r.chat_id)).collect();
+        // Same data keyed by chat id — the tree's session children look their
+        // rows up by id (only expanded spaces' children are in the tree).
+        self.sidebar_chat_map = row_data
+            .iter()
+            .map(|r| (r.chat_id.clone(), r.clone()))
+            .collect();
+
+        // Build the flattened tree (Projects mode): space nodes + the session
+        // children of expanded spaces. Activity mode keeps its flat grouped
+        // feed and builds nothing here.
+        let recent = if self.activity_open {
+            // Clear the stale tree so a mode switch back to Projects fills
+            // fresh (first fill never animates — the resort baseline resets).
+            self.sidebar_tree = Vec::new();
+            Vec::new()
+        } else {
+            let now = Utc::now();
+            let attention = self.sidebar_space_attention(cx);
+            let (tree, recent) = {
+                let state = self.state.read(cx);
+                let expanded: std::collections::HashSet<String> = state
+                    .spaces
+                    .iter()
+                    .filter(|s| self.space_expanded(&s.id, cx))
+                    .map(|s| s.id.clone())
+                    .collect();
+                let sessions_by_space: std::collections::HashMap<
+                    String,
+                    Vec<&comet_proto::Chat>,
+                > = state
+                    .spaces
+                    .iter()
+                    .map(|s| (s.id.clone(), state.chats_in_space(&s.id)))
+                    .collect();
+                let tree = super::spaces::build_sidebar_tree(
+                    &state.spaces,
+                    &expanded,
+                    &sessions_by_space,
+                    &attention,
+                    &self.settings.space_order,
+                    &self.sidebar_space_show_all,
+                );
+                let recent = super::spaces::recent_sessions(state, now, 3);
+                (tree, recent)
+            };
+            self.sidebar_tree = tree;
+            recent
+        };
 
         // Resort glide (§1.6 View Transitions parity): when the ORDER of a live
-        // list changes (new activity resort, grouping flip), surviving rows
-        // glide from their old y to the new one — layout is already at the new
-        // position; the offset is a paint-only relative inset animated to 0
-        // over 260ms cubic-bezier(0.22,1,0.36,1). New rows fade in; removals
-        // just go (matching the original). First fill and chat switches (which
-        // don't reorder) never animate.
-        let order: Vec<(String, f32)> = row_keys
+        // list changes (new activity resort, grouping flip, tree expand/
+        // collapse), surviving rows glide from their old y to the new one —
+        // layout is already at the new position; the offset is a paint-only
+        // relative inset animated to 0 over 260ms cubic-bezier(0.22,1,0.36,1).
+        // New rows fade in; removals just go (matching the original). First
+        // fill and chat switches (which don't reorder) never animate.
+        let order: Vec<(String, f32)> = self
+            .sidebar_tree
             .iter()
-            .map(|k| (k.clone(), super::nav::CHAT_ROW_HEIGHT))
+            .map(|n| {
+                (
+                    super::spaces::tree_node_key(n),
+                    super::nav::CHAT_ROW_HEIGHT,
+                )
+            })
             .collect();
         if self.sidebar_prev_order != order {
             if !self.sidebar_prev_order.is_empty() {
@@ -91,7 +150,6 @@ impl Shell {
         let user_email: Option<SharedString> = user.as_ref().map(|u| u.email.clone().into());
         let user_menu = self.render_user_menu(user_line.clone(), user_email.clone(), theme, cx);
 
-        let spaces_section = self.render_spaces_section(theme, cx);
         let activity_open = self.activity_open;
         let surface_header = div()
             .flex()
@@ -189,43 +247,51 @@ impl Shell {
                     }),
             )
         } else {
-            // Projects mode: surface header + Spaces section stay fixed at the
-            // top; only the Sessions list scrolls (virtualized via uniform_list
-            // so off-screen chat rows cost zero per frame).
-            let chat_count = row_data.len();
+            // Projects mode: surface header + RECENT section + SPACES header
+            // stay fixed at the top; the flattened tree (space nodes + the
+            // session children of expanded spaces) scrolls virtualized via
+            // uniform_list so off-screen rows cost zero per frame.
+            let tree_count = self.sidebar_tree.len();
             let epoch = self.resort_epoch;
             let resort_map = self.sidebar_resort.clone();
             let new_keys = self.sidebar_new_keys.clone();
             let theme_clone = theme.clone();
             let selected = self.state.read(cx).selected_chat.clone();
-            let chat_list: AnyElement = if chat_count > 0 {
+            // Scroll the tree to the selected chat once per selection change
+            // (a chat picked from the tab strip while its space was collapsed
+            // auto-expands — the tree then scrolls it into view).
+            if self.sidebar_tree_scrolled_to.as_deref() != selected.as_deref() {
+                if let Some(chat_id) = &selected
+                    && let Some(ix) = self.sidebar_tree.iter().position(|n| {
+                        matches!(
+                            n,
+                            super::spaces::SidebarTreeNode::Session { chat_id: cid, .. }
+                                if cid == chat_id
+                        )
+                    })
+                {
+                    self.sidebar_chat_scroll
+                        .scroll_to_item(ix, gpui::ScrollStrategy::Nearest);
+                }
+                self.sidebar_tree_scrolled_to = selected.clone();
+            }
+            let drag = self
+                .space_drag
+                .as_ref()
+                .map(|d| (d.from, d.over, d.epoch, d.prev_over));
+            let chat_list: AnyElement = if tree_count > 0 {
                 uniform_list(
-                    "sidebar-chat-list",
-                    chat_count,
+                    "sidebar-tree-list",
+                    tree_count,
                     cx.processor(move |this: &mut Shell, range: std::ops::Range<usize>, _window, cx| {
                         let theme = theme_clone.clone();
-                        let selected = selected.clone();
                         let resort_map = resort_map.clone();
                         let new_keys = new_keys.clone();
                         range
                             .map(|ix| {
-                                let row = &this.sidebar_row_data[ix];
-                                let key = format!("c:{}", row.chat_id);
-                                let is_selected =
-                                    selected.as_deref() == Some(row.chat_id.as_str());
-                                let element = this.render_chat_row(
-                                    row.chat_id.clone(),
-                                    row.title.clone(),
-                                    row.time_ago.clone(),
-                                    row.folder.clone(),
-                                    row.branch.clone(),
-                                    row.harness,
-                                    row.acp_agent_id.clone(),
-                                    row.status,
-                                    is_selected,
-                                    &theme,
-                                    cx,
-                                );
+                                let node = this.sidebar_tree[ix].clone();
+                                let key = super::spaces::tree_node_key(&node);
+                                let element = this.render_tree_node(&node, drag, &theme, cx);
                                 if let Some(dy) = resort_map.get(&key).copied() {
                                     let id =
                                         SharedString::from(format!("resort-{epoch}-{key}"));
@@ -255,16 +321,42 @@ impl Shell {
                 .with_sizing_behavior(gpui::ListSizingBehavior::Auto)
                 .flex_1()
                 .min_h_0()
+                // Space drag-reorder: the LIST owns the drop surface (space
+                // ordinals are derived from the pointer's position in the
+                // flattened tree, scroll applied).
+                .on_drag_move::<super::spaces::SpaceDragPayload>(cx.listener(
+                    move |this, event: &gpui::DragMoveEvent<super::spaces::SpaceDragPayload>, _, cx| {
+                        let from = event.drag(cx).from;
+                        let rel_y =
+                            f32::from(event.event.position.y) - f32::from(event.bounds.top());
+                        let scroll_y = -f32::from(
+                            this.sidebar_chat_scroll.0.borrow().base_handle.offset().y,
+                        );
+                        let over = super::spaces::tree_drop_over(&this.sidebar_tree, rel_y + scroll_y);
+                        this.update_space_drag_over(from, over, cx);
+                    },
+                ))
+                .on_drop::<super::spaces::SpaceDragPayload>(cx.listener(
+                    move |this, payload: &super::spaces::SpaceDragPayload, _, cx| {
+                        let to = this
+                            .space_drag
+                            .as_ref()
+                            .map(|d| d.over)
+                            .unwrap_or(payload.from);
+                        this.commit_space_reorder(payload.from, to, cx);
+                    },
+                ))
                 .into_any_element()
             } else {
-                div()
-                    .px(px(Theme::SPACE_SM))
-                    .pb(px(Theme::SPACE_SM))
-                    .text_size(px(12.0))
-                    .text_color(theme.text_faint)
-                    .child(SharedString::from("No sessions yet"))
-                    .into_any_element()
+                // Empty tree: the SPACES header above carries the "Add space"
+                // ghost row when there are no spaces; otherwise there's always
+                // at least one space node. Nothing else to show.
+                div().into_any_element()
             };
+
+            let spaces_empty = self.state.read(cx).spaces.is_empty();
+            let spaces_section = self.render_spaces_section(theme, cx, spaces_empty);
+            let recent_section = self.render_recent_section(&recent, theme, cx);
 
             crate::edge_fade::edge_faded(
                 SIDEBAR_GLASS_FADE_BAND,
@@ -278,17 +370,8 @@ impl Shell {
                     .flex_col()
                     .px(px(Theme::SPACE_SM))
                     .child(surface_header)
+                    .child(recent_section)
                     .child(spaces_section)
-                    .child(
-                        div()
-                            .px(px(Theme::SPACE_SM))
-                            .pt(px(12.0))
-                            .pb(px(4.0))
-                            .text_size(px(11.0))
-                            .font_weight(gpui::FontWeight::MEDIUM)
-                            .text_color(theme.text_muted.opacity(0.6))
-                            .child(SharedString::from("Sessions")),
-                    )
                     .child(chat_list)
                     .when(lists_fade_top && !glass, |el| {
                         el.child(div().absolute().top_0().left_0().right_0().h(px(24.0)).bg(
@@ -657,6 +740,116 @@ impl Shell {
             trigger = trigger.child(popover::anchored_menu_above("user-menu-popover", menu));
         }
         trigger.into_any_element()
+    }
+
+    /// The RECENT section: up to 3 cross-space sessions by recency, pinned
+    /// above the Spaces tree so global discovery survives the tree. Hidden
+    /// until there are at least 3 sessions total (the tree already shows
+    /// everything when the list is that short).
+    pub(super) fn render_recent_section(
+        &mut self,
+        recent: &[super::spaces::RecentRow],
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        if recent.len() < 3 {
+            return div().into_any_element();
+        }
+        let mut column = div()
+            .flex()
+            .flex_col()
+            .gap(px(2.0))
+            .child(
+                div()
+                    .px(px(Theme::SPACE_SM))
+                    .pt(px(8.0))
+                    .pb(px(4.0))
+                    .text_size(px(11.0))
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(theme.text_muted.opacity(0.6))
+                    .child(SharedString::from("Recent")),
+            );
+        for row in recent {
+            let selected = self.state.read(cx).selected_chat.as_deref() == Some(row.chat_id.as_str());
+            column = column.child(self.render_recent_row(row, selected, theme, cx));
+        }
+        column.into_any_element()
+    }
+
+    /// One RECENT row: status dot + title + relative time on a single line —
+    /// no folder (its space is the tree context below) and no harness/branch
+    /// (compact). Click selects the chat and expands its space.
+    fn render_recent_row(
+        &self,
+        row: &super::spaces::RecentRow,
+        selected: bool,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let dot_color = super::spaces::status_dot_color(row.status, theme);
+        let select_id = row.chat_id.clone();
+        let space_id = row.space_id.clone();
+        let (hover, text) = (theme.glass_hover(), theme.text);
+        let selected_wash = crate::theme::glass_selected_bg();
+        let subline = theme.text_muted.opacity(0.5);
+        let rest_bg = if selected {
+            selected_wash
+        } else {
+            crate::theme::wash(0.0)
+        };
+        let hover_bg = if selected { selected_wash } else { hover };
+        let rest_text = if selected { text } else { text.opacity(0.8) };
+        let fade_key = format!("recent-row-{}", row.chat_id);
+        div()
+            .id(SharedString::from(format!("recent-{}", row.chat_id)))
+            .w_full()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(Theme::SPACE_SM))
+            .rounded(px(8.0))
+            .px(px(Theme::SPACE_SM))
+            .py(px(4.0))
+            .text_color(motion::hover_blend(&fade_key, rest_text, text))
+            .bg(motion::hover_blend(&fade_key, rest_bg, hover_bg))
+            .when(selected, |el| {
+                el.shadow(crate::theme::glass_selected_shadows())
+            })
+            .on_hover(move |hovered: &bool, window: &mut Window, cx: &mut App| {
+                motion::hover_listener(&fade_key)(&hovered, window, cx);
+            })
+            .cursor_pointer()
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.state.update(cx, |s, cx| s.select_chat(Some(select_id.clone()), cx));
+                if let Some(space_id) = &space_id {
+                    this.sidebar_expanded_spaces.insert(space_id.clone());
+                }
+                cx.notify();
+            }))
+            .child(
+                div()
+                    .size(px(6.0))
+                    .rounded_full()
+                    .flex_none()
+                    .bg(dot_color),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(px(12.0))
+                    .line_height(px(15.0))
+                    .child(row.title.clone()),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .text_size(px(10.0))
+                    .text_color(subline)
+                    .child(row.time_ago.clone()),
+            )
+            .into_any_element()
     }
 
 }

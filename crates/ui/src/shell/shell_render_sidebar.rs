@@ -128,17 +128,19 @@ impl Shell {
             .into_any_element()
     }
 
-    /// One session row (comet session-row.tsx): status rail on the left
-    /// (a live 2×3 mini spinner while working, a dot otherwise), title +
-    /// relative time on the first line, "folder · device" underneath aligned
-    /// to the title. Click selects; right-click opens the context menu.
+    /// One session row (comet session-row.tsx, compact sidebar-tree §3.4):
+    /// status rail on the left (a live 2×3 mini spinner while working, a dot
+    /// otherwise), title + relative time on the first line, harness mark +
+    /// branch underneath — the folder the row belongs to lives on its space
+    /// parent in the tree, so it is not repeated here. Click selects;
+    /// right-click opens the context menu.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn render_chat_row(
         &self,
         id: String,
         title: SharedString,
         time_ago: SharedString,
-        space_name: SharedString,
+        _space_name: SharedString,
         branch: Option<SharedString>,
         harness: Option<comet_proto::HarnessId>,
         acp_agent_id: Option<String>,
@@ -202,7 +204,9 @@ impl Shell {
             .gap(px(2.0))
             .rounded(px(8.0))
             .px(px(Theme::SPACE_SM))
-            .py(px(6.0))
+            // 5px, not 6: the compact 2-line row (17 + 2 + 13 + 10) must fit
+            // the tree's uniform 44px slot without clipping.
+            .py(px(5.0))
             .text_color(motion::hover_blend(&fade_key, rest_text, text))
             .bg(motion::hover_blend(&fade_key, rest_bg, hover_bg))
             .when(selected, |el| {
@@ -225,7 +229,8 @@ impl Shell {
                     cx.notify();
                 }),
             )
-            // Line 1: status rail, space name, time-ago.
+            // Line 1: status rail, title, time-ago (the folder line is gone —
+            // the space parent above names it).
             .child(
                 div()
                     .w_full()
@@ -239,10 +244,9 @@ impl Shell {
                             .flex_1()
                             .min_w_0()
                             .truncate()
-                            .text_size(px(11.0))
-                            .line_height(px(14.0))
-                            .text_color(subline)
-                            .child(space_name),
+                            .text_size(px(13.0))
+                            .line_height(px(17.0))
+                            .child(title),
                     )
                     .child(
                         div()
@@ -252,18 +256,7 @@ impl Shell {
                             .child(time_ago),
                     ),
             )
-            // Line 2: the session title, aligned under the folder icon
-            // (rail 6 + gap 8).
-            .child(
-                div()
-                    .w_full()
-                    .pl(px(14.0))
-                    .truncate()
-                    .text_size(px(13.0))
-                    .line_height(px(17.0))
-                    .child(title),
-            )
-            // Line 3 (always): harness brand mark; worktree sessions append
+            // Line 2 (always): harness brand mark; worktree sessions append
             // the branch icon + name.
             .child(
                 div()
@@ -314,7 +307,7 @@ impl Shell {
                                 .min_w_0()
                                 .truncate()
                                 .text_size(px(11.0))
-                                .line_height(px(14.0))
+                                .line_height(px(13.0))
                                 .text_color(subline)
                                 .child(branch),
                         )
