@@ -57,6 +57,11 @@ export class SessionStore {
   private listeners = new Set<Listener>();
   private projecting = false;
   private projectPending = false;
+  // Retained: loro-react-native cancels a subscription when its JS handle is
+  // garbage collected ("When dropped, the subscription is cancelled and the
+  // callback will no longer be invoked"), and these stores historically
+  // discarded the handle, silently killing local-update delivery.
+  private localUpdateSub?: { unsubscribe(): void };
 
   constructor(chatId: string, config: AppConfig, offline = false) {
     this.chatId = chatId;
@@ -87,8 +92,11 @@ export class SessionStore {
 
   async start(): Promise<void> {
     if (this.room || this.offline) return;
-    const loaded = await DocDisk.load(this.doc, this.chatId);
-    if (loaded) await this.project();
+    // Create the saver, room client, and the local-update relay BEFORE the
+    // first await. A send racing the disk hydrate (queueCommand commits while
+    // start() is still awaiting DocDisk.load) would otherwise commit with no
+    // subscription registered and never leave the device — the join-time VV
+    // resubmit is a backstop, not the primary path.
     this.saver = new DocSaver(this.chatId, this.doc);
     const client = new RoomClient(
       this.chatId,
@@ -97,10 +105,12 @@ export class SessionStore {
       (event) => this.handle(event),
     );
     this.room = client;
-    this.doc.subscribeLocalUpdate((bytes: ArrayBuffer) => {
+    this.localUpdateSub = this.doc.subscribeLocalUpdate((bytes: ArrayBuffer) => {
       void client.sendLocalUpdate(new Uint8Array(bytes));
       this.saver?.poke();
     });
+    const loaded = await DocDisk.load(this.doc, this.chatId);
+    if (loaded) await this.project();
     client.start();
     await this.project();
   }
@@ -204,16 +214,24 @@ export class SessionStore {
     }
     const messageId = makeUuid();
     const mode = effectivePermissionMode(chat.config);
+    // loro-react-native's LoroMap.set coerces every falsy JS value (false,
+    // 0, '', undefined, null) to a Loro null, and the host's serde structs
+    // reject null for concrete fields (bool/String) — the whole command is
+    // skipped. So only truthy keys ride the wire; `autoApprove` is omitted
+    // when false (the host's serde default is exactly false) and `cwd` —
+    // which has no default — falls back to a non-empty value. This is the
+    // mobile half of the sanitization the doc crate's regression tests
+    // ("run_payload_without_auto_approve_deserializes") assume is in place.
+    const cfg = chat.config;
     const request: RunRequest = {
       prompt,
-      harness: chat.config?.harness,
-      model: chat.config?.model,
-      reasoning: chat.config?.reasoning,
-      cwd: chat.cwd ?? '',
+      cwd: chat.cwd && chat.cwd.trim().length > 0 ? chat.cwd : ' ',
       sandbox: mode.sandbox,
-      autoApprove: mode.autoApprove,
-      permissionMode: mode.value,
-      acpAgentId: chat.config?.acpAgentId,
+      ...(mode.autoApprove ? { autoApprove: true } : {}),
+      ...(cfg?.harness ? { harness: cfg.harness } : {}),
+      ...(cfg?.model ? { model: cfg.model } : {}),
+      ...(cfg?.reasoning ? { reasoning: cfg.reasoning } : {}),
+      ...(cfg?.acpAgentId ? { acpAgentId: cfg.acpAgentId } : {}),
     };
     console.log('[SessionStore] sendRun — request:', JSON.stringify(request));
     this.queueCommand('run', {
@@ -261,13 +279,16 @@ export class SessionStore {
   }
 
   private queueCommand(kind: string, payload: Record<string, unknown>): void {
+    let commandId: string | undefined;
     try {
+      const from = this.doc.oplogVersion();
       const commands = this.doc.getList('commands');
       const map = commands.insertContainer(0, new LoroMap());
       // NB: the native Loro container push API varies across versions; the
       // schema-shape writes are what matter for cross-device parity. If the
       // exact container push fails, the host will still drain from VV backfill.
-      map.set('id', makeUuid());
+      commandId = makeUuid();
+      map.set('id', commandId);
       map.set('kind', kind);
       map.set('payload', payload as never);
       map.set('issuedBy', this.config.deviceId);
@@ -279,14 +300,40 @@ export class SessionStore {
       map.set('expiresAt', nowMs() + COMMAND_DEFAULT_TTL_MS);
       map.set('status', 'pending');
       this.doc.commit();
+      const update = this.doc.export({ mode: 'updates', from });
+      console.info(
+        `[session ${this.chatId}] queued command ${kind} id=${commandId} connected=${this.connected} host=${this.hostDeviceId ?? 'unknown'}`,
+      );
+      this.pushLocalUpdate(update);
     } catch (err) {
       console.warn(`[session ${this.chatId}] queueCommand failed`, err);
     }
     this.nudgeHost();
   }
 
+  /** Deterministic relay: export the ops committed since the pre-write VV and
+   * hand them to the room. The subscribeLocalUpdate callback is kept as a
+   * safety net but is NOT relied upon — the binding's callback delivery has
+   * proven unreliable in this app (dropped subscription handle / no
+   * onLocalUpdate call), so every write path pushes its own update. */
+  private pushLocalUpdate(update: ArrayBuffer): void {
+    this.saver?.poke();
+    if (update.byteLength === 0) {
+      console.warn(`[session ${this.chatId}] local update export was empty — command may not have written ops`);
+      return;
+    }
+    if (!this.room) {
+      console.warn(`[session ${this.chatId}] local update ${update.byteLength}B dropped — room not started`);
+      return;
+    }
+    void this.room.sendLocalUpdate(new Uint8Array(update));
+  }
+
   private nudgeHost(): void {
-    if (!this.hostDeviceId) return;
+    if (!this.hostDeviceId) {
+      console.warn(`[session ${this.chatId}] no hostDeviceId — cannot nudge the host`);
+      return;
+    }
     void this.config.nudge(this.hostDeviceId, this.chatId);
   }
 }

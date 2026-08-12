@@ -341,6 +341,7 @@ export class RoomClient {
             try {
               const missing = this.doc.export({ mode: "updates", from: serverVersion });
               if (missing.byteLength > 0) {
+                console.info(`[room ${this.roomId}] resubmitting ${missing.byteLength}B the server lacks`);
                 await this.sendLoroUpdates([new Uint8Array(missing)]);
               }
             } catch (err) {
@@ -476,6 +477,9 @@ export class RoomClient {
       console.warn(`[room ${this.roomId}] local update (${update.length}B) deferred — not joined; will resubmit on join`);
       return;
     }
+    console.info(
+      `[room ${this.roomId}] sending local update ${update.length}B (readyState=${this.socket?.readyState ?? 'none'})`,
+    );
     await this.sendLoroUpdates([update]);
   }
 

@@ -389,8 +389,7 @@ export interface RunRequest {
   modelOptions?: Record<string, string>;
   cwd: string;
   sandbox: string;
-  autoApprove: boolean;
-  permissionMode?: PermissionModeValue;
+  autoApprove?: boolean;
   resume?: string;
   acpAgentId?: string;
 }

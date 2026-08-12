@@ -5,11 +5,10 @@
 import { makeRedirectUri } from "expo-auth-session";
 import * as WebBrowser from "expo-web-browser";
 import { useState } from "react";
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import { Image, Pressable, StyleSheet, Text, View } from "react-native";
 
 import { AppModel } from "../app/AppModel";
 import { AuthOrg, AuthTokens } from "../auth/AuthClient";
-import { AgentDeskiMark } from "../theme/AgentDeskiMark";
 import { Fonts, overlay, Theme } from "../theme/Theme";
 import { fs, useThemedStyles } from "../theme/Appearance";
 
@@ -55,6 +54,7 @@ export function SignInView({ model }: SignInProps) {
       return;
     }
     const params = new URLSearchParams(result.url.split("?")[1] ?? "");
+    console.log('params', JSON.stringify(params))
     const code = params.get("code");
     const cbState = params.get("state");
     if (!code || cbState !== state) {
@@ -74,7 +74,10 @@ export function SignInView({ model }: SignInProps) {
     <View style={styles.container}>
       <View style={{ flex: 1 }} />
       <View style={{ alignItems: "center", gap: 24 }}>
-        <AgentDeskiMark size={72} color={Theme.text} />
+        <Image
+          source={require("../../assets/agent-deski-logo.png")}
+          style={{ width: 84, height: 84, resizeMode: "contain" }}
+        />
         <View style={{ alignItems: "center", gap: 6 }}>
           <Text style={styles.title}>AgentDeski</Text>
           <Text style={styles.subtitle}>Your coding agents, from anywhere</Text>

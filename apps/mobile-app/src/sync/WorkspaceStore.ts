@@ -57,6 +57,9 @@ export class WorkspaceStore {
   private saver: DocSaver | null = null;
   private listeners = new Set<Listener>();
   private relayClients = new Map<string, DeviceRelayClient>();
+  // Retained: loro-react-native cancels a subscription when its JS handle is
+  // garbage collected; discarding it silently kills local-update delivery.
+  private localUpdateSub?: { unsubscribe(): void };
 
   constructor(private readonly config: AppConfig) {}
 
@@ -76,9 +79,10 @@ export class WorkspaceStore {
   async start(): Promise<void> {
     if (this.room) return;
     const roomId = `ws3/${this.config.orgId}/${this.config.userId}`;
-    // Local-first: hydrate from snapshot before joining.
-    const loaded = await DocDisk.load(this.doc, roomId);
-    if (loaded) this.project();
+    // Local-first: hydrate from snapshot before joining. The saver and the
+    // local-update relay are wired BEFORE the hydrate await so a write that
+    // races the disk load is never left unsent (same reasoning as
+    // SessionStore.start).
     this.saver = new DocSaver(roomId, this.doc);
     const client = new RoomClient(
       roomId,
@@ -88,10 +92,12 @@ export class WorkspaceStore {
     );
     this.room = client;
     // Local commits → room.
-    this.doc.subscribeLocalUpdate((bytes: ArrayBuffer) => {
+    this.localUpdateSub = this.doc.subscribeLocalUpdate((bytes: ArrayBuffer) => {
       void client.sendLocalUpdate(new Uint8Array(bytes));
       this.saver?.poke();
     });
+    const loaded = await DocDisk.load(this.doc, roomId);
+    if (loaded) this.project();
     client.start();
     this.project();
   }
@@ -525,6 +531,7 @@ export class WorkspaceStore {
     const chatId = makeUuid();
     console.log('[WorkspaceStore] createChat — cfg in:', JSON.stringify(cfg), '| chatId:', chatId);
     try {
+      const from = this.doc.oplogVersion();
       const chats = this.doc.getMap('chats');
       const row = chats.insertContainer(chatId, new LoroMap());
       row.set('id', chatId);
@@ -538,6 +545,7 @@ export class WorkspaceStore {
       console.log('[WorkspaceStore] createChat — loroCfg:', JSON.stringify(loroCfg));
       row.set('config', loroCfg as never);
       this.doc.commit();
+      this.pushLocalUpdate(this.doc.export({ mode: 'updates', from }));
       // Read back immediately to verify
       const readBack = this.doc.toJSON() as Record<string, unknown>;
       const chatsMap = (readBack.chats ?? {}) as Record<string, Record<string, unknown>>;
@@ -564,6 +572,7 @@ export class WorkspaceStore {
       // Fallback: write the row into our local mirror. Creates are legal
       // from any device; the owner stamps git on arrival.
       try {
+        const from = this.doc.oplogVersion();
         const spaces = this.doc.getMap('spaces');
         const row = spaces.insertContainer(spaceId, new LoroMap());
         row.set('id', spaceId);
@@ -572,6 +581,7 @@ export class WorkspaceStore {
         row.set('gitDetected', gitDetected);
         row.set('createdAt', nowMs());
         this.doc.commit();
+        this.pushLocalUpdate(this.doc.export({ mode: 'updates', from }));
       } catch (err) {
         console.warn('[workspace] createSpace fallback failed', err);
       }
@@ -607,15 +617,35 @@ export class WorkspaceStore {
 
   private updateChat(chatId: string, mutate: (row: LoroMap) => void): void {
     try {
+      const from = this.doc.oplogVersion();
       const chats = this.doc.getMap('chats');
       const existing = chats.get(chatId)?.asLoroMap() as LoroMap | undefined;
       if (!existing) return;
       mutate(existing);
       this.doc.commit();
+      this.pushLocalUpdate(this.doc.export({ mode: 'updates', from }));
       this.project();
     } catch (err) {
       console.warn('[workspace] updateChat failed', err);
     }
+  }
+
+  /** Deterministic relay: export the ops committed since the pre-write VV and
+   * hand them to the room. The subscribeLocalUpdate callback is kept as a
+   * safety net but is NOT relied upon — the binding's callback delivery has
+   * proven unreliable (dropped subscription handle / no onLocalUpdate call),
+   * so every write path pushes its own update. */
+  private pushLocalUpdate(update: ArrayBuffer): void {
+    this.saver?.poke();
+    if (update.byteLength === 0) {
+      console.warn('[workspace] local update export was empty — write may not have produced ops');
+      return;
+    }
+    if (!this.room) {
+      console.warn(`[workspace] local update ${update.byteLength}B dropped — room not started`);
+      return;
+    }
+    void this.room.sendLocalUpdate(new Uint8Array(update));
   }
 }
 
