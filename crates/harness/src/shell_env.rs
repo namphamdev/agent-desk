@@ -1,14 +1,18 @@
-//! Login-shell PATH snapshot.
+//! Login-shell environment snapshot.
 //!
 //! GUI/service launches (Dock, Finder, launchd, systemd) never run the user's
-//! shell init, so the daemon's own PATH misses everything the shell shapes:
-//! nvm's shell function, fnm multishells, asdf/mise shims, custom npm
+//! shell init, so the daemon's own environment misses everything the shell
+//! shapes: nvm's shell function, fnm multishells, asdf/mise shims, custom npm
 //! prefixes, nix profiles, `~/.zshrc` exports. The hardcoded known-location
 //! lists in the resolvers cover the common managers, but the only fix that
 //! works for *any* setup is asking the user's actual shell: spawn it once as
 //! an interactive login shell, have it print its environment between markers,
-//! and keep the PATH it reports. If `codex`/`claude` runs in their terminal,
+//! and keep the values it reports. If `codex`/`claude` runs in their terminal,
 //! it resolves here too.
+//!
+//! The snapshot captures the full `env` output (not just PATH) so callers can
+//! look up arbitrary variables — e.g. `XAI_API_KEY` for the Grok ACP agent,
+//! which needs it for inference requests.
 //!
 //! The snapshot is captured once per process (cached, including a negative
 //! result) and is defensive about hostile shell init:
@@ -22,19 +26,68 @@
 //!
 //! Set `COMET_NO_LOGIN_SHELL=1` to disable the snapshot entirely.
 
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 #[cfg(unix)]
 use std::sync::atomic::{AtomicBool, Ordering};
 
-// Caching: a Mutex-protected Option<&'static OsStr> plus an AtomicBool
-// initialized flag. Unlike the old OnceLock, this can be invalidated after
-// a harness binary install so the next login_shell_path() re-captures.
+/// A captured snapshot of the login shell's environment variables.
+///
+/// Stored as a sorted vector for deterministic iteration; lookups are linear,
+/// which is fine for ~50-100 env vars accessed rarely (once per agent spawn).
+#[cfg(unix)]
+struct EnvSnapshot {
+    entries: Vec<(OsString, OsString)>,
+}
 
 #[cfg(unix)]
-static CACHE: std::sync::Mutex<Option<Option<&'static OsStr>>> = std::sync::Mutex::new(None);
+impl EnvSnapshot {
+    fn new(entries: Vec<(OsString, OsString)>) -> Self {
+        Self { entries }
+    }
+
+    fn get(&self, key: &str) -> Option<&OsStr> {
+        self.entries
+            .iter()
+            .find(|(k, _)| k.as_os_str() == OsStr::new(key))
+            .map(|(_, v)| v.as_os_str())
+    }
+}
+
+// Caching: a Mutex-protected snapshot plus an AtomicBool initialized flag.
+// Unlike the old OnceLock, this can be invalidated after a harness binary
+// install so the next login_shell_path() re-captures.
+
+#[cfg(unix)]
+static CACHE: std::sync::Mutex<Option<Option<&'static EnvSnapshot>>> =
+    std::sync::Mutex::new(None);
 
 #[cfg(unix)]
 static INITIALIZED: AtomicBool = AtomicBool::new(false);
+
+/// The full login-shell environment snapshot, captured once and cached for the
+/// life of the process (until [`invalidate_cache`] is called). Returns a
+/// reference into the leaked, `'static` snapshot. `None` when disabled,
+/// non-unix, no usable shell, or the shell never produced a parseable result.
+#[cfg(unix)]
+fn login_shell_snapshot() -> Option<&'static EnvSnapshot> {
+    // Fast path: already initialized.
+    if INITIALIZED.load(Ordering::Acquire) {
+        if let Ok(guard) = CACHE.lock() {
+            return (*guard).flatten();
+        }
+    }
+    // Slow path: capture and cache.
+    let captured = unix::capture();
+    let leaked = captured.map(|s| {
+        let boxed = Box::new(s);
+        Box::leak(boxed) as &'static EnvSnapshot
+    });
+    if let Ok(mut guard) = CACHE.lock() {
+        *guard = Some(leaked);
+    }
+    INITIALIZED.store(true, Ordering::Release);
+    leaked
+}
 
 /// The PATH the user's login shell reports, captured once and cached for the
 /// life of the process (until [`invalidate_cache`] is called). `None` when
@@ -43,27 +96,28 @@ static INITIALIZED: AtomicBool = AtomicBool::new(false);
 pub fn login_shell_path() -> Option<&'static OsStr> {
     #[cfg(unix)]
     {
-        // Fast path: already initialized.
-        if INITIALIZED.load(Ordering::Acquire) {
-            if let Ok(guard) = CACHE.lock() {
-                return (*guard).flatten();
-            }
-        }
-        // Slow path: capture and cache.
-        let captured = unix::capture();
-        let leaked = captured.map(|s| {
-            // Leak the OsString so we can return a &'static OsStr.
-            let boxed = Box::new(s);
-            Box::leak(boxed) as &'static OsStr
-        });
-        if let Ok(mut guard) = CACHE.lock() {
-            *guard = Some(leaked);
-        }
-        INITIALIZED.store(true, Ordering::Release);
-        leaked
+        login_shell_snapshot().and_then(|env| env.get("PATH"))
     }
     #[cfg(not(unix))]
     {
+        None
+    }
+}
+
+/// Look up an environment variable from the login-shell snapshot. Useful for
+/// variables that GUI/daemon launches don't inherit (e.g. `XAI_API_KEY`).
+/// Returns `None` on non-unix, when the snapshot is unavailable, or when the
+/// variable is not set in the login shell.
+pub fn login_shell_env_var(key: &str) -> Option<OsString> {
+    #[cfg(unix)]
+    {
+        login_shell_snapshot()
+            .and_then(|env| env.get(key))
+            .map(OsString::from)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = key;
         None
     }
 }
@@ -112,12 +166,12 @@ mod unix {
     /// After the shell exits, wait this long for the pipe to flush.
     const EXIT_FLUSH_GRACE: Duration = Duration::from_millis(250);
 
-    pub(super) fn capture() -> Option<OsString> {
+    pub(super) fn capture() -> Option<super::EnvSnapshot> {
         if std::env::var_os("COMET_NO_LOGIN_SHELL").is_some_and(|v| !v.is_empty()) {
             return None;
         }
         let shell = user_shell()?;
-        snapshot_path(&shell, ATTEMPT_TIMEOUT)
+        snapshot_env(&shell, ATTEMPT_TIMEOUT)
     }
 
     /// The user's shell: `$SHELL`, then the passwd entry, then well-known
@@ -176,13 +230,13 @@ mod unix {
     }
 
     /// Run `<shell> <flags> 'echo BEGIN; env; echo END'` per flag set until one
-    /// yields a parseable PATH.
-    pub(super) fn snapshot_path(shell: &Path, timeout: Duration) -> Option<OsString> {
+    /// yields a parseable environment snapshot.
+    pub(super) fn snapshot_env(shell: &Path, timeout: Duration) -> Option<super::EnvSnapshot> {
         let script = format!("echo {BEGIN_MARKER}; env; echo {END_MARKER}");
         for flags in attempt_flag_sets(shell) {
             let output = run_and_capture(shell, &flags, &script, timeout);
-            if let Some(path) = parse_snapshot_path(&output) {
-                return Some(path);
+            if let Some(entries) = parse_snapshot_env(&output) {
+                return Some(super::EnvSnapshot::new(entries));
             }
         }
         None
@@ -271,22 +325,30 @@ mod unix {
         b.clone()
     }
 
-    /// Extract PATH from the `env` dump between the LAST begin marker and the
-    /// first end marker after it (rc noise printed before our command — or a
-    /// marker echoed by init itself — lands before the real one).
-    fn parse_snapshot_path(output: &[u8]) -> Option<OsString> {
+    /// Parse all KEY=VALUE pairs from the `env` dump between the LAST begin
+    /// marker and the first end marker after it (rc noise printed before our
+    /// command — or a marker echoed by init itself — lands before the real
+    /// one). Returns entries in the order they appear.
+    fn parse_snapshot_env(output: &[u8]) -> Option<Vec<(OsString, OsString)>> {
         let begin = rfind_subslice(output, BEGIN_MARKER.as_bytes())?;
         let after = &output[begin + BEGIN_MARKER.len()..];
         let end = find_subslice(after, END_MARKER.as_bytes())?;
+        let mut entries = Vec::new();
         for line in after[..end].split(|b| *b == b'\n') {
             let line = line.strip_suffix(b"\r").unwrap_or(line);
-            if let Some(value) = line.strip_prefix(b"PATH=")
-                && !value.is_empty()
-            {
-                return Some(OsString::from_vec(value.to_vec()));
+            let Some(eq_pos) = line.iter().position(|b| *b == b'=') else {
+                continue;
+            };
+            let key = &line[..eq_pos];
+            let value = &line[eq_pos + 1..];
+            if !key.is_empty() {
+                entries.push((
+                    OsString::from_vec(key.to_vec()),
+                    OsString::from_vec(value.to_vec()),
+                ));
             }
         }
-        None
+        (!entries.is_empty()).then_some(entries)
     }
 
     fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
@@ -323,36 +385,49 @@ exit 1
 "#;
 
         #[test]
-        fn parses_path_between_markers() {
+        fn parses_env_between_markers() {
             let output = format!(
-                "rc noise\n{BEGIN_MARKER}\nHOME=/home/u\nPATH=/custom/bin:/usr/bin\nX=y\n{END_MARKER}\ntrailing"
+                "rc noise\n{BEGIN_MARKER}\nHOME=/home/u\nPATH=/custom/bin:/usr/bin\nXAI_API_KEY=xai-abc123\nX=y\n{END_MARKER}\ntrailing"
             );
-            let path = parse_snapshot_path(output.as_bytes()).unwrap();
-            assert_eq!(path, OsString::from("/custom/bin:/usr/bin"));
+            let entries = parse_snapshot_env(output.as_bytes()).unwrap();
+            let get = |key: &str| -> Option<String> {
+                entries
+                    .iter()
+                    .find(|(k, _)| k.to_str() == Some(key))
+                    .map(|(_, v)| v.to_string_lossy().into_owned())
+            };
+            assert_eq!(get("HOME").as_deref(), Some("/home/u"));
+            assert_eq!(get("PATH").as_deref(), Some("/custom/bin:/usr/bin"));
+            assert_eq!(get("XAI_API_KEY").as_deref(), Some("xai-abc123"));
+            assert_eq!(get("X").as_deref(), Some("y"));
         }
 
         #[test]
         fn ignores_marker_echoed_by_init() {
-            // rc noise that happens to contain the begin marker but no PATH
-            // after it must not shadow the real snapshot.
+            // rc noise that happens to contain the begin marker but no real
+            // env vars after it must not shadow the real snapshot.
             let output =
                 format!("{BEGIN_MARKER}\ngarbage\n{BEGIN_MARKER}\nPATH=/real/bin\n{END_MARKER}\n");
-            let path = parse_snapshot_path(output.as_bytes()).unwrap();
-            assert_eq!(path, OsString::from("/real/bin"));
+            let entries = parse_snapshot_env(output.as_bytes()).unwrap();
+            assert!(
+                entries.iter().any(|(k, v)| k == "PATH" && v == "/real/bin"),
+                "expected PATH=/real/bin in {entries:?}"
+            );
         }
 
         #[test]
-        fn snapshots_path_from_fake_shell() {
+        fn snapshots_env_from_fake_shell() {
             let dir = tempfile::tempdir().unwrap();
             let shell = fake_shell(
                 dir.path(),
                 &format!(
-                    "#!/bin/sh\nPATH=\"/comet-test/custom/bin:/usr/bin:/bin\"; export PATH\n{RUN_PAYLOAD}"
+                    "#!/bin/sh\nPATH=\"/comet-test/custom/bin:/usr/bin:/bin\"; export PATH\nXAI_API_KEY=\"xai-test\"; export XAI_API_KEY\n{RUN_PAYLOAD}"
                 ),
             );
-            let path = snapshot_path(&shell, Duration::from_secs(10)).unwrap();
-            let path = path.to_string_lossy();
+            let env = snapshot_env(&shell, Duration::from_secs(10)).unwrap();
+            let path = env.get("PATH").unwrap().to_string_lossy().into_owned();
             assert!(path.starts_with("/comet-test/custom/bin:"), "got: {path}");
+            assert_eq!(env.get("XAI_API_KEY").unwrap(), "xai-test");
         }
 
         #[test]
@@ -363,16 +438,16 @@ exit 1
             let shell = fake_shell(
                 dir.path(),
                 &format!(
-                    "#!/bin/sh\ncase \" $* \" in *\" -i \"*) sleep 60;; esac\nPATH=\"/comet-test/fallback/bin:/bin\"; export PATH\n{RUN_PAYLOAD}"
+                    "#!/bin/sh\ncase \" $* \" in *\" -i \"*) sleep 60;; esac\nPATH=\"/comet-test/fallback/bin:/usr/bin:/bin\"; export PATH\n{RUN_PAYLOAD}"
                 ),
             );
             let start = Instant::now();
-            let path = snapshot_path(&shell, Duration::from_millis(400)).unwrap();
+            let env = snapshot_env(&shell, Duration::from_millis(400)).unwrap();
+            let path = env.get("PATH").unwrap().to_string_lossy().into_owned();
             assert!(
-                path.to_string_lossy()
-                    .starts_with("/comet-test/fallback/bin"),
+                path.starts_with("/comet-test/fallback/bin"),
                 "got: {}",
-                path.to_string_lossy()
+                path
             );
             // First attempt burned ~400ms then was killed; the whole resolve
             // must not have waited out the sleep.
@@ -384,7 +459,7 @@ exit 1
             let dir = tempfile::tempdir().unwrap();
             let shell = fake_shell(dir.path(), "#!/bin/sh\nsleep 60\n");
             let start = Instant::now();
-            assert!(snapshot_path(&shell, Duration::from_millis(300)).is_none());
+            assert!(snapshot_env(&shell, Duration::from_millis(300)).is_none());
             assert!(start.elapsed() < Duration::from_secs(5));
         }
     }

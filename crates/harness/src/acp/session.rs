@@ -291,16 +291,34 @@ pub(super) async fn authenticate_if_needed(
     Ok(())
 }
 
-/// Choose which advertised authentication method to use. Prefer the
-/// locally-authenticated flow (the agent's cached CLI credentials), fall back
-/// to the API-key flow (the agent reads `XAI_API_KEY` from its own env), then
-/// any agent-handled method as a last resort.
+/// Choose which advertised authentication method to use.
+///
+/// When `XAI_API_KEY` is available (in the process env or the login-shell
+/// snapshot), prefer `xai.api_key` over `cached_token`. A cached OAuth token
+/// can expire while still being accepted by the `authenticate` handshake,
+/// causing every subsequent inference request to fail with HTTP 401. An API
+/// key is a stable credential that does not expire, making it the safer
+/// default.
+///
+/// When no API key is available, fall back to `cached_token`, then any
+/// agent-handled method.
 fn pick_auth_method(response: &InitializeResponse) -> Option<String> {
-    for preferred in ["cached_token", "xai.api_key"] {
+    // Check whether XAI_API_KEY is available to the agent subprocess. The
+    // subprocess inherits the parent's env; if the key isn't there (common for
+    // GUI/daemon launches), it may still be resolvable from the login-shell
+    // snapshot and injected before spawn (see `grok_resolved_env` in mod.rs).
+    let has_xai_key = std::env::var_os("XAI_API_KEY").is_some()
+        || crate::shell_env::login_shell_env_var("XAI_API_KEY").is_some();
+    let preference: &[&str] = if has_xai_key {
+        &["xai.api_key", "cached_token"]
+    } else {
+        &["cached_token", "xai.api_key"]
+    };
+    for preferred in preference {
         if let Some(id) = response
             .auth_methods
             .iter()
-            .find(|method| method.id().to_string() == preferred)
+            .find(|method| method.id().to_string() == *preferred)
         {
             return Some(id.id().to_string());
         }

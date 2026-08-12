@@ -59,7 +59,7 @@ export default {
       },
       package: 'com.npdev.agentdeski',
     },
-    plugins: ['expo-font', 'expo-notifications', 'expo-updates'],
+    plugins: ['expo-font', 'expo-notifications', 'expo-updates', 'expo-dev-client'],
     updates: {
       url: 'https://u.expo.dev/83b80ffb-ca4f-4bac-b5f5-a6ad54a4d634',
     },
