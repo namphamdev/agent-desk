@@ -93,6 +93,39 @@ fn identity_transform(_reasoning: Option<ReasoningLevel>, text: &str) -> String 
     text.to_owned()
 }
 
+/// Resolve environment variables the agent subprocess needs but may not
+/// inherit when Comet runs as a GUI app or daemon.
+///
+/// On macOS, GUI/service launches skip the user's shell init, so variables
+/// exported in `~/.zshrc` (e.g. `XAI_API_KEY`) are missing from the process
+/// environment. The Grok ACP agent reads `XAI_API_KEY` from its own env for
+/// inference requests; without it, the agent falls back to a cached OAuth
+/// token that may be expired, causing every inference call to fail with
+/// HTTP 401 even though the ACP `authenticate` handshake reported success.
+///
+/// This function bridges the gap: when `XAI_API_KEY` is not already in the
+/// process env, it is resolved from the login-shell snapshot and injected
+/// into the child's env. The snapshot is captured once (cached) and shared
+/// across all agent spawns.
+fn agent_resolved_env(command: &str) -> Option<HashMap<String, String>> {
+    // Only inject for Grok agents — other agents don't read XAI_API_KEY.
+    if !is_grok_command(command) {
+        return None;
+    }
+    // If XAI_API_KEY is already in the process env, the subprocess inherits
+    // it automatically; no injection needed.
+    if std::env::var_os("XAI_API_KEY").is_some() {
+        return None;
+    }
+    let key = crate::shell_env::login_shell_env_var("XAI_API_KEY")?;
+    let mut env = HashMap::new();
+    env.insert(
+        "XAI_API_KEY".into(),
+        key.to_string_lossy().into_owned(),
+    );
+    Some(env)
+}
+
 fn claude_spec() -> AcpSpec {
     AcpSpec {
         id: HarnessId::ClaudeCode,
@@ -347,7 +380,8 @@ impl Harness for AcpHarness {
         let agent = AcpAgent::from_str(&command).map_err(|error| {
             HarnessError::Protocol(format!("invalid ACP agent config: {error}"))
         })?;
-        let agent = TokioAcpAgent::new(agent);
+        let agent = TokioAcpAgent::new(agent)
+            .with_extra_env(agent_resolved_env(&command).unwrap_or_default());
         let discovered_models = Arc::new(Mutex::new(None));
         let notification_config_options: Arc<Mutex<Vec<SessionConfigOption>>> =
             Arc::new(Mutex::new(Vec::new()));
@@ -549,13 +583,16 @@ impl Harness for AcpHarness {
 
         // When the selected model belongs to a custom provider, build the
         // provider-specific env vars to inject into the codex-acp subprocess.
+        // For Grok (and other ACP agents that read XAI_API_KEY from their
+        // env), resolve the key from the login shell so GUI/daemon launches
+        // that don't inherit the shell environment can still authenticate.
         let extra_env = if self.spec.is_some_and(|s| s.id == HarnessId::Codex) {
             request
                 .custom_provider
                 .as_ref()
                 .map(|provider| codex_custom_provider_env(provider, request.model.as_deref()))
         } else {
-            None
+            agent_resolved_env(&command)
         };
 
         tokio::spawn(async move {

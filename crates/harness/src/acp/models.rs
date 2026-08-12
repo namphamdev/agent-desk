@@ -244,6 +244,14 @@ pub(super) async fn grok_cli_models(command: &str) -> anyhow::Result<Vec<Model>>
     for (key, value) in &env {
         cmd.env(key, value);
     }
+    // Inject XAI_API_KEY from the login shell when the process env lacks it.
+    // GUI/daemon launches don't inherit shell variables, so the Grok CLI
+    // needs the key resolved from the login-shell snapshot.
+    if std::env::var_os("XAI_API_KEY").is_none() {
+        if let Some(key) = crate::shell_env::login_shell_env_var("XAI_API_KEY") {
+            cmd.env("XAI_API_KEY", key);
+        }
+    }
     eprintln!(
         "[TRACE:grok_cli_models] XAI_API_KEY in process env: {}",
         std::env::var("XAI_API_KEY").is_ok()
