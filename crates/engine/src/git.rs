@@ -498,6 +498,7 @@ pub async fn generate_commit_message(
     cwd: &Path,
     harness_id: HarnessId,
     model: Option<String>,
+    acp_agent_id: Option<&str>,
 ) -> Result<GitCommitMessage, EngineError> {
     validate_cwd(cwd)?;
     let status = status(cwd).await?;
@@ -578,7 +579,7 @@ pub async fn generate_commit_message(
         seed_purpose: None,
         harness: None,
         seed_role: None,
-        acp_agent_id: None,
+        acp_agent_id: acp_agent_id.map(|id| id.to_string()),
         custom_provider: None,
     };
     let (steer_tx, steer_rx) = tokio::sync::mpsc::channel::<SteerMessage>(1);

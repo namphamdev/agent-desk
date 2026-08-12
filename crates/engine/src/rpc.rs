@@ -1511,10 +1511,13 @@ impl RpcService for EngineRpc {
             }
             methods::GIT_GENERATE_COMMIT_MESSAGE => {
                 #[derive(Deserialize)]
+                #[serde(rename_all = "camelCase")]
                 struct P {
                     cwd: String,
                     harness: HarnessId,
                     model: Option<String>,
+                    #[serde(default)]
+                    acp_agent_id: Option<String>,
                 }
                 let p: P = parse_params(params)?;
                 let message = tokio::time::timeout(
@@ -1524,6 +1527,7 @@ impl RpcService for EngineRpc {
                         std::path::Path::new(&p.cwd),
                         p.harness,
                         p.model,
+                        p.acp_agent_id.as_deref(),
                     ),
                 )
                 .await

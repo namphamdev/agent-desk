@@ -112,6 +112,11 @@ pub struct Changes {
     pub(super) harnesses: Vec<HarnessDescriptor>,
     pub(super) models: Vec<Model>,
     pub(super) selected_harness: Option<HarnessId>,
+    /// When `selected_harness == Some(Acp)`, identifies the picked ACP agent.
+    /// ACP agents share `HarnessId::Acp` in the catalog, so the id is what
+    /// actually distinguishes "Grok" from any other installed agent — without
+    /// it the model catalog and generation target the wrong (generic) agent.
+    pub(super) selected_acp_agent: Option<String>,
     pub(super) selected_model: Option<String>,
     pub(super) generation_scroll: gpui::ScrollHandle,
     pub(super) model_search: Entity<ComposerInput>,

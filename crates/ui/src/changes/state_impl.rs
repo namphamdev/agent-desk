@@ -16,6 +16,40 @@ use crate::state::AppState;
 use super::resolve::{GeneratedCommitMessage, GitStatus};
 use super::Changes;
 
+/// Pick the harness descriptor the git-changes "AI message" generator should
+/// target, given the catalog and the user's preferred (last-used or
+/// chat-configured) harness + ACP agent id.
+///
+/// This is pure so the ACP-resolution behavior — the bug where every ACP agent
+/// collapsed onto `HarnessId::Acp` and the generic slot was targeted — can be
+/// regression-tested without a live engine. ACP agents share `HarnessId::Acp`,
+/// so the agent id is what distinguishes them; a preferred ACP agent that
+/// isn't installed falls back to any ACP descriptor rather than to the first
+/// row (which would silently switch the user to a different harness).
+pub(super) fn select_generation_descriptor<'a>(
+    list: &'a [HarnessDescriptor],
+    preferred: Option<HarnessId>,
+    preferred_acp_agent: Option<&str>,
+) -> Option<&'a HarnessDescriptor> {
+    if let Some(preferred) = preferred {
+        if preferred == HarnessId::Acp {
+            // Match the exact installed agent first.
+            if let Some(exact) = list.iter().find(|descriptor| {
+                descriptor.id == HarnessId::Acp && descriptor.acp_agent_id.as_deref() == preferred_acp_agent
+            }) {
+                return Some(exact);
+            }
+            // Preferred agent no longer installed: any ACP row keeps the user
+            // on an ACP agent instead of jumping to Claude/Codex/….
+            return list.iter().find(|descriptor| descriptor.id == HarnessId::Acp);
+        }
+        if let Some(matching) = list.iter().find(|descriptor| descriptor.id == preferred) {
+            return Some(matching);
+        }
+    }
+    list.first()
+}
+
 impl Changes {
     pub fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
         let observe = cx.observe(&state, |this: &mut Self, _, cx| this.sync(cx));
@@ -67,6 +101,7 @@ impl Changes {
             harnesses: Vec::new(),
             models: Vec::new(),
             selected_harness: None,
+            selected_acp_agent: None,
             selected_model: None,
             generation_scroll: gpui::ScrollHandle::new(),
             model_search,
@@ -202,6 +237,22 @@ impl Changes {
                     .and_then(|chat| chat.config.as_ref())
                     .map(|config| config.harness)
             });
+        // A chat configured for an ACP agent carries the agent id on its
+        // config; without it the catalog and generation resolve the generic
+        // ACP slot instead of the installed agent (e.g. "Grok") the user
+        // picked. `generation_defaults` has no per-agent memory, so the chat
+        // config is the only source of the preferred agent id on first run.
+        let preferred_acp_agent = preferred
+            .and_then(|harness| {
+                if harness != HarnessId::Acp {
+                    return None;
+                }
+                self.state
+                    .read(cx)
+                    .selected_chat_row()
+                    .and_then(|chat| chat.config.as_ref())
+                    .and_then(|config| config.acp_agent_id.clone())
+            });
         let preferred_model = preferred.and_then(|harness| {
             self.generation_defaults
                 .model_for(harness)
@@ -237,13 +288,32 @@ impl Changes {
                         .filter(|descriptor| descriptor.id != HarnessId::Mock)
                         .collect::<Vec<_>>()
                 });
-            let selected = harnesses.as_ref().ok().and_then(|list| {
-                preferred
-                    .filter(|id| list.iter().any(|descriptor| descriptor.id == *id))
-                    .or_else(|| list.first().map(|descriptor| descriptor.id))
-            });
+            // Resolve the selected descriptor: the preferred harness (with its
+            // ACP agent id when applicable), else the first row. ACP agents
+            // share `HarnessId::Acp`, so the agent id is matched against the
+            // descriptor's `acp_agent_id` to land on the exact installed agent
+            // (e.g. "Grok") instead of the generic slot. See
+            // [`select_generation_descriptor`].
+            let selected_descriptor = harnesses
+                .as_ref()
+                .ok()
+                .and_then(|list| select_generation_descriptor(list, preferred, preferred_acp_agent.as_deref()));
+            let selected = selected_descriptor.map(|descriptor| descriptor.id);
+            let selected_acp_agent = selected_descriptor
+                .filter(|descriptor| descriptor.id == HarnessId::Acp)
+                .and_then(|descriptor| descriptor.acp_agent_id.clone());
             let models = if let Some(harness) = selected {
                 let mut params = serde_json::json!({ "harness": harness });
+                if harness == HarnessId::Acp
+                    && let Some(object) = params.as_object_mut()
+                {
+                    if let Some(agent_id) = &selected_acp_agent {
+                        object.insert(
+                            "acpAgentId".into(),
+                            serde_json::Value::String(agent_id.clone()),
+                        );
+                    }
+                }
                 if let (Some(target), Some(object)) = (&target, params.as_object_mut()) {
                     object.insert(
                         "targetDeviceId".into(),
@@ -260,6 +330,7 @@ impl Changes {
                     Ok(harnesses) => {
                         changes.harnesses = harnesses;
                         changes.selected_harness = selected;
+                        changes.selected_acp_agent = selected_acp_agent;
                         match models {
                             Ok(value) => match serde_json::from_value::<Vec<Model>>(value) {
                                 Ok(models) => {
@@ -289,7 +360,12 @@ impl Changes {
         }));
     }
 
-    pub(super) fn select_harness(&mut self, harness: HarnessId, cx: &mut Context<Self>) {
+    pub(super) fn select_harness(
+        &mut self,
+        harness: HarnessId,
+        acp_agent_id: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
         if self.generation_loading {
             return;
         }
@@ -300,6 +376,9 @@ impl Changes {
             return;
         };
         self.selected_harness = Some(harness);
+        // Only ACP carries an agent id; clear it for every other harness so a
+        // prior ACP pick can't leak into a non-ACP catalog/generation call.
+        self.selected_acp_agent = (harness == HarnessId::Acp).then(|| acp_agent_id).flatten();
         self.generation_defaults.harness = Some(harness);
         self.save_generation_defaults();
         self.selected_model = None;
@@ -307,6 +386,15 @@ impl Changes {
         self.generation_picker = None;
         self.generation_loading = true;
         let mut params = serde_json::json!({ "harness": harness });
+        if harness == HarnessId::Acp
+            && let Some(object) = params.as_object_mut()
+            && let Some(agent_id) = &self.selected_acp_agent
+        {
+            object.insert(
+                "acpAgentId".into(),
+                serde_json::Value::String(agent_id.clone()),
+            );
+        }
         if let (Some(target), Some(object)) = (&target, params.as_object_mut()) {
             object.insert(
                 "targetDeviceId".into(),
@@ -396,6 +484,7 @@ impl Changes {
             serde_json::json!({
                 "harness": harness,
                 "model": self.selected_model,
+                "acpAgentId": (harness == HarnessId::Acp).then(|| self.selected_acp_agent.clone()).flatten(),
             }),
         );
         self.generation_task = Some(cx.spawn(async move |this, cx| {
@@ -557,3 +646,74 @@ impl Changes {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use comet_proto::{ReasoningLevel, SteeringMode};
+
+    fn descriptor(id: HarnessId, name: &str, acp_agent_id: Option<&str>) -> HarnessDescriptor {
+        HarnessDescriptor {
+            id,
+            name: name.into(),
+            supports_steering: false,
+            steering_mode: SteeringMode::TurnBoundary,
+            reasoning_levels: vec![ReasoningLevel::Medium],
+            acp_agent_id: acp_agent_id.map(str::to_owned),
+            icon: None,
+        }
+    }
+
+    /// Regression: two installed ACP agents share `HarnessId::Acp`. The git
+    /// changes panel used to key its harness picker on `HarnessId` alone, so
+    /// "Grok build ACP" was indistinguishable from any other ACP agent and the
+    /// generic slot was targeted. The resolver must land on the exact agent id
+    /// the chat was configured with.
+    #[test]
+    fn resolves_acp_agent_by_id_not_just_harness() {
+        let list = vec![
+            descriptor(HarnessId::ClaudeCode, "Claude Code", None),
+            descriptor(HarnessId::Acp, "Grok", Some("grok")),
+            descriptor(HarnessId::Acp, "Goose", Some("goose")),
+        ];
+        let picked = select_generation_descriptor(&list, Some(HarnessId::Acp), Some("grok")).unwrap();
+        assert_eq!(picked.id, HarnessId::Acp);
+        assert_eq!(picked.name, "Grok");
+        assert_eq!(picked.acp_agent_id.as_deref(), Some("grok"));
+    }
+
+    /// A different agent id selects a different row — proves we aren't just
+    /// returning the first ACP descriptor.
+    #[test]
+    fn resolves_a_different_acp_agent() {
+        let list = vec![
+            descriptor(HarnessId::Acp, "Grok", Some("grok")),
+            descriptor(HarnessId::Acp, "Goose", Some("goose")),
+        ];
+        let picked = select_generation_descriptor(&list, Some(HarnessId::Acp), Some("goose")).unwrap();
+        assert_eq!(picked.acp_agent_id.as_deref(), Some("goose"));
+    }
+
+    /// Preferred ACP agent no longer installed: stay on ACP (any agent) rather
+    /// than silently switching harnesses.
+    #[test]
+    fn preferred_acp_agent_missing_falls_back_to_acp() {
+        let list = vec![
+            descriptor(HarnessId::ClaudeCode, "Claude Code", None),
+            descriptor(HarnessId::Acp, "Grok", Some("grok")),
+        ];
+        let picked = select_generation_descriptor(&list, Some(HarnessId::Acp), Some("uninstalled")).unwrap();
+        assert_eq!(picked.id, HarnessId::Acp);
+        assert_eq!(picked.acp_agent_id.as_deref(), Some("grok"));
+    }
+
+    /// Non-ACP harnesses are unaffected by the agent-id dimension.
+    #[test]
+    fn non_acp_harness_resolves_normally() {
+        let list = vec![
+            descriptor(HarnessId::Acp, "Grok", Some("grok")),
+            descriptor(HarnessId::ClaudeCode, "Claude Code", None),
+        ];
+        let picked = select_generation_descriptor(&list, Some(HarnessId::ClaudeCode), None).unwrap();
+        assert_eq!(picked.id, HarnessId::ClaudeCode);
+    }
+}

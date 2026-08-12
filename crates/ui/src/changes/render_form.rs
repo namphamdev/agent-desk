@@ -18,9 +18,13 @@ impl Changes {
         let harness_label = self
             .selected_harness
             .and_then(|selected| {
-                self.harnesses
-                    .iter()
-                    .find(|descriptor| descriptor.id == selected)
+                // ACP agents share `HarnessId::Acp`, so match on the agent id
+                // too — otherwise every ACP agent resolves the first one's
+                // name (or the generic "ACP Agent").
+                self.harnesses.iter().find(|descriptor| {
+                    descriptor.id == selected
+                        && descriptor.acp_agent_id == self.selected_acp_agent
+                })
             })
             .map(|descriptor| descriptor.name.clone())
             .unwrap_or_else(|| {
@@ -80,7 +84,11 @@ impl Changes {
                 .enumerate()
                 .map(|(ix, descriptor)| {
                     let harness = descriptor.id;
-                    let selected = self.selected_harness == Some(harness);
+                    let acp_agent_id = descriptor.acp_agent_id.clone();
+                    // For ACP, two installed agents share `HarnessId::Acp` —
+                    // the agent id is what marks the right row as selected.
+                    let selected = self.selected_harness == Some(harness)
+                        && self.selected_acp_agent == acp_agent_id;
                     div()
                         .id(SharedString::from(format!("git-harness-{ix}")))
                         .h(px(30.0))
@@ -101,7 +109,7 @@ impl Changes {
                         .cursor_pointer()
                         .hover(|style| style.bg(crate::theme::white_alpha(0.07)))
                         .on_click(cx.listener(move |this, _, _, cx| {
-                            this.select_harness(harness, cx);
+                            this.select_harness(harness, acp_agent_id.clone(), cx);
                         }))
                         .child(SharedString::from(descriptor.name.clone()))
                         .into_any_element()
