@@ -13,7 +13,10 @@ use crate::composer::{ComposerInput, ComposerInputEvent};
 use crate::settings::composer::ComposerDefaults;
 use crate::state::AppState;
 
-use super::resolve::{GeneratedCommitMessage, GitStatus};
+use super::resolve::{
+    ConflictFileState, ConflictModal, GeneratedCommitMessage, GitStatus, PullResult,
+    ResolveConflictResult,
+};
 use super::Changes;
 
 /// Pick the harness descriptor the git-changes "AI message" generator should
@@ -96,6 +99,7 @@ impl Changes {
             selected_detail: None,
             file_menu: None,
             detail_scroll: gpui::ScrollHandle::new(),
+            conflict_modal: None,
             generation_defaults,
             generation_defaults_dir,
             harnesses: Vec::new(),
@@ -587,6 +591,155 @@ impl Changes {
             })
             .ok();
         }));
+        cx.notify();
+    }
+
+    /// `git pull`: fetches + merges the upstream. On conflict the engine
+    /// returns the unmerged paths, which we surface in the AI-assisted
+    /// conflict-resolution modal. A clean pull just refreshes the file list.
+    pub(super) fn run_pull(&mut self, cx: &mut Context<Self>) {
+        if self.git_busy.is_some() {
+            return;
+        }
+        let Some((cwd, target)) = self.git_context(cx) else {
+            return;
+        };
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            return;
+        };
+        self.git_busy = Some("pull");
+        self.error = None;
+        self.git_info = None;
+        let params = Self::with_git_target(&cwd, &target, serde_json::json!({}));
+        self.git_task = Some(cx.spawn(async move |this, cx| {
+            let result = engine
+                .client()
+                .call_as::<PullResult>(methods::GIT_PULL, params)
+                .await;
+            this.update(cx, |changes, cx| {
+                changes.git_busy = None;
+                match result {
+                    Ok(pull) => {
+                        if pull.conflicted && !pull.conflicts.is_empty() {
+                            // Open the modal keyed to the actual unmerged paths.
+                            let mut states = HashMap::new();
+                            for path in &pull.conflicts {
+                                states.insert(path.clone(), ConflictFileState::default());
+                            }
+                            changes.conflict_modal = Some(ConflictModal {
+                                files: pull.conflicts.clone(),
+                                states,
+                                info: Some(pull.summary.clone().into()),
+                            });
+                            changes.git_info = Some(pull.summary.into());
+                        } else {
+                            changes.git_info = Some(pull.summary.into());
+                        }
+                    }
+                    Err(err) => changes.error = Some(format!("Git operation failed: {err}").into()),
+                }
+                changes.refresh_git(cx);
+                cx.notify();
+            })
+            .ok();
+        }));
+        cx.notify();
+    }
+
+    /// Hand a single conflicted file to the selected harness/model agent for
+    /// resolution. Runs under `git_generating` (not `git_busy`) so the rest of
+    /// the panel stays usable and other files can resolve in turn.
+    pub(super) fn resolve_conflict_file(&mut self, path: String, cx: &mut Context<Self>) {
+        if self.git_generating {
+            return;
+        }
+        let Some(harness) = self.selected_harness else {
+            self.error = Some("Select an agent client.".into());
+            cx.notify();
+            return;
+        };
+        let Some((cwd, target)) = self.git_context(cx) else {
+            return;
+        };
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            return;
+        };
+        // Mark this file as resolving inside the modal (if still open).
+        if let Some(modal) = self.conflict_modal.as_mut()
+            && let Some(state) = modal.states.get_mut(&path)
+        {
+            state.resolving = true;
+            state.summary = None;
+        }
+        self.git_generating = true;
+        self.error = None;
+        let params = Self::with_git_target(
+            &cwd,
+            &target,
+            serde_json::json!({
+                "path": path,
+                "harness": harness,
+                "model": self.selected_model,
+                "acpAgentId": (harness == HarnessId::Acp).then(|| self.selected_acp_agent.clone()).flatten(),
+            }),
+        );
+        self.generation_task = Some(cx.spawn(async move |this, cx| {
+            let result = engine
+                .client()
+                .call_as::<ResolveConflictResult>(methods::GIT_RESOLVE_CONFLICT, params)
+                .await;
+            this.update(cx, |changes, cx| {
+                changes.git_generating = false;
+                match result {
+                    Ok(out) => {
+                        if let Some(modal) = changes.conflict_modal.as_mut()
+                            && let Some(state) = modal.states.get_mut(&out.path)
+                        {
+                            state.resolving = false;
+                            state.summary = Some(out.summary.clone().into());
+                        }
+                        if out.resolved {
+                            // Drop the resolved path from the modal; close it
+                            // once the last conflict is cleared.
+                            let cleared_all = changes.conflict_modal.as_ref().is_some_and(|m| {
+                                m.files.iter().filter(|p| *p != &out.path).count() == 0
+                            });
+                            if let Some(modal) = changes.conflict_modal.as_mut() {
+                                modal.files.retain(|p| p != &out.path);
+                                modal.states.remove(&out.path);
+                            }
+                            if cleared_all {
+                                changes.conflict_modal = None;
+                                changes.git_info = Some("All conflicts resolved.".into());
+                            } else {
+                                changes.git_info = Some(out.summary.into());
+                            }
+                            changes.refresh_git(cx);
+                        } else {
+                            changes.git_info = Some(out.summary.into());
+                        }
+                    }
+                    Err(err) => {
+                        if let Some(modal) = changes.conflict_modal.as_mut()
+                            && let Some(state) = modal.states.get_mut(&path)
+                        {
+                            state.resolving = false;
+                        }
+                        changes.error =
+                            Some(format!("Conflict resolution failed: {err}").into());
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+        cx.notify();
+    }
+
+    /// Dismiss the conflict modal without forcing resolution (the merge stays
+    /// in progress on disk until the user resolves or aborts).
+    pub(super) fn close_conflict_modal(&mut self, cx: &mut Context<Self>) {
+        self.conflict_modal = None;
         cx.notify();
     }
 

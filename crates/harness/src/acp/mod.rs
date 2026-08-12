@@ -565,6 +565,13 @@ impl Harness for AcpHarness {
         // only updates from the actual prompt flow reach the transcript.
         let live_updates = Arc::new(AtomicBool::new(false));
         let notification_live_updates = live_updates.clone();
+        // Idle-watchdog timestamp: updated on every `session/update`
+        // notification and checked in the prompt-wait loop. If the agent
+        // goes silent (no notifications, no prompt response) for longer
+        // than the idle timeout, the harness synthesizes `Done(Completed)`
+        // instead of hanging forever.
+        let last_activity = Arc::new(Mutex::new(std::time::Instant::now()));
+        let notification_activity = last_activity.clone();
         let RunControls {
             request_input,
             steering,
@@ -614,6 +621,16 @@ impl Harness for AcpHarness {
                 .builder()
                 .on_receive_notification(
                     async move |notification: SessionNotification, _cx| {
+                        // Update the idle-watchdog timestamp. This runs
+                        // before the `live_updates` gate so the watchdog
+                        // sees all notification activity, including
+                        // pre-prompt replays (the timestamp is reset right
+                        // before each prompt is sent, so those don't
+                        // artificially extend the deadline).
+                        *notification_activity
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            = std::time::Instant::now();
                         // Drop `session/update` notifications that arrive before
                         // the live turn starts (the load-time replay of a
                         // resumed session's history). Only updates from the
@@ -653,6 +670,7 @@ impl Harness for AcpHarness {
                         prompt_transform,
                         harness_id,
                         live_updates.clone(),
+                        last_activity.clone(),
                     )
                     .await
                 })

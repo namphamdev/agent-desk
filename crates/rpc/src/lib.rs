@@ -89,7 +89,9 @@ pub mod methods {
     pub const GIT_REVEAL: &str = "GitReveal";
     pub const GIT_COMMIT: &str = "GitCommit";
     pub const GIT_FETCH: &str = "GitFetch";
+    pub const GIT_PULL: &str = "GitPull";
     pub const GIT_PUSH: &str = "GitPush";
+    pub const GIT_RESOLVE_CONFLICT: &str = "GitResolveConflict";
     pub const GIT_GENERATE_COMMIT_MESSAGE: &str = "GitGenerateCommitMessage";
     // Terminals (ControlRpc, relay-forwardable; SubscribeTerminal streams).
     pub const OPEN_TERMINAL: &str = "OpenTerminal";

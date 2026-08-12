@@ -346,6 +346,9 @@ impl Changes {
                     .child(button("git-fetch", "Fetch".into()).when(!busy, |el| {
                         el.on_click(cx.listener(|this, _, _, cx| this.run_remote(false, cx)))
                     }))
+                    .child(button("git-pull", "Pull".into()).when(!busy, |el| {
+                        el.on_click(cx.listener(|this, _, _, cx| this.run_pull(cx)))
+                    }))
                     .child(button("git-push", "Push".into()).when(!busy, |el| {
                         el.on_click(cx.listener(|this, _, _, cx| this.run_remote(true, cx)))
                     })),

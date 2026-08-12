@@ -18,6 +18,7 @@ mod patch;
 mod render;
 mod render_file;
 mod render_form;
+mod render_modal;
 mod render_status;
 mod resolve;
 mod state_impl;
@@ -52,7 +53,7 @@ pub use patch::{
 pub use resolve::{
     DiffPhase, apply_diff_frame, diff_phase, lang_for_path, resolve_diff, uncommitted_label,
 };
-pub(crate) use resolve::{GitFileChange, GitGenerationPicker, GitStatus};
+pub(crate) use resolve::{ConflictModal, GitFileChange, GitGenerationPicker, GitStatus};
 
 // ---------------------------------------------------------------------------
 // Layout numbers (analytic — they drive the fold tween)
@@ -107,6 +108,9 @@ pub struct Changes {
     pub(super) selected_detail: Option<String>,
     pub(super) file_menu: Option<(GitFileChange, gpui::Point<gpui::Pixels>)>,
     pub(super) detail_scroll: gpui::ScrollHandle,
+    /// Open after a conflicting pull: lists the unmerged paths and drives the
+    /// per-file AI resolution flow. `None` ⇒ closed.
+    pub(super) conflict_modal: Option<ConflictModal>,
     pub(super) generation_defaults: ComposerDefaults,
     pub(super) generation_defaults_dir: Option<std::path::PathBuf>,
     pub(super) harnesses: Vec<HarnessDescriptor>,
@@ -237,8 +241,19 @@ impl Render for Changes {
             })
             .child(content)
             .child(self.render_commit(&theme, cx));
-        if let Some(menu) = self.render_file_menu(&theme, cx) {
+        let root = if let Some(menu) = self.render_file_menu(&theme, cx) {
             root.child(menu)
+        } else {
+            root
+        };
+
+        // A conflicting pull opens a centered modal over the pane. It needs
+        // the window's viewport size (the scrim is sized explicitly) and is
+        // rendered as a deferred overlay sibling of the pane root.
+        if let Some(modal) =
+            self.render_conflict_modal(&theme, window.viewport_size(), window, cx)
+        {
+            root.child(modal)
         } else {
             root
         }

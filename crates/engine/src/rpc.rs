@@ -906,7 +906,9 @@ fn forwardable(method: &str) -> bool {
             | methods::GIT_REVEAL
             | methods::GIT_COMMIT
             | methods::GIT_FETCH
+            | methods::GIT_PULL
             | methods::GIT_PUSH
+            | methods::GIT_RESOLVE_CONFLICT
             | methods::GIT_GENERATE_COMMIT_MESSAGE
             // Checkout diffs are produced on the device holding the checkout.
             | methods::WATCH_CHECKOUT_DIFFS
@@ -1508,6 +1510,57 @@ impl RpcService for EngineRpc {
                 };
                 let summary = result.map_err(|error| RpcError::Failed(error.to_string()))?;
                 RpcReply::value(&serde_json::json!({ "summary": summary }))
+            }
+            methods::GIT_PULL => {
+                #[derive(Deserialize)]
+                struct P {
+                    cwd: String,
+                }
+                let p: P = parse_params(params)?;
+                let result = crate::git::pull(std::path::Path::new(&p.cwd))
+                    .await
+                    .map_err(|error| RpcError::Failed(error.to_string()))?;
+                RpcReply::value(&serde_json::to_value(&result).unwrap_or_else(|_| {
+                    serde_json::json!({
+                        "summary": result.summary,
+                        "conflicted": result.conflicted,
+                        "conflicts": result.conflicts,
+                    })
+                }))
+            }
+            methods::GIT_RESOLVE_CONFLICT => {
+                #[derive(Deserialize)]
+                #[serde(rename_all = "camelCase")]
+                struct P {
+                    cwd: String,
+                    path: String,
+                    harness: HarnessId,
+                    model: Option<String>,
+                    #[serde(default)]
+                    acp_agent_id: Option<String>,
+                }
+                let p: P = parse_params(params)?;
+                let result = tokio::time::timeout(
+                    GIT_GENERATE_TIMEOUT,
+                    crate::git::resolve_conflict(
+                        &self.registry,
+                        std::path::Path::new(&p.cwd),
+                        &p.path,
+                        p.harness,
+                        p.model,
+                        p.acp_agent_id.as_deref(),
+                    ),
+                )
+                .await
+                .map_err(|_| RpcError::Failed("conflict resolution timed out".into()))?
+                .map_err(|error| RpcError::Failed(error.to_string()))?;
+                RpcReply::value(&serde_json::to_value(&result).unwrap_or_else(|_| {
+                    serde_json::json!({
+                        "path": result.path,
+                        "resolved": result.resolved,
+                        "summary": result.summary,
+                    })
+                }))
             }
             methods::GIT_GENERATE_COMMIT_MESSAGE => {
                 #[derive(Deserialize)]

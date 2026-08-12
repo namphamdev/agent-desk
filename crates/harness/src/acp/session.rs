@@ -5,7 +5,7 @@
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use agent_client_protocol::schema::v1::{
     AuthenticateRequest, AuthMethod, CancelNotification, ClientCapabilities,
@@ -46,9 +46,9 @@ pub(super) async fn run_connection(
     prompt_transform: fn(Option<ReasoningLevel>, &str) -> String,
     harness_id: HarnessId,
     live_updates: Arc<AtomicBool>,
+    last_activity: Arc<Mutex<std::time::Instant>>,
 ) -> agent_client_protocol::Result<()> {
     initialize_and_authenticate(&connection).await?;
-
     let cwd = absolute_cwd(&request.cwd);
     let mcp_servers = mcp_servers(mcp_server_url.as_deref());
     let with_mcp = |request: NewSessionRequest| {
@@ -137,6 +137,7 @@ pub(super) async fn run_connection(
     // Session setup (including any session/load replay) is complete. Open the
     // gate so only prompt-flow updates reach the transcript from here on.
     live_updates.store(true, Ordering::Relaxed);
+    let idle_timeout = idle_timeout();
     let mut prompts = VecDeque::from([prompt_content(&request, prompt_transform)]);
 
     loop {
@@ -169,13 +170,27 @@ pub(super) async fn run_connection(
             continue;
         };
 
+        // Reset the idle timer when sending a new prompt so that time spent
+        // in session setup or prior turns doesn't count against the watchdog.
+        touch(last_activity.clone());
         let prompt = connection
             .send_request(PromptRequest::new(session_id.clone(), content))
             .block_task();
         tokio::pin!(prompt);
         let response = loop {
+            // Compute remaining time until the idle deadline. Each arriving
+            // notification calls `touch`, effectively restarting the timer
+            // while the agent is actively streaming.
+            let remaining = {
+                let last = *last_activity
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                idle_timeout.saturating_sub(last.elapsed())
+            };
+            let watchdog = tokio::time::sleep(remaining);
+            tokio::pin!(watchdog);
             tokio::select! {
-                response = &mut prompt => break response,
+                response = &mut prompt => break response.map(Some),
                 steer = steering.recv() => {
                     if let Some(steer) = steer {
                         prompts.push_back(vec![ContentBlock::Text(TextContent::new(
@@ -185,12 +200,32 @@ pub(super) async fn run_connection(
                 }
                 _ = interrupt.cancelled() => {
                     connection.send_notification(CancelNotification::new(session_id.clone()))?;
-                    break prompt.await;
+                    break prompt.await.map(Some);
+                }
+                _ = &mut watchdog => {
+                    // Re-check in case a notification arrived between
+                    // computing `remaining` and the branch firing.
+                    let last = *last_activity
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    if last.elapsed() >= idle_timeout {
+                        tracing::warn!(
+                            target: "comet_harness::acp",
+                            idle_secs = last.elapsed().as_secs(),
+                            "ACP agent went idle without a prompt response; \
+                             synthesizing EndTurn"
+                        );
+                        break Ok(None);
+                    }
+                    // A notification arrived during the wait; loop to recompute.
                 }
             }
         }?;
 
-        let (status, error) = done_from_stop_reason(response.stop_reason);
+        let (status, error) = match response {
+            Some(response) => done_from_stop_reason(response.stop_reason),
+            None => (DoneStatus::Completed, None),
+        };
         if event_tx
             .send(Ok(AgentEvent::Done {
                 status,
@@ -569,4 +604,29 @@ fn done_from_stop_reason(reason: StopReason) -> (DoneStatus, Option<String>) {
             Some("ACP agent stopped unexpectedly".into()),
         ),
     }
+}
+
+/// Update the shared last-activity timestamp to "now".
+fn touch(last_activity: Arc<Mutex<std::time::Instant>>) {
+    *last_activity
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = std::time::Instant::now();
+}
+
+/// The maximum silence period allowed while waiting for a prompt response.
+///
+/// If the agent sends no `session/update` notifications and no prompt
+/// response within this duration, the harness synthesizes `Done(Completed)`
+/// instead of hanging forever. Some ACP agents (notably grok-build-acp)
+/// finish streaming text via notifications but never send the JSON-RPC
+/// `session/prompt` response, leaving the request perpetually pending.
+///
+/// Configurable via `COMET_ACP_IDLE_TIMEOUT_SECS` (primarily for testing).
+fn idle_timeout() -> std::time::Duration {
+    std::env::var("COMET_ACP_IDLE_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .filter(|&secs: &u64| secs > 0)
+        .map(std::time::Duration::from_secs)
+        .unwrap_or(std::time::Duration::from_secs(60))
 }

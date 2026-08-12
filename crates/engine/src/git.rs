@@ -446,6 +446,90 @@ pub async fn fetch(cwd: &Path) -> Result<String, EngineError> {
     Ok(summary)
 }
 
+/// The outcome of a `git pull`: a human-readable summary plus, when the merge
+/// stopped on conflicts, the paths Git could not merge. The UI keys its
+/// conflict-resolution modal off `conflicted`.
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PullResult {
+    pub summary: String,
+    pub conflicted: bool,
+    pub conflicts: Vec<String>,
+}
+
+/// `git pull --no-rebase`: fetches and merges the upstream branch. When the
+/// merge halts on conflicts the command exits non-zero, but the working tree
+/// is left mid-merge with `UU`/`AA`/`DD` index entries — we surface those as
+/// `conflicts` so the UI can offer AI-assisted resolution instead of treating
+/// it as a hard failure.
+pub async fn pull(cwd: &Path) -> Result<PullResult, EngineError> {
+    validate_cwd(cwd)?;
+
+    let out = Command::new("git")
+        .current_dir(cwd)
+        .args(&["pull", "--no-rebase", "--progress"])
+        .output()
+        .await
+        .map_err(|e| EngineError::Other(format!("git pull failed to spawn: {}", e)))?;
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    // A non-zero exit mid-merge means conflicts (or an aborted merge). The
+    // authoritative source of conflict paths is the porcelain status, not the
+    // command's stderr — so re-snapshot and collect unmerged entries.
+    let conflicts = if out.status.success() {
+        Vec::new()
+    } else {
+        conflicted_paths(cwd).await?
+    };
+
+    let conflicted = !conflicts.is_empty();
+    let mut summary = if conflicted {
+        "Merge conflicts — resolve to continue.".to_string()
+    } else if out.status.success() {
+        summarize_git_remote_output(&stdout, &stderr)
+    } else {
+        let msg = if !stderr.trim().is_empty() {
+            stderr.trim()
+        } else {
+            stdout.trim()
+        };
+        return Err(EngineError::Other(format!("git pull failed: {}", msg)));
+    };
+    if !conflicted && summary.is_empty() {
+        summary = "Pull complete.".to_string();
+    }
+
+    Ok(PullResult {
+        summary,
+        conflicted,
+        conflicts,
+    })
+}
+
+/// Collect repository-relative paths with unmerged index entries
+/// (`U`/`A`/`D` in both columns), i.e. the files Git flags as conflicted.
+async fn conflicted_paths(cwd: &Path) -> Result<Vec<String>, EngineError> {
+    let out = Command::new("git")
+        .current_dir(cwd)
+        .args(&["diff", "--name-only", "--diff-filter=U"])
+        .output()
+        .await
+        .map_err(|e| EngineError::Other(format!("git diff failed to spawn: {}", e)))?;
+    if !out.status.success() {
+        // Status introspection failing shouldn't mask the original pull error;
+        // report no conflicts and let the caller surface the failure.
+        return Ok(Vec::new());
+    }
+    Ok(String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_owned)
+        .collect())
+}
+
 pub async fn push(cwd: &Path) -> Result<String, EngineError> {
     validate_cwd(cwd)?;
 
@@ -617,6 +701,134 @@ pub async fn generate_commit_message(
     }
     drop(steer_tx);
     parse_commit_message(&raw)
+}
+
+/// The outcome of an AI-assisted conflict resolution: the resolved file's
+/// path and a short status note the pane surfaces in its info banner.
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolveConflictResult {
+    pub path: String,
+    pub resolved: bool,
+    pub summary: String,
+}
+
+/// Resolve a merge conflict in `path` by handing the conflicted file to a
+/// harness agent (with workspace-write + auto-approve) that edits the file in
+/// place to drop the `<<<<<<<`/`=======`/`>>>>>>>` markers, then stages it.
+///
+/// Reuses the same harness-run plumbing as [`generate_commit_message`] but at
+/// `WorkspaceWrite` so the agent can actually rewrite the file. If the agent
+/// leaves markers behind (a half-resolution), the file is not staged and the
+/// caller is told resolution is incomplete.
+pub async fn resolve_conflict(
+    registry: &HarnessRegistry,
+    cwd: &Path,
+    path: &str,
+    harness_id: HarnessId,
+    model: Option<String>,
+    acp_agent_id: Option<&str>,
+) -> Result<ResolveConflictResult, EngineError> {
+    validate_cwd(cwd)?;
+    validate_paths(&[path.to_string()])?;
+
+    // Confirm the file is actually conflicted before spinning up an agent —
+    // avoids a confusing no-op (or an agent rewrite) on a clean path.
+    let conflicts = conflicted_paths(cwd).await?;
+    if !conflicts.iter().any(|c| c == path) {
+        return Ok(ResolveConflictResult {
+            path: path.to_string(),
+            resolved: true,
+            summary: format!("{path} is not conflicted."),
+        });
+    }
+
+    let prompt = format!(
+        "The file `{path}` has unresolved git merge conflicts (lines bracketed by \
+         `<<<<<<<`, `=======`, and `>>>>>>>`). Resolve them: keep the correct \
+         changes from both sides, remove every conflict marker, and preserve the \
+         file's intent and formatting. Edit the file in place. Do not run git, \
+         commit, or touch any other file. Output only a one-line summary of what \
+         you changed."
+    );
+    let harness = registry
+        .resolve(harness_id)
+        .map_err(|error| EngineError::Other(error.to_string()))?;
+    let request = RunRequest {
+        prompt,
+        model,
+        reasoning: None,
+        model_options: serde_json::Map::new(),
+        cwd: cwd.to_string_lossy().into_owned(),
+        sandbox: SandboxLevel::WorkspaceWrite,
+        auto_approve: true,
+        attachments: Vec::new(),
+        resume: None,
+        seed: None,
+        seed_purpose: None,
+        harness: None,
+        seed_role: None,
+        acp_agent_id: acp_agent_id.map(|id| id.to_string()),
+        custom_provider: None,
+    };
+    let (steer_tx, steer_rx) = tokio::sync::mpsc::channel::<SteerMessage>(1);
+    let controls = RunControls {
+        request_input: Box::new(|_questions: Vec<UserInputQuestion>| {
+            let (tx, rx) = tokio::sync::oneshot::channel::<Vec<UserInputAnswer>>();
+            let _ = tx.send(Vec::new());
+            rx
+        }),
+        steering: steer_rx,
+        interrupt: CancellationToken::new(),
+        report_memory: Box::new(|_| {}),
+    };
+    let mut stream = harness.run(request, controls).await?;
+    let mut summary = String::new();
+    while let Some(event) = stream.next().await {
+        match event? {
+            AgentEvent::TextDelta { text } => summary.push_str(&text),
+            AgentEvent::Error { message } => {
+                return Err(EngineError::Other(format!(
+                    "conflict resolution failed: {message}"
+                )));
+            }
+            AgentEvent::Done { status, error, .. } => {
+                if status != DoneStatus::Completed {
+                    return Err(EngineError::Other(format!(
+                        "conflict resolution ended {status:?}: {}",
+                        error.unwrap_or_default()
+                    )));
+                }
+                break;
+            }
+            _ => {}
+        }
+    }
+    drop(steer_tx);
+
+    let summary = summary.trim().to_string();
+    // Stage only if the agent actually cleared the markers; otherwise leave
+    // the conflict for the user and report it as unresolved.
+    let remaining = conflicted_paths(cwd).await?;
+    let resolved = !remaining.iter().any(|c| c == path);
+    if resolved {
+        // `git add` finalizes the resolution; a failure here is non-fatal —
+        // the file is already fixed on disk, the user can stage manually.
+        let _ = stage(cwd, &[path.to_string()]).await;
+    }
+    Ok(ResolveConflictResult {
+        path: path.to_string(),
+        resolved,
+        summary: if resolved {
+            if summary.is_empty() {
+                format!("Resolved {path}.")
+            } else {
+                summary
+            }
+        } else {
+            format!("{path} still has unresolved markers — review and retry.")
+        },
+    })
 }
 
 fn parse_commit_message(raw: &str) -> Result<GitCommitMessage, EngineError> {
@@ -872,5 +1084,54 @@ mod tests {
             .output()
             .unwrap();
         assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "file.txt");
+    }
+
+    /// A real two-branch merge that touches the same line produces a `UU`
+    /// index entry. `conflicted_paths` must surface exactly that file — this
+    /// is the signal the UI uses to open the conflict-resolution modal after a
+    /// conflicting pull.
+    #[tokio::test]
+    async fn conflicted_paths_lists_unmerged_files() {
+        let repo = tempfile::tempdir().unwrap();
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .current_dir(repo.path())
+                .args(args)
+                .output()
+                .unwrap()
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.email", "t@t"]);
+        git(&["config", "user.name", "t"]);
+
+        std::fs::write(repo.path().join("file.txt"), "base\n").unwrap();
+        git(&["add", "file.txt"]);
+        git(&["commit", "-q", "-m", "base"]);
+
+        // Diverge: change the same line differently on two branches.
+        git(&["checkout", "-q", "-b", "feature"]);
+        std::fs::write(repo.path().join("file.txt"), "feature\n").unwrap();
+        git(&["commit", "-q", "-am", "feature"]);
+
+        // The default branch is `master` on older git and `main` on newer —
+        // return to whichever exists.
+        let default_branch = if git(&["rev-parse", "-q", "--verify", "master"]).status.success() {
+            "master"
+        } else {
+            "main"
+        };
+        git(&["checkout", "-q", default_branch]);
+        std::fs::write(repo.path().join("file.txt"), "trunk\n").unwrap();
+        git(&["commit", "-q", "-am", "trunk"]);
+        // Merge feature onto the base branch — conflicts on file.txt.
+        let merge = std::process::Command::new("git")
+            .current_dir(repo.path())
+            .args(["merge", "-q", "--no-ff", "feature"])
+            .output()
+            .unwrap();
+        assert!(!merge.status.success(), "merge should have conflicted");
+
+        let conflicts = conflicted_paths(repo.path()).await.unwrap();
+        assert_eq!(conflicts, vec!["file.txt".to_string()]);
     }
 }

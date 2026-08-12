@@ -27,6 +27,12 @@ auth_log = os.environ.get("FAKE_ACP_AUTH_LOG")
 # When FAKE_ACP_AUTH_FAIL is set, authenticate returns an error — the harness
 # must degrade to the default model instead of surfacing raw protocol errors.
 auth_fail = bool(os.environ.get("FAKE_ACP_AUTH_FAIL"))
+# When FAKE_ACP_NO_PROMPT_RESPONSE is set, the fixture streams
+# agent_message_chunk notifications but never sends the session/prompt
+# response — mirroring the grok-build-acp bug where the chat completions
+# stream finishes (finish_reason: "stop") but no ACP PromptResponse is
+# sent, leaving the session perpetually pending.
+no_prompt_response = bool(os.environ.get("FAKE_ACP_NO_PROMPT_RESPONSE"))
 
 
 def send(message):
@@ -255,6 +261,11 @@ for line in sys.stdin:
                 },
             },
         })
+        if no_prompt_response:
+            # Stream text but never send the prompt response — the harness
+            # idle watchdog must synthesize Done(Completed) instead of
+            # hanging forever.
+            continue
         send({
             "jsonrpc": "2.0",
             "method": "session/update",

@@ -679,3 +679,81 @@ async fn passes_custom_provider_env_to_acp_agent() {
         "responses"
     );
 }
+
+/// When an ACP agent streams text via `session/update` notifications but
+/// never sends the `session/prompt` response (the grok-build-acp bug), the
+/// idle watchdog must synthesize `Done(Completed)` instead of hanging forever.
+#[tokio::test]
+async fn completes_when_agent_goes_silent_without_prompt_response() {
+    // SAFETY: `COMET_ACP_IDLE_TIMEOUT_SECS` is only read by the harness's
+    // prompt-wait loop. Other tests' fixtures always send the prompt
+    // response, so a shorter timeout doesn't affect them (the watchdog
+    // never fires when the response arrives promptly).
+    unsafe {
+        std::env::set_var("COMET_ACP_IDLE_TIMEOUT_SECS", "2");
+    }
+
+    let command = serde_json::json!({
+        "command": fixture_path(),
+        "env": { "FAKE_ACP_NO_PROMPT_RESPONSE": "1" },
+    })
+    .to_string();
+    let harness = AcpHarness::new().with_command(command);
+    let (steer_tx, steer_rx) = mpsc::channel(1);
+    let controls = RunControls {
+        request_input: Box::new(|_| {
+            let (_tx, rx) = oneshot::channel();
+            rx
+        }),
+        steering: steer_rx,
+        interrupt: CancellationToken::new(),
+        report_memory: Box::new(|_| {}),
+    };
+    let request = RunRequest {
+        prompt: "Say hello".into(),
+        model: None,
+        reasoning: None,
+        model_options: serde_json::Map::new(),
+        cwd: "/tmp".into(),
+        sandbox: SandboxLevel::WorkspaceWrite,
+        auto_approve: true,
+        resume: None,
+        attachments: vec![],
+        seed: None,
+        seed_role: None,
+        seed_purpose: None,
+        harness: None,
+        acp_agent_id: None,
+        custom_provider: None,
+    };
+
+    let stream = harness.run(request, controls).await.unwrap();
+    drop(steer_tx);
+
+    // With a 2-second idle timeout, the harness should synthesize Done
+    // within a few seconds — not hang forever.
+    let events = tokio::time::timeout(
+        Duration::from_secs(15),
+        stream.map(Result::unwrap).collect::<Vec<_>>(),
+    )
+    .await
+    .expect("harness should synthesize completion after idle timeout, not hang");
+
+    // Text was streamed before the agent went silent.
+    assert!(events.contains(&AgentEvent::TextDelta {
+        text: "Hello from ACP (medium)".into(),
+    }));
+    // Done(Completed) was synthesized by the watchdog.
+    assert!(events.contains(&AgentEvent::Done {
+        status: DoneStatus::Completed,
+        result: None,
+        error: None,
+        session_id: Some("acp-session-1".into()),
+    }));
+
+    // Restore the default idle timeout for subsequent tests.
+    // SAFETY: same justification as the set_var above.
+    unsafe {
+        std::env::remove_var("COMET_ACP_IDLE_TIMEOUT_SECS");
+    }
+}

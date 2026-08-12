@@ -2,9 +2,11 @@
 //! the lifecycle phases the pane shows, and frame-application for the diff
 //! watch stream. Pure logic with unit tests; no gpui.
 
+use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
 use comet_proto::{Chat, CheckoutDiff};
+use gpui::SharedString;
 use serde::Deserialize;
 
 use crate::markdown::highlight::{Lang, lang_for_tag};
@@ -136,4 +138,44 @@ pub(crate) struct GeneratedCommitMessage {
 pub(crate) enum GitGenerationPicker {
     Harness,
     Model,
+}
+
+/// Engine reply to `GitPull`: a status line plus, on conflict, the unmerged
+/// paths the modal lists for AI-assisted resolution.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PullResult {
+    pub summary: String,
+    pub conflicted: bool,
+    #[serde(default)]
+    pub conflicts: Vec<String>,
+}
+
+/// Engine reply to `GitResolveConflict`: whether the agent cleared the markers
+/// (and staged the file) plus a short note for the info banner.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ResolveConflictResult {
+    pub path: String,
+    pub resolved: bool,
+    pub summary: String,
+}
+
+/// Per-file resolution progress inside the conflict modal.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ConflictFileState {
+    /// Last agent summary, shown under the path once resolution finishes.
+    pub summary: Option<SharedString>,
+    /// `true` while the agent is working on this file.
+    pub resolving: bool,
+}
+
+/// The open conflict-resolution modal: the conflicted paths surfaced by the
+/// pull, per-file agent state, and an overall banner message. `None` ⇒ the
+/// modal is closed (all files resolved or dismissed).
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ConflictModal {
+    pub files: Vec<String>,
+    pub states: HashMap<String, ConflictFileState>,
+    pub info: Option<SharedString>,
 }
