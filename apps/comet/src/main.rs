@@ -101,19 +101,23 @@ fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     // Everything logs to stdout: long-running modes at info, one-shot CLI
     // commands at warn (RUST_LOG overrides either).
+    //
     // loro's internal block-encode diagnostics log at info and flood
     // journald on every snapshot export — enough to fill a disk on a
-    // long-running headless host. Quiet them by default (RUST_LOG still
-    // overrides the whole filter).
-    let default_filter = match &cli.command {
-        None | Some(Command::Headless) => "info,loro_internal=warn,loro=warn",
+    // long-running headless host. We clamp them to warn as a floor: this
+    // directive is appended to whatever filter ends up active (the user's
+    // RUST_LOG or the per-command default), so a bare `RUST_LOG=info` from
+    // dev scripts, `.env`, or the systemd unit can never resurrect the flood.
+    let base_filter = match &cli.command {
+        None | Some(Command::Headless) => "info",
         Some(_) => "warn",
     };
+    let mut filter = std::env::var("RUST_LOG").unwrap_or_else(|_| base_filter.into());
+    // `tracing`'s EnvFilter applies directives left-to-right, with later
+    // entries winning per-target; appending ensures our clamp takes effect.
+    filter.push_str(",loro_internal=warn,loro=warn");
     tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| default_filter.into()),
-        )
+        .with_env_filter(tracing_subscriber::EnvFilter::new(filter))
         .init();
 
     match cli.command {

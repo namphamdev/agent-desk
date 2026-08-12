@@ -515,32 +515,34 @@ impl Shell {
 
     // ---- sidebar tree expand/collapse ----
 
-    /// Effective expanded state of a space row: the ACTIVE space is always
-    /// expanded (auto-expand override — the user is working there), a space
-    /// manually expanded this session is expanded, and everything else follows
-    /// the persisted collapse choice (default: expanded).
+    /// Effective expanded state of a space row. Precedence (highest first):
+    /// a manual expand this session (`sidebar_expanded_spaces`), then a
+    /// manual collapse (`sidebar_collapsed_spaces` — this beats the active-
+    /// space auto-expand so the chevron can collapse even the space you're
+    /// working in), then the active space auto-expands, then the default
+    /// (expanded). Navigation into a space clears its manual collapse via
+    /// [`Self::ensure_active_space_expanded`], so landing somewhere re-shows
+    /// its sessions.
     pub(super) fn space_expanded(&self, space_id: &str, cx: &Context<Self>) -> bool {
-        if self.state.read(cx).selected_space.as_deref() == Some(space_id) {
-            return true;
-        }
         if self.sidebar_expanded_spaces.contains(space_id) {
             return true;
         }
-        !self.settings.sidebar_collapsed_spaces.contains(space_id)
+        if self.settings.sidebar_collapsed_spaces.contains(space_id) {
+            return false;
+        }
+        if self.state.read(cx).selected_space.as_deref() == Some(space_id) {
+            return true;
+        }
+        true
     }
 
     /// Toggle a space's expand/collapse. Collapsing stashes the current list
     /// scroll offset (restored on expand); both directions persist the manual
-    /// choice. The ACTIVE space never visibly collapses — the auto-expand
-    /// override keeps it open, so toggling it is a no-op.
+    /// choice. The chevron calls this directly (without activating), so it
+    /// collapses even the active space — the manual-collapse entry overrides
+    /// the active auto-expand in [`Self::space_expanded`].
     pub(super) fn toggle_space_expand(&mut self, space_id: &str, cx: &mut Context<Self>) {
-        let is_active = self
-            .state
-            .read(cx)
-            .selected_space
-            .as_deref()
-            == Some(space_id);
-        if self.space_expanded(space_id, cx) && !is_active {
+        if self.space_expanded(space_id, cx) {
             // Collapse: record the choice + stash the view.
             self.sidebar_expanded_spaces.remove(space_id);
             self.settings
@@ -567,10 +569,12 @@ impl Shell {
 
     /// Auto-expand the active space (called on every state change — selecting
     /// a chat implies its space, so this covers boot, space switches, and
-    /// chat picks from the tab strip alike). Idempotent.
+    /// chat picks from the tab strip alike). Clears any manual collapse for
+    /// the space so navigating into it re-shows its sessions. Idempotent.
     pub(super) fn ensure_active_space_expanded(&mut self, cx: &Context<Self>) {
         if let Some(space_id) = self.state.read(cx).selected_space.clone() {
-            self.sidebar_expanded_spaces.insert(space_id);
+            self.sidebar_expanded_spaces.insert(space_id.clone());
+            self.settings.sidebar_collapsed_spaces.remove(&space_id);
         }
     }
 
@@ -652,6 +656,7 @@ impl Shell {
             theme.text.opacity(0.8)
         };
         let select_id = id.clone();
+        let select_id_chevron = id.clone();
         let menu_id = id.clone();
         // One line: "name @ device" — the folder name carries the weight, the
         // device tag rides along slightly muted. Long names truncate; the
@@ -663,6 +668,11 @@ impl Shell {
             // The uniform tree slot: every node (space or session) is exactly
             // CHAT_ROW_HEIGHT tall so the virtualized list can lay them out at
             // a fixed stride (items_center floats the shorter space row).
+            // w_full: without it the row shrinks to its content, so the
+            // hover/selection wash (and the click/drag surface) stopped short
+            // of the sidebar's right edge — session rows fill via render_chat_row's
+            // w_full; the space row must match.
+            .w_full()
             .h(px(super::nav::CHAT_ROW_HEIGHT))
             .flex()
             .flex_row()
@@ -693,8 +703,10 @@ impl Shell {
             .inspect_click(space_inspect)
             .cursor_pointer()
             .on_click(cx.listener(move |this, _, _, cx| {
+                // Row body click activates the space (the chevron owns
+                // collapse/expand). Activation auto-expands the space you land
+                // in via ensure_active_space_expanded.
                 this.activate_space(select_id.clone(), cx);
-                this.toggle_space_expand(&select_id, cx);
             }))
             .on_mouse_down(
                 MouseButton::Right,
@@ -716,15 +728,33 @@ impl Shell {
             )
             // Chevron LEADS the row (before the status dot) so its position is
             // stable while toggling — the collapse affordance never moves.
+            // It is its own click target: toggling collapse must NOT also
+            // activate the space (activation pins the active space open via
+            // space_expanded, which would make the chevron a no-op). The row
+            // body still activates on click; stop_propagation keeps the two
+            // intents distinct.
             .child(
-                icon(if expanded {
-                    icons::ALT_ARROW_DOWN
-                } else {
-                    icons::ALT_ARROW_RIGHT
-                })
-                .size(px(12.0))
-                .flex_none()
-                .text_color(theme.text_muted),
+                div()
+                    .id(SharedString::from(format!("space-chevron-{id}")))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .size(px(16.0))
+                    .flex_none()
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.toggle_space_expand(&select_id_chevron.clone(), cx);
+                        cx.stop_propagation();
+                    }))
+                    .child(
+                        icon(if expanded {
+                            icons::ALT_ARROW_DOWN
+                        } else {
+                            icons::ALT_ARROW_RIGHT
+                        })
+                        .size(px(12.0))
+                        .text_color(theme.text_muted),
+                    ),
             )
             // Status dot next (like session rows): faint at rest, colored
             // under attention — appearing/disappearing at the right edge made

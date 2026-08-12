@@ -354,6 +354,16 @@ async fn set_session_model(
             );
             Ok(None)
         }
+        // The agent does not implement session/setConfigOption (e.g. Grok).
+        // Skip the call and let the agent use its own default model.
+        Err(error) if is_method_not_found_response(&error) => {
+            tracing::debug!(
+                target: "comet_harness::acp",
+                %error,
+                "ACP agent does not support setConfigOption; skipping model"
+            );
+            Ok(None)
+        }
         Err(error) => Err(error),
     }
 }
@@ -386,6 +396,14 @@ async fn set_session_reasoning(
                 target: "comet_harness::acp",
                 %error,
                 "ACP agent omitted configOptions after setting reasoning"
+            );
+            Ok(())
+        }
+        Err(error) if is_method_not_found_response(&error) => {
+            tracing::debug!(
+                target: "comet_harness::acp",
+                %error,
+                "ACP agent does not support setConfigOption; skipping reasoning"
             );
             Ok(())
         }
@@ -425,8 +443,27 @@ async fn set_session_permission_mode(
             value.as_str(),
         ))
         .block_task()
-        .await?;
-    Ok(Some(response.config_options))
+        .await;
+    match response {
+        Ok(response) => Ok(Some(response.config_options)),
+        Err(error) if is_legacy_config_option_response(&error) => {
+            tracing::debug!(
+                target: "comet_harness::acp",
+                %error,
+                "ACP agent omitted configOptions after setting permission mode"
+            );
+            Ok(None)
+        }
+        Err(error) if is_method_not_found_response(&error) => {
+            tracing::debug!(
+                target: "comet_harness::acp",
+                %error,
+                "ACP agent does not support setConfigOption; skipping permission mode"
+            );
+            Ok(None)
+        }
+        Err(error) => Err(error),
+    }
 }
 
 fn is_legacy_config_option_response(error: &agent_client_protocol::Error) -> bool {
@@ -440,6 +477,15 @@ fn is_legacy_config_option_response(error: &agent_client_protocol::Error) -> boo
 fn is_invalid_params_response(error: &agent_client_protocol::Error) -> bool {
     use agent_client_protocol::schema::v1::ErrorCode;
     error.code == ErrorCode::InvalidParams
+}
+
+/// JSON-RPC -32601 "Method not found": the agent does not implement
+/// `session/setConfigOption` at all (e.g. Grok). The config option is
+/// non-fatal, so the caller should skip it and let the agent use its own
+/// defaults rather than aborting the session.
+fn is_method_not_found_response(error: &agent_client_protocol::Error) -> bool {
+    use agent_client_protocol::schema::v1::ErrorCode;
+    error.code == ErrorCode::MethodNotFound
 }
 
 fn absolute_cwd(cwd: &str) -> PathBuf {
