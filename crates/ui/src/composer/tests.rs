@@ -282,6 +282,26 @@ use std::ops::Range;
     }
 
     #[test]
+    pub(crate) fn flip_commits_focus_gain_without_a_fresh_measurement() {
+        // Regression: focusing an empty, already-measured compact pill never
+        // re-shapes the input, so `measured_since_flip` stays false and the
+        // focus expand (composer_flip → true) used to deadlock — the pill
+        // stayed compact while focused until the user typed. A focus gain
+        // commits the expand immediately.
+        assert!(flip_commits(true, false, false, true));
+        // Same mode → nothing to commit, even on a focus gain.
+        assert!(!flip_commits(true, true, false, true));
+        // Width/newline flips still need a fresh measurement after the last
+        // flip (one flip per layout pass — a flip invalidates the widths).
+        assert!(!flip_commits(true, false, false, false));
+        assert!(flip_commits(true, false, true, false));
+        // Blur collapse reads the measured width — stays gated: without a
+        // re-shape since the last flip it does not commit.
+        assert!(!flip_commits(false, true, false, false));
+        assert!(flip_commits(false, true, true, false));
+    }
+
+    #[test]
     pub(crate) fn flip_hysteresis_band_prevents_oscillation() {
         let cap = 300.0;
         // Text just over capacity expands…

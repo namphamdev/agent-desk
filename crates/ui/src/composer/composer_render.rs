@@ -42,6 +42,9 @@ impl Render for Composer {
         // transition between frames must re-render even when nothing else
         // changed — notify on the edge and let the next pass flip.
         let input_focused = self.input.focus_handle(cx).is_focused(window);
+        // Capture the focus-gain edge BEFORE mirroring it below: the flip gate
+        // uses it to commit measurement-independent focus expands immediately.
+        let focus_gained = input_focused && !self.input_focused;
         if input_focused != self.input_focused {
             self.input_focused = input_focused;
             cx.notify();
@@ -126,7 +129,14 @@ impl Render for Composer {
         // is never morphed on a canvas that's always expanded anyway.
         let new_chat = self.state.read(cx).selected_chat.is_none();
         let next = next || new_chat;
-        let committed_flip = next != self.expanded_mode && measured_since_flip;
+        // A focus-gain flip is measurement-independent (a focused input always
+        // expands — composer_flip's first rule), so it must not wait for a
+        // fresh re-shape: the input only re-shapes on text/width/font/placeholder
+        // changes, and focusing an empty, already-measured pill re-shapes
+        // nothing, which would deadlock the expand (compact + focused forever)
+        // until the user types. Blur stays gated — its collapse decision reads
+        // the measured text width.
+        let committed_flip = flip_commits(next, self.expanded_mode, measured_since_flip, focus_gained);
         if committed_flip {
             self.expanded_mode = next;
             self.flip_epoch = epoch;

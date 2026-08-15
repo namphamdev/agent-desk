@@ -57,7 +57,13 @@ impl Changes {
     pub fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
         let observe = cx.observe(&state, |this: &mut Self, _, cx| this.sync(cx));
         let subject = cx.new(|cx| ComposerInput::new("Commit subject", cx));
-        let body = cx.new(|cx| ComposerInput::new("Description (optional)", cx));
+        // The description box is capped at `COMMIT_DESC_MAX_H`; matching the
+        // input's internal-scroll cap to the box's content area keeps long
+        // messages scrolling inside the box instead of overflowing it.
+        let body = cx.new(|cx| {
+            ComposerInput::new("Description (optional)", cx)
+                .with_max_content_height(super::COMMIT_DESC_INPUT_MAX_H)
+        });
         let model_search = cx.new(|cx| ComposerInput::new("Search models", cx));
         let subject_events = cx
             .subscribe(&subject, |_: &mut Self, _, _: &ComposerInputEvent, cx| {

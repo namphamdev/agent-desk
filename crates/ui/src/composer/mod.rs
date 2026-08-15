@@ -198,6 +198,20 @@ pub fn composer_flip(
     }
 }
 
+/// Whether a mode change from [`composer_flip`] may be committed this pass.
+/// Width/newline decisions read measurements, so they may only drive the next
+/// flip after the input has been laid out in the current mode again (at most
+/// one flip per layout pass — a flip invalidates the widths). A focus-GAIN is
+/// measurement-independent: a focused input always expands (`composer_flip`'s
+/// first rule), and the input only re-shapes on text/width/font/placeholder
+/// changes — focusing an empty, already-measured pill re-shapes nothing, so
+/// gating it on a fresh measurement would deadlock the expand (compact +
+/// focused forever) until the user types. Blur stays gated: its collapse
+/// decision reads the measured text width.
+pub fn flip_commits(next: bool, expanded: bool, measured_since_flip: bool, focus_gained: bool) -> bool {
+    next != expanded && (measured_since_flip || focus_gained)
+}
+
 /// Caret blink half-period (standard textarea cadence: ~500ms on / 500ms off).
 pub const CARET_BLINK_MS: u64 = 500;
 
@@ -383,6 +397,11 @@ pub struct ComposerInput {
     /// Normally keeps the caret visible through edits and rewraps. Manual
     /// wheel scrolling pauses it until the next caret move or edit.
     pub(crate) follow_cursor: bool,
+    /// Max content height before internal scrolling kicks in. Defaults to the
+    /// expanded composer cap; compact inputs (e.g. the git commit description
+    /// box) lower it so long text scrolls inside their fixed-height box
+    /// instead of painting past its border.
+    pub(crate) max_content_height: f32,
     // -- measured state (written during layout/paint) --
     pub(crate) last_lines: Vec<WrappedLine>,
     pub(crate) line_starts: Vec<usize>,

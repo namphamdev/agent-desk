@@ -10,7 +10,7 @@ use crate::popover;
 use crate::theme::Theme;
 
 use super::resolve::GitGenerationPicker;
-use super::Changes;
+use super::{Changes, COMMIT_DESC_MAX_H};
 
 impl Changes {
     pub(super) fn render_generation_controls(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
@@ -358,7 +358,8 @@ impl Changes {
             .child(
                 div()
                     .min_h(px(48.0))
-                    .max_h(px(82.0))
+                    .max_h(px(COMMIT_DESC_MAX_H))
+                    .overflow_hidden()
                     .px(px(8.0))
                     .py(px(4.0))
                     .rounded(px(6.0))

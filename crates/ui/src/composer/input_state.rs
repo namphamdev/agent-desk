@@ -54,6 +54,7 @@ impl ComposerInput {
             drag_autoscroll_active: false,
             scroll_top: 0.0,
             follow_cursor: true,
+            max_content_height: TEXTAREA_MAX - TEXTAREA_PAD_V,
             last_lines: Vec::new(),
             line_starts: vec![0],
             last_bounds: None,
@@ -85,6 +86,14 @@ impl ComposerInput {
             mention_tooltip_task: None,
             mention_tooltip_view: None,
         }
+    }
+
+    /// Cap the content height before the input scrolls internally (defaults
+    /// to the expanded composer cap). Used by fixed-height boxes such as the
+    /// git commit description field so long messages stay inside them.
+    pub fn with_max_content_height(mut self, height: f32) -> Self {
+        self.max_content_height = height;
+        self
     }
 
     /// Reset the caret blink phase (solid again) — called on every edit and

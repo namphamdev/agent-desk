@@ -539,9 +539,10 @@ impl Render for ComposerInput {
             .font_family(theme.font_sans.clone())
             .child(ComposerTextElement {
                 input: cx.entity(),
-                // Internal scrolling once content exceeds the 260px textarea
-                // box minus its `pt-4 pb-1` padding.
-                max_content_height: TEXTAREA_MAX - TEXTAREA_PAD_V,
+                // Internal scrolling once content exceeds the input's cap
+                // (the expanded composer's 260px textarea box minus its
+                // `pt-4 pb-1` padding, or a tighter per-input cap).
+                max_content_height: self.max_content_height,
             })
     }
 }

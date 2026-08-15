@@ -64,6 +64,13 @@ pub const HUNK_HEADER_HEIGHT: f32 = 28.0;
 pub const DIFF_LINE_HEIGHT: f32 = 21.0;
 pub const NOTICE_HEIGHT: f32 = 24.0;
 pub const BODY_BOTTOM_PAD: f32 = 8.0;
+/// Commit form: description box max height (px). The body input's internal
+/// scroll cap is derived from this so long messages stay inside the box.
+pub const COMMIT_DESC_MAX_H: f32 = 82.0;
+/// Commit form: body input's internal-scroll cap — the 82px box minus its
+/// `py-4×2` padding and the two 1px borders. Past this the input scrolls
+/// internally instead of painting text past the box's border.
+pub const COMMIT_DESC_INPUT_MAX_H: f32 = COMMIT_DESC_MAX_H - 8.0 - 2.0;
 /// Gutter width per line-number column.
 pub const GUTTER_WIDTH: f32 = 36.0;
 /// The +/−/· marker column between the gutters and the code.
