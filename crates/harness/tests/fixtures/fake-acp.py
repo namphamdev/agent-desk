@@ -329,7 +329,21 @@ while True:
         if no_prompt_response:
             # Stream text but never send the prompt response — the harness
             # idle watchdog must synthesize Done(Completed) instead of
-            # hanging forever.
+            # hanging forever. When FAKE_ACP_STDERR_DONE is set, also log
+            # the turn-completion markers codex-acp writes to its stderr
+            # (terminal sse_chunk + turn summary), which the harness uses as
+            # an early completion signal.
+            if os.environ.get("FAKE_ACP_STDERR_DONE"):
+                print(
+                    'INFO event="sse_chunk" backend="chat_completions" data='
+                    '{"id":"x","object":"chat.completion.chunk","created":0,'
+                    '"model":"fake","choices":[{"index":0,"finish_reason":"stop",'
+                    '"logprobs":null,"delta":{"content":"","reasoning_content":null}}],'
+                    '"usage":{"prompt_tokens":10,"completion_tokens":5}}',
+                    file=sys.stderr,
+                    flush=True,
+                )
+                print("INFO turn summary generated chars=1", file=sys.stderr, flush=True)
             continue
         send({
             "jsonrpc": "2.0",

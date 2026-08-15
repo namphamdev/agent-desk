@@ -1029,3 +1029,74 @@ async fn completes_when_agent_goes_silent_without_prompt_response() {
         std::env::remove_var("COMET_ACP_IDLE_TIMEOUT_SECS");
     }
 }
+
+/// When the agent logs its own turn-completion marker on stderr (the
+/// terminal `sse_chunk` with `finish_reason:"stop"` and a `turn summary
+/// generated` line, as codex-acp / grok-build-acp write to their stderr)
+/// but never sends the `session/prompt` response, the harness must
+/// synthesize `Done(Completed)` immediately — without waiting out the idle
+/// watchdog (default 60s).
+#[tokio::test]
+async fn completes_immediately_on_agent_stderr_turn_summary() {
+    let command = serde_json::json!({
+        "command": fixture_path(),
+        "env": {
+            "FAKE_ACP_NO_PROMPT_RESPONSE": "1",
+            "FAKE_ACP_STDERR_DONE": "1",
+        },
+    })
+    .to_string();
+    let harness = AcpHarness::new().with_command(command);
+    let (steer_tx, steer_rx) = mpsc::channel(1);
+    let controls = RunControls {
+        request_input: Box::new(|_| {
+            let (_tx, rx) = oneshot::channel();
+            rx
+        }),
+        steering: steer_rx,
+        interrupt: CancellationToken::new(),
+        report_memory: Box::new(|_| {}),
+    };
+    let request = RunRequest {
+        prompt: "Say hello".into(),
+        model: None,
+        reasoning: None,
+        model_options: serde_json::Map::new(),
+        cwd: "/tmp".into(),
+        sandbox: SandboxLevel::WorkspaceWrite,
+        auto_approve: true,
+        resume: None,
+        attachments: vec![],
+        seed: None,
+        seed_role: None,
+        seed_purpose: None,
+        harness: None,
+        acp_agent_id: None,
+        custom_provider: None,
+    };
+
+    let stream = harness.run(request, controls).await.unwrap();
+    drop(steer_tx);
+
+    // The default idle timeout is 60s; the stderr marker must end the turn
+    // well before that, so a 10s cap proves the stderr signal (not the
+    // watchdog) produced the Done.
+    let events = tokio::time::timeout(
+        Duration::from_secs(10),
+        stream.map(Result::unwrap).collect::<Vec<_>>(),
+    )
+    .await
+    .expect("stderr turn-completion marker should end the turn without the idle watchdog");
+
+    // Text was streamed before the agent announced completion on stderr.
+    assert!(events.contains(&AgentEvent::TextDelta {
+        text: "Hello from ACP (medium)".into(),
+    }));
+    // Done(Completed) was synthesized from the stderr marker.
+    assert!(events.contains(&AgentEvent::Done {
+        status: DoneStatus::Completed,
+        result: None,
+        error: None,
+        session_id: Some("acp-session-1".into()),
+    }));
+}

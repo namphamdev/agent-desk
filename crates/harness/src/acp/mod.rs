@@ -46,7 +46,7 @@ use crate::{Harness, HarnessError, RunControls};
 
 use agent::{
     codex_custom_provider_env, inject_grok_model_args, instrument_agent_for_memory,
-    poll_process_memory, TokioAcpAgent,
+    is_turn_completion_line, poll_process_memory, TokioAcpAgent,
 };
 use ask_user_question::AskUserQuestionHandler;
 use exit_plan_mode::ExitPlanModeHandler;
@@ -630,9 +630,31 @@ impl Harness for AcpHarness {
                 agent
             };
             let (agent, pid_file) = instrument_agent_for_memory(agent);
+            // Early turn-completion signal: codex-acp / grok-build-acp log
+            // the final `sse_chunk` (`finish_reason:"stop"`) and a `turn
+            // summary generated` line to their own stderr when the model
+            // finishes the turn, but may never answer `session/prompt` (the
+            // grok-build-acp bug). Forward those markers into the prompt-wait
+            // loop so it synthesizes `Done(Completed)` immediately instead of
+            // waiting out the idle watchdog. The channel holds at most one
+            // signal; `try_send` dedups bursts of trailing log lines.
+            let (completion_tx, completion_rx) = mpsc::channel::<()>(1);
+            let stderr_observer: Arc<dyn Fn(&str) + Send + Sync + 'static> = {
+                let completion_tx = completion_tx.clone();
+                Arc::new(move |line: &str| {
+                    if is_turn_completion_line(line) {
+                        tracing::info!(
+                            target: "comet_harness::acp",
+                            "ACP agent logged its own turn-completion marker on stderr"
+                        );
+                        let _ = completion_tx.try_send(());
+                    }
+                })
+            };
             let agent = TokioAcpAgent::new(agent)
                 .with_pid_file(pid_file.clone())
-                .with_extra_env(extra_env.unwrap_or_default());
+                .with_extra_env(extra_env.unwrap_or_default())
+                .with_stderr_observer(Some(stderr_observer));
             let memory_stop = crate::CancellationToken::new();
             let memory_reporter: Arc<dyn Fn(Option<u64>) + Send + Sync> = report_memory.into();
             let memory_task = pid_file.clone().map(|path| {
@@ -731,6 +753,7 @@ impl Harness for AcpHarness {
                         live_updates.clone(),
                         last_activity.clone(),
                         pending_request.clone(),
+                        completion_rx,
                     )
                     .await
                 })

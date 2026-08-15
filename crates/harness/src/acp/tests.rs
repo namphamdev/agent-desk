@@ -12,6 +12,7 @@ use std::path::Path;
 use super::command::resolve_windows_executable;
 use super::agent::instrument_agent_for_memory;
 use super::agent::inject_grok_model_args;
+use super::agent::is_turn_completion_line;
 use super::command::{normalize_acp_command, resolve_agent_command_string};
 use super::events::{normalize_tool_call, normalize_update};
 use super::models::{grok_cached_models, grok_cli_models, parse_grok_models_output};
@@ -656,4 +657,26 @@ Available models:
             config.arguments().to_vec(),
             vec!["agent", "-m", "Deepseek:deepseek-v4-pro", "stdio"]
         );
+    }
+
+    #[test]
+    fn stderr_turn_completion_markers_are_detected() {
+        // Terminal sse_chunk with finish_reason "stop" (codex-acp format).
+        assert!(is_turn_completion_line(
+            r#"INFO event="sse_chunk" backend="chat_completions" data={"id":"x","choices":[{"index":0,"finish_reason":"stop","delta":{"content":""}}]}"#
+        ));
+        // Spaced JSON variant.
+        assert!(is_turn_completion_line(
+            r#"INFO event="sse_chunk" data={"choices":[{"index":0,"finish_reason": "stop"}]}"#
+        ));
+        // Turn summary line.
+        assert!(is_turn_completion_line(
+            "2026-08-15T05:05:38.412722Z  INFO turn summary generated chars=66"
+        ));
+        // Non-terminal chunks and unrelated stderr lines are ignored.
+        assert!(!is_turn_completion_line(
+            r#"INFO event="sse_chunk" data={"choices":[{"index":0,"finish_reason":null,"delta":{"content":"hi"}}]}"#
+        ));
+        assert!(!is_turn_completion_line("INFO event=\"sse_chunk\" data={}"));
+        assert!(!is_turn_completion_line("warning: unused variable"));
     }

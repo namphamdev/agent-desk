@@ -18,6 +18,12 @@ use futures::{AsyncBufReadExt, StreamExt};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 type DebugCallback = Arc<dyn Fn(&str, LineDirection) + Send + Sync + 'static>;
+/// Optional observer invoked for each line the agent writes to its own
+/// stderr (in addition to the debug logger). The harness uses this to
+/// detect the agent's internal turn-completion markers (see
+/// [`is_turn_completion_line`]) as an early `Done` signal for agents that
+/// stream everything via notifications but never answer `session/prompt`.
+type StderrObserver = Arc<dyn Fn(&str) + Send + Sync + 'static>;
 
 /// Tokio-native replacement for the SDK's `AcpAgent` subprocess transport.
 ///
@@ -28,6 +34,7 @@ type DebugCallback = Arc<dyn Fn(&str, LineDirection) + Send + Sync + 'static>;
 pub(super) struct TokioAcpAgent {
     config: AcpAgentConfig,
     debug: DebugCallback,
+    stderr_observer: Option<StderrObserver>,
     /// Where to record the spawned agent's PID so the memory-poll task can find
     /// it. On Unix the `/bin/sh` shim writes its own (pre-`exec`) PID, so this
     /// stays `None`. On Windows there is no exec-replace shim: the child PID is
@@ -40,8 +47,17 @@ impl TokioAcpAgent {
         Self {
             config: agent.into_config(),
             debug: Arc::new(log_acp_line),
+            stderr_observer: None,
             pid_file: None,
         }
+    }
+
+    /// Watch the agent's own stderr for turn-completion markers. The
+    /// observer runs for every line the agent writes to stderr, after the
+    /// debug logger.
+    pub(super) fn with_stderr_observer(mut self, observer: Option<StderrObserver>) -> Self {
+        self.stderr_observer = observer;
+        self
     }
 
     pub(super) fn with_pid_file(mut self, pid_file: Option<PathBuf>) -> Self {
@@ -130,12 +146,16 @@ impl ConnectTo<agent_client_protocol::Client> for TokioAcpAgent {
         })?;
 
         let stderr_debug = self.debug.clone();
+        let stderr_observer = self.stderr_observer.clone();
         let stderr_task = tokio::spawn(async move {
             use tokio::io::AsyncBufReadExt as _;
 
             let mut lines = tokio::io::BufReader::new(stderr).lines();
             while let Ok(Some(line)) = lines.next_line().await {
                 stderr_debug(&line, LineDirection::Stderr);
+                if let Some(observer) = &stderr_observer {
+                    observer(&line);
+                }
             }
         });
 
@@ -206,6 +226,22 @@ fn terminate_process_group(child: &mut tokio::process::Child) {
 #[cfg(not(unix))]
 fn terminate_process_group(child: &mut tokio::process::Child) {
     let _ = child.start_kill();
+}
+
+/// Detect an ACP agent's own stderr log line announcing that its current
+/// turn finished.
+///
+/// Agents like codex-acp and grok-build-acp write their internal LLM-stream
+/// logs to stderr: the terminal `sse_chunk` carries `finish_reason:"stop"`
+/// and is followed by a `turn summary generated` line. Both mean the model
+/// completed the turn — even though the agent may never send the JSON-RPC
+/// `session/prompt` response (the grok-build-acp bug). The harness treats
+/// either marker as an early completion signal so `Done(Completed)` is
+/// synthesized immediately instead of waiting out the idle watchdog.
+pub(super) fn is_turn_completion_line(line: &str) -> bool {
+    line.contains("turn summary generated")
+        || line.contains("\"finish_reason\":\"stop\"")
+        || line.contains("\"finish_reason\": \"stop\"")
 }
 
 fn log_acp_line(line: &str, direction: LineDirection) {

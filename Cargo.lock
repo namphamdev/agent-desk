@@ -5290,30 +5290,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "np-shortcuts"
-version = "0.0.5"
-dependencies = [
- "anyhow",
- "arboard",
- "comet-engine",
- "comet-proto",
- "global-hotkey",
- "gpui",
- "gpui_platform",
- "gpui_tokio",
- "mimalloc",
- "objc",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "unicode-segmentation",
- "uuid",
- "windows 0.61.3",
-]
-
-[[package]]
 name = "ntapi"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"

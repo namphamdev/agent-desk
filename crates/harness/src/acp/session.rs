@@ -48,6 +48,7 @@ pub(super) async fn run_connection(
     live_updates: Arc<AtomicBool>,
     last_activity: Arc<Mutex<std::time::Instant>>,
     pending_request: Arc<AtomicBool>,
+    mut completion_rx: mpsc::Receiver<()>,
 ) -> agent_client_protocol::Result<()> {
     initialize_and_authenticate(&connection).await?;
     let cwd = absolute_cwd(&request.cwd);
@@ -174,6 +175,9 @@ pub(super) async fn run_connection(
         // Reset the idle timer when sending a new prompt so that time spent
         // in session setup or prior turns doesn't count against the watchdog.
         touch(last_activity.clone());
+        // Drain any stale stderr turn-completion signal left over from a
+        // previous turn before arming the early-completion wait.
+        while completion_rx.try_recv().is_ok() {}
         let prompt = connection
             .send_request(PromptRequest::new(session_id.clone(), content))
             .block_task();
@@ -226,6 +230,20 @@ pub(super) async fn run_connection(
                         break Ok(None);
                     }
                     // A notification arrived during the wait; loop to recompute.
+                }
+                _ = completion_rx.recv() => {
+                    // The agent logged its own turn-completion marker on
+                    // stderr (`sse_chunk` with `finish_reason:"stop"`, or a
+                    // `turn summary generated` line). Some agents stream
+                    // everything via notifications and never answer
+                    // `session/prompt`; synthesize the end of turn now
+                    // instead of waiting out the idle watchdog.
+                    tracing::info!(
+                        target: "comet_harness::acp",
+                        "ACP agent stderr announced turn completion; \
+                         synthesizing EndTurn"
+                    );
+                    break Ok(None);
                 }
             }
         }?;
@@ -633,7 +651,10 @@ fn touch(last_activity: Arc<Mutex<std::time::Instant>>) {
 /// response within this duration, the harness synthesizes `Done(Completed)`
 /// instead of hanging forever. Some ACP agents (notably grok-build-acp)
 /// finish streaming text via notifications but never send the JSON-RPC
-/// `session/prompt` response, leaving the request perpetually pending.
+/// `session/prompt` response, leaving the request perpetually pending —
+/// those same agents log their turn completion on stderr (`turn summary
+/// generated` / terminal `sse_chunk`), which the harness consumes as an
+/// early completion signal so the watchdog usually never has to fire.
 ///
 /// Configurable via `COMET_ACP_IDLE_TIMEOUT_SECS` (primarily for testing).
 fn idle_timeout() -> std::time::Duration {
