@@ -18,6 +18,7 @@ mod patch;
 mod render;
 mod render_file;
 mod render_form;
+mod render_log;
 mod render_modal;
 mod render_status;
 mod resolve;
@@ -53,7 +54,7 @@ pub use patch::{
 pub use resolve::{
     DiffPhase, apply_diff_frame, diff_phase, lang_for_path, resolve_diff, uncommitted_label,
 };
-pub(crate) use resolve::{ConflictModal, GitFileChange, GitGenerationPicker, GitStatus};
+pub(crate) use resolve::{ConflictModal, GitCommitInfo, GitFileChange, GitGenerationPicker, GitStatus};
 
 // ---------------------------------------------------------------------------
 // Layout numbers (analytic — they drive the fold tween)
@@ -102,6 +103,15 @@ pub struct Changes {
     pub(super) highlights: HashMap<String, HighlightSlot>,
     pub(super) list: ListState,
     pub(super) git_status: Option<GitStatus>,
+    /// Commit-history view: entries from `GitLog` while `git_log_open` is
+    /// true. Cleared when the panel's git context (cwd/device) changes.
+    pub(super) git_log: Option<Vec<GitCommitInfo>>,
+    pub(super) git_log_open: bool,
+    pub(super) git_log_loading: bool,
+    /// Hash of the commit whose details (body + touched files) are expanded.
+    pub(super) git_log_expanded: Option<String>,
+    pub(super) git_log_scroll: gpui::ScrollHandle,
+    pub(super) git_log_task: Option<Task<()>>,
     pub(super) git_context_key: Option<String>,
     pub(super) git_loading: bool,
     pub(super) git_busy: Option<&'static str>,

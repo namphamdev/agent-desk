@@ -49,6 +49,11 @@ impl Changes {
             self.selected_harness = None;
             self.selected_model = None;
             self.generation_picker = None;
+            // History entries are tied to the previous cwd/device — drop them
+            // so a stale repo's commits never render against a new context.
+            self.git_log = None;
+            self.git_log_open = false;
+            self.git_log_expanded = None;
             self.refresh_git(cx);
             self.load_generation_options(cx);
         }

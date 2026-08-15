@@ -82,6 +82,7 @@ pub mod methods {
     pub const CREATE_WORKTREE: &str = "CreateWorktree";
     pub const DELETE_WORKTREE: &str = "DeleteWorktree";
     pub const GIT_STATUS: &str = "GitStatus";
+    pub const GIT_LOG: &str = "GitLog";
     pub const GIT_STAGE: &str = "GitStage";
     pub const GIT_UNSTAGE: &str = "GitUnstage";
     pub const GIT_DISCARD: &str = "GitDiscard";

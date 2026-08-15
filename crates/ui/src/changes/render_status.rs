@@ -351,8 +351,14 @@ impl Changes {
                     }))
                     .child(button("git-push", "Push".into()).when(!busy, |el| {
                         el.on_click(cx.listener(|this, _, _, cx| this.run_remote(true, cx)))
-                    })),
+                    }))
+                    .child(
+                        button("git-history", "History".into()).when(!busy, |el| {
+                            el.on_click(cx.listener(|this, _, _, cx| this.toggle_log(cx)))
+                        }),
+                    ),
             )
+            .when_some(self.render_log(theme, cx), |el, log| el.child(log))
             .child(generation_controls)
             .when_some(self.git_info.clone(), |el, info| {
                 el.child(

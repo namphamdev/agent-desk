@@ -45,6 +45,24 @@ impl Render for Composer {
         // Capture the focus-gain edge BEFORE mirroring it below: the flip gate
         // uses it to commit measurement-independent focus expands immediately.
         let focus_gained = input_focused && !self.input_focused;
+        // TEMP DEBUG: COMET_FLIP_DEBUG=1 logs the flip state each render.
+        if std::env::var("COMET_FLIP_DEBUG").as_deref() == Ok("1") {
+            let s = self.state.read(cx);
+            let input = self.input.read(cx);
+            eprintln!(
+                "[flip] new_chat={} selected={:?} expanded_mode={} input_focused={} focus_gained={} epoch={} flip_epoch={} measured={} last_w={} text_w={:.1}",
+                s.selected_chat.is_none(),
+                s.selected_chat,
+                self.expanded_mode,
+                input_focused,
+                focus_gained,
+                input.layout_epoch,
+                self.flip_epoch,
+                input.layout_epoch > self.flip_epoch && input.last_width > 0.0,
+                input.last_width,
+                input.measured_text_width(),
+            );
+        }
         if input_focused != self.input_focused {
             self.input_focused = input_focused;
             cx.notify();

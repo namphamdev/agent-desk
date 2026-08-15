@@ -3,7 +3,8 @@ use super::patch::{
     FileStatus, LineKind, body_height, file_notices, parse_git_paths, parse_hunk_header, parse_patch,
 };
 use super::resolve::{
-    DiffPhase, apply_diff_frame, diff_phase, lang_for_path, resolve_diff, uncommitted_label,
+    DiffPhase, apply_diff_frame, diff_phase, lang_for_path, relative_time, resolve_diff,
+    uncommitted_label,
 };
 use super::{BODY_BOTTOM_PAD, DIFF_LINE_HEIGHT, HUNK_HEADER_HEIGHT, NOTICE_HEIGHT};
 use chrono::Utc;
@@ -49,6 +50,21 @@ rename to new_name.rs
 ";
 
 #[test]
+    fn relative_time_buckets() {
+        let now = Utc::now();
+        let iso = |seconds_ago: i64| (now - chrono::Duration::seconds(seconds_ago)).to_rfc3339();
+        assert_eq!(relative_time(&iso(10), now), "just now");
+        assert_eq!(relative_time(&iso(120), now), "2m ago");
+        assert_eq!(relative_time(&iso(2 * 3600), now), "2h ago");
+        assert_eq!(relative_time(&iso(3 * 86_400), now), "3d ago");
+        // Older than a month falls back to the date only.
+        let old = relative_time(&iso(40 * 86_400), now);
+        assert!(old.len() == 10 && old.contains('-'));
+        // Unparseable input is echoed back untouched.
+        assert_eq!(relative_time("not-a-date", now), "not-a-date");
+    }
+
+    #[test]
     fn parses_files_hunks_and_lines() {
         let files = parse_patch(PATCH);
         assert_eq!(files.len(), 5);

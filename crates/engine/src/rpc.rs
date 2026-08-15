@@ -899,6 +899,7 @@ fn forwardable(method: &str) -> bool {
             | methods::CREATE_WORKTREE
             | methods::DELETE_WORKTREE
             | methods::GIT_STATUS
+            | methods::GIT_LOG
             | methods::GIT_STAGE
             | methods::GIT_UNSTAGE
             | methods::GIT_DISCARD
@@ -1516,6 +1517,19 @@ impl RpcService for EngineRpc {
                     .await
                     .map_err(|error| RpcError::Failed(error.to_string()))?;
                 RpcReply::value(&status)
+            }
+            methods::GIT_LOG => {
+                #[derive(Deserialize)]
+                struct P {
+                    cwd: String,
+                    #[serde(default)]
+                    count: Option<usize>,
+                }
+                let p: P = parse_params(params)?;
+                let commits = crate::git::log(std::path::Path::new(&p.cwd), p.count)
+                    .await
+                    .map_err(|error| RpcError::Failed(error.to_string()))?;
+                RpcReply::value(&commits)
             }
             methods::GIT_STAGE | methods::GIT_UNSTAGE => {
                 #[derive(Deserialize)]

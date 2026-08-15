@@ -14,8 +14,8 @@ use crate::settings::composer::ComposerDefaults;
 use crate::state::AppState;
 
 use super::resolve::{
-    ConflictFileState, ConflictModal, GeneratedCommitMessage, GitStatus, PullResult,
-    ResolveConflictResult,
+    ConflictFileState, ConflictModal, GeneratedCommitMessage, GitCommitInfo, GitStatus,
+    PullResult, ResolveConflictResult,
 };
 use super::Changes;
 
@@ -94,6 +94,12 @@ impl Changes {
             highlights: HashMap::new(),
             list: ListState::new(0, ListAlignment::Top, px(320.0)),
             git_status: None,
+            git_log: None,
+            git_log_open: false,
+            git_log_loading: false,
+            git_log_expanded: None,
+            git_log_scroll: gpui::ScrollHandle::new(),
+            git_log_task: None,
             git_context_key: None,
             git_loading: false,
             git_busy: None,
@@ -157,6 +163,65 @@ impl Changes {
             );
         }
         serde_json::Value::Object(params)
+    }
+
+    /// Toggle the commit-history section. Opening it fetches `GitLog`; closing
+    /// drops the cached entries (they're only valid for the current context).
+    pub(super) fn toggle_log(&mut self, cx: &mut Context<Self>) {
+        if self.git_log_open {
+            self.git_log_open = false;
+            self.git_log = None;
+            self.git_log_expanded = None;
+            cx.notify();
+            return;
+        }
+        self.git_log_open = true;
+        self.load_log(cx);
+    }
+
+    /// Fetch the recent commit history for the current git context (cwd +
+    /// optional remote device, matching every other git call in the pane).
+    pub(super) fn load_log(&mut self, cx: &mut Context<Self>) {
+        if self.git_log_loading {
+            return;
+        }
+        let Some((cwd, target)) = self.git_context(cx) else {
+            return;
+        };
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            return;
+        };
+        self.git_log_loading = true;
+        self.git_log = None;
+        self.git_log_expanded = None;
+        let params = Self::with_git_target(&cwd, &target, serde_json::json!({ "count": 50 }));
+        self.git_log_task = Some(cx.spawn(async move |this, cx| {
+            let result = engine
+                .client()
+                .call_as::<Vec<GitCommitInfo>>(methods::GIT_LOG, params)
+                .await;
+            this.update(cx, |changes, cx| {
+                changes.git_log_loading = false;
+                match result {
+                    Ok(commits) => changes.git_log = Some(commits),
+                    Err(error) => changes.error =
+                        Some(format!("Git history unavailable: {error}").into()),
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+        cx.notify();
+    }
+
+    /// Expand/collapse one commit's details in the history view.
+    pub(super) fn toggle_log_commit(&mut self, hash: String, cx: &mut Context<Self>) {
+        self.git_log_expanded = if self.git_log_expanded.as_deref() == Some(hash.as_str()) {
+            None
+        } else {
+            Some(hash)
+        };
+        cx.notify();
     }
 
     pub(super) fn refresh_git(&mut self, cx: &mut Context<Self>) {

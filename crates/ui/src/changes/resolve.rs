@@ -98,6 +98,30 @@ pub fn hash64(parts: &[&str]) -> u64 {
     hasher.finish()
 }
 
+/// Human-friendly age for an ISO-8601 commit date (`just now`, `3m`, `2h`,
+/// `5d`, then the date) — keeps the history list scannable. Falls back to the
+/// raw string when the date doesn't parse.
+pub fn relative_time(iso: &str, now: chrono::DateTime<chrono::Utc>) -> String {
+    let Ok(parsed) = chrono::DateTime::parse_from_rfc3339(iso) else {
+        return iso.to_string();
+    };
+    let seconds = now
+        .signed_duration_since(parsed.with_timezone(&chrono::Utc))
+        .num_seconds()
+        .max(0);
+    if seconds < 60 {
+        "just now".to_string()
+    } else if seconds < 3600 {
+        format!("{}m ago", seconds / 60)
+    } else if seconds < 86_400 {
+        format!("{}h ago", seconds / 3600)
+    } else if seconds < 86_400 * 30 {
+        format!("{}d ago", seconds / 86_400)
+    } else {
+        parsed.format("%Y-%m-%d").to_string()
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Wire types (engine → pane)
 // ---------------------------------------------------------------------------
@@ -125,13 +149,27 @@ pub(crate) struct GitFileChange {
     pub xy: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct GeneratedCommitMessage {
     pub subject: String,
     pub body: String,
     #[allow(dead_code)]
     pub raw: String,
+}
+
+/// Engine reply to `GitLog`: one commit per row of the history view.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct GitCommitInfo {
+    pub hash: String,
+    pub short_hash: String,
+    pub author: String,
+    pub date: String,
+    pub subject: String,
+    pub body: String,
+    #[serde(default)]
+    pub files: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

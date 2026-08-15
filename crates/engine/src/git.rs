@@ -39,6 +39,25 @@ pub struct GitCommitMessage {
     pub raw: String,
 }
 
+/// One `git log` entry — the wire shape for the commit-history view.
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GitCommitInfo {
+    /// Full 40-char object id.
+    pub hash: String,
+    /// Abbreviated id shown in the list.
+    pub short_hash: String,
+    pub author: String,
+    /// ISO-8601 commit date (`--date=iso-strict`).
+    pub date: String,
+    /// First line of the commit message.
+    pub subject: String,
+    /// The commit message body (paragraphs, may be empty).
+    pub body: String,
+    /// Repository-relative paths the commit touched (`--name-only`).
+    pub files: Vec<String>,
+}
+
 fn validate_cwd(cwd: &Path) -> Result<(), EngineError> {
     if !cwd.is_absolute() {
         return Err(EngineError::Other("cwd must be absolute".to_string()));
@@ -53,6 +72,103 @@ fn validate_paths(paths: &[String]) -> Result<(), EngineError> {
         }
     }
     Ok(())
+}
+
+/// Default number of commits `log` returns when the caller doesn't ask.
+pub const GIT_LOG_DEFAULT_COUNT: usize = 50;
+
+/// Fetch recent commit history for the repository rooted at `cwd`.
+///
+/// Runs `git log -z --name-only` with a `\x1f`-separated pretty format and a
+/// `%x00` marker after `%b`: each commit header is NUL-terminated and the
+/// `--name-only` paths ride along in their own NUL chunk (`\n`-separated), so
+/// every field — including multi-line bodies — survives intact. See
+/// [`parse_log_output`].
+pub async fn log(cwd: &Path, count: Option<usize>) -> Result<Vec<GitCommitInfo>, EngineError> {
+    validate_cwd(cwd)?;
+    let count = count.unwrap_or(GIT_LOG_DEFAULT_COUNT).clamp(1, 500);
+    let out = Command::new("git")
+        .current_dir(cwd)
+        .args([
+            "log",
+            "-z",
+            "--date=iso-strict",
+            &format!("-n{count}"),
+            "--pretty=format:%H%x1f%h%x1f%an%x1f%ad%x1f%s%x1f%b%x00",
+            "--name-only",
+        ])
+        .output()
+        .await
+        .map_err(|error| EngineError::Other(format!("git log failed to spawn: {error}")))?;
+
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let msg = if !stderr.trim().is_empty() {
+            stderr.trim()
+        } else {
+            stdout.trim()
+        };
+        if msg.to_lowercase().contains("not a git repository") {
+            return Ok(Vec::new());
+        }
+        return Err(EngineError::Other(format!("git log failed: {msg}")));
+    }
+
+    Ok(parse_log_output(&out.stdout))
+}
+
+/// Parse `git log -z --name-only` output produced by the format in [`log`].
+///
+/// Layout per commit: `<header>\0<paths>\0`, where `<header>` is the pretty
+/// line (`hash, short-hash, author, date, subject, body` joined by `\x1f`,
+/// body terminating in a `%x00` marker) and `<paths>` is the `\n`-separated
+/// `--name-only` list. Merge commits emit no `<paths>` chunk. Headers are
+/// detected by their 40-hex-char first field.
+pub fn parse_log_output(bytes: &[u8]) -> Vec<GitCommitInfo> {
+    let mut commits = Vec::new();
+    let mut pending: Option<GitCommitInfo> = None;
+    for chunk in bytes.split(|&b| b == 0) {
+        let text = String::from_utf8_lossy(chunk);
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let mut fields = trimmed.split('\x1f');
+        let first = fields.next().unwrap_or("");
+        let is_header = trimmed.contains('\x1f')
+            && first.len() == 40
+            && first.bytes().all(|b| b.is_ascii_hexdigit());
+        if is_header {
+            if let Some(commit) = pending.take() {
+                commits.push(commit);
+            }
+            let mut iter = trimmed.split('\x1f');
+            let _ = iter.next(); // full hash (already captured)
+            pending = Some(GitCommitInfo {
+                hash: first.to_string(),
+                short_hash: iter.next().unwrap_or("").to_string(),
+                author: iter.next().unwrap_or("").to_string(),
+                date: iter.next().unwrap_or("").to_string(),
+                subject: iter.next().unwrap_or("").to_string(),
+                body: iter.collect::<Vec<_>>().join("\n"),
+                files: Vec::new(),
+            });
+        } else if let Some(commit) = pending.as_mut() {
+            // `<paths>` chunk: git separates the message from `--name-only`
+            // paths with a blank line, so it starts with `\n` — strip and
+            // split the remaining newline-separated paths.
+            for line in trimmed.lines() {
+                if !line.is_empty() {
+                    commit.files.push(line.to_string());
+                }
+            }
+        }
+    }
+    if let Some(commit) = pending {
+        commits.push(commit);
+    }
+    commits
 }
 
 pub async fn status(cwd: &Path) -> Result<GitStatus, EngineError> {
@@ -1048,6 +1164,34 @@ mod tests {
         assert_eq!(f.xy, "R ");
     }
 
+    /// A real `git log -z --name-only` stream (see [`log`]'s format): each
+    /// commit header (fields joined by `\x1f`, body terminated by a `%x00`
+    /// marker) is NUL-delimited, then a `\n`-led chunk carries the touched
+    /// paths. A merge commit emits no path chunk — the next header follows
+    /// directly.
+    #[test]
+    fn parses_log_output() {
+        let full = "a".repeat(40);
+        let short = "aaaaaaa";
+        let bytes = format!(
+            "{full}\x1f{short}\x1fAlice\x1f2026-08-15T14:15:43+07:00\x1ffix(ui): keep commit description scrolling inside its box\x1f\
+             First paragraph.\nSecond line.\n\x00\nsrc/main.rs\nsrc/lib.rs\x00\x00\
+             {full}\x1f{short}\x1fBob\x1f2026-08-14T09:00:00+07:00\x1fmerge: feature branch\x1f\x00\x00"
+        );
+        let commits = parse_log_output(bytes.as_bytes());
+        assert_eq!(commits.len(), 2);
+        assert_eq!(commits[0].hash, full);
+        assert_eq!(commits[0].short_hash, short);
+        assert_eq!(commits[0].author, "Alice");
+        assert_eq!(commits[0].subject, "fix(ui): keep commit description scrolling inside its box");
+        assert_eq!(commits[0].body, "First paragraph.\nSecond line.");
+        assert_eq!(commits[0].files, vec!["src/main.rs", "src/lib.rs"]);
+        // Merge commit: no path chunk, next header directly after the NULs.
+        assert_eq!(commits[1].author, "Bob");
+        assert_eq!(commits[1].subject, "merge: feature branch");
+        assert!(commits[1].files.is_empty());
+    }
+
     #[test]
     fn parses_generated_commit_message() {
         let message = parse_commit_message(
@@ -1084,6 +1228,41 @@ mod tests {
             .output()
             .unwrap();
         assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "file.txt");
+    }
+
+    /// `log` against a real temp repository: two commits, one with a
+    /// multi-line body, must come back in newest-first order with their
+    /// touched paths attached.
+    #[tokio::test]
+    async fn log_lists_commits_in_order() {
+        let repo = tempfile::tempdir().unwrap();
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .current_dir(repo.path())
+                .args(args)
+                .output()
+                .unwrap()
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.email", "t@t"]);
+        git(&["config", "user.name", "t"]);
+
+        std::fs::write(repo.path().join("a.txt"), "one\n").unwrap();
+        git(&["add", "a.txt"]);
+        git(&["commit", "-q", "-m", "first commit"]);
+        std::fs::write(repo.path().join("b.txt"), "two\n").unwrap();
+        git(&["add", "b.txt"]);
+        git(&["commit", "-q", "-m", "second\n\nwith a body"]);
+
+        let commits = log(repo.path(), Some(10)).await.unwrap();
+        assert_eq!(commits.len(), 2);
+        assert_eq!(commits[0].subject, "second");
+        assert_eq!(commits[0].body, "with a body");
+        assert_eq!(commits[0].files, vec!["b.txt".to_string()]);
+        assert_eq!(commits[1].subject, "first commit");
+        assert_eq!(commits[1].files, vec!["a.txt".to_string()]);
+        assert_eq!(commits[0].hash.len(), 40);
+        assert!(!commits[0].date.is_empty());
     }
 
     /// A real two-branch merge that touches the same line produces a `UU`
