@@ -15,8 +15,10 @@
 //! - [`events`]: ACP update normalization and permission handling
 
 mod agent;
+mod ask_user_question;
 mod command;
 mod events;
+mod exit_plan_mode;
 mod models;
 mod session;
 #[cfg(test)]
@@ -29,8 +31,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use agent_client_protocol::schema::v1::{
-    NewSessionRequest, RequestPermissionRequest, RequestPermissionResponse, SessionConfigOption,
-    SessionNotification,
+    CreateElicitationRequest, NewSessionRequest, RequestPermissionRequest,
+    RequestPermissionResponse, SessionConfigOption, SessionNotification,
 };
 use agent_client_protocol::{AcpAgent, Agent, ConnectionTo};
 use async_trait::async_trait;
@@ -43,12 +45,15 @@ use comet_proto::{AgentEvent, DoneStatus, HarnessId, Model, ReasoningLevel, RunR
 use crate::{Harness, HarnessError, RunControls};
 
 use agent::{
-    codex_custom_provider_env, instrument_agent_for_memory, poll_process_memory, TokioAcpAgent,
+    codex_custom_provider_env, inject_grok_model_args, instrument_agent_for_memory,
+    poll_process_memory, TokioAcpAgent,
 };
+use ask_user_question::AskUserQuestionHandler;
+use exit_plan_mode::ExitPlanModeHandler;
 use command::{
     normalize_acp_command, resolve_agent_command_string, resolve_spec_command, AcpHarnessConfig,
 };
-use events::{normalize_update, permission_outcome};
+use events::{elicitation_response, normalize_update, permission_outcome};
 use models::{
     default_acp_model, grok_cached_models, grok_cli_models, is_codex_command_for, is_grok_command,
     models_from_config_options,
@@ -572,6 +577,11 @@ impl Harness for AcpHarness {
         // instead of hanging forever.
         let last_activity = Arc::new(Mutex::new(std::time::Instant::now()));
         let notification_activity = last_activity.clone();
+        // Shared flag set while an agent-initiated request (elicitation,
+        // permission) is pending. The idle watchdog checks this to avoid
+        // synthesising EndTurn while the agent is legitimately blocked
+        // waiting for user input.
+        let pending_request = Arc::new(AtomicBool::new(false));
         let RunControls {
             request_input,
             steering,
@@ -580,6 +590,13 @@ impl Harness for AcpHarness {
         } = controls;
         let request_input = Arc::new(request_input);
         let permission_input = request_input.clone();
+        let elicitation_input = request_input.clone();
+        let ask_user_input = request_input.clone();
+        let exit_plan_mode_input = request_input.clone();
+        let elicitation_pending = pending_request.clone();
+        let permission_pending = pending_request.clone();
+        let ask_user_pending = pending_request.clone();
+        let exit_plan_mode_pending = pending_request.clone();
         let permission_mode = request.effective_permission_mode();
         let mcp_server_url = self.mcp_server_url.clone();
         let prompt_transform = self
@@ -603,6 +620,15 @@ impl Harness for AcpHarness {
         };
 
         tokio::spawn(async move {
+            // Grok ignores `session/setConfigOption`, so the selected model is
+            // handed over on the command line (`grok agent -m <model> stdio`)
+            // rather than via the ACP session handshake. Non-Grok commands are
+            // passed through unchanged.
+            let agent = if is_grok_command(&command) {
+                inject_grok_model_args(agent, request.model.as_deref())
+            } else {
+                agent
+            };
             let (agent, pid_file) = instrument_agent_for_memory(agent);
             let agent = TokioAcpAgent::new(agent)
                 .with_pid_file(pid_file.clone())
@@ -649,16 +675,49 @@ impl Harness for AcpHarness {
                 )
                 .on_receive_request(
                     async move |permission: RequestPermissionRequest, responder, _cx| {
+                        tracing::info!(
+                            target: "comet_harness::acp",
+                            "Received session/request_permission from agent"
+                        );
+                        permission_pending.store(true, Ordering::Relaxed);
                         let outcome = permission_outcome(
                             &permission,
                             permission_mode,
                             permission_input.as_ref().as_ref(),
                         )
                         .await;
+                        permission_pending.store(false, Ordering::Relaxed);
                         responder.respond(RequestPermissionResponse::new(outcome))
                     },
                     agent_client_protocol::on_receive_request!(),
                 )
+                .on_receive_request(
+                    async move |elicitation: CreateElicitationRequest, responder, _cx| {
+                        tracing::info!(
+                            target: "comet_harness::acp",
+                            message = %elicitation.message,
+                            mode = ?elicitation.mode,
+                            "Received elicitation/create request from agent"
+                        );
+                        elicitation_pending.store(true, Ordering::Relaxed);
+                        let response = elicitation_response(
+                            &elicitation,
+                            elicitation_input.as_ref().as_ref(),
+                        )
+                        .await;
+                        elicitation_pending.store(false, Ordering::Relaxed);
+                        responder.respond(response)
+                    },
+                    agent_client_protocol::on_receive_request!(),
+                )
+                .with_handler(AskUserQuestionHandler::new(
+                    ask_user_input,
+                    ask_user_pending,
+                ))
+                .with_handler(ExitPlanModeHandler::new(
+                    exit_plan_mode_input,
+                    exit_plan_mode_pending,
+                ))
                 .connect_with(agent, |connection: ConnectionTo<Agent>| async move {
                     run_connection(
                         connection,
@@ -671,6 +730,7 @@ impl Harness for AcpHarness {
                         harness_id,
                         live_updates.clone(),
                         last_activity.clone(),
+                        pending_request.clone(),
                     )
                     .await
                 })

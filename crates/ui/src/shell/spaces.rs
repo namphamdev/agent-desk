@@ -918,7 +918,7 @@ impl Shell {
                 chat_id.clone(),
                 data.title.clone(),
                 data.time_ago.clone(),
-                SharedString::from(""),
+                None,
                 data.branch.clone(),
                 data.harness,
                 data.acp_agent_id.clone(),

@@ -3,6 +3,7 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use gpui::{
@@ -187,7 +188,31 @@ pub fn mermaid_wheel_zoom(delta: gpui::ScrollDelta) -> f32 {
     (-y).clamp(-0.25, 0.25)
 }
 
-/// Render Mermaid source with `mermaid-rs-renderer` to a native SVG image.
+/// Render Mermaid source with `merman` (headless, no browser) to resvg-safe
+/// SVG. Returns `None` when the source is not a renderable Mermaid diagram.
+fn render_mermaid_svg(source: &str) -> Option<String> {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let diagram_id = format!("merman-{id}");
+
+    // gpui rasterizes SVG through usvg/resvg, which can't render HTML
+    // `<foreignObject>` labels. Disable HTML labels so merman emits native
+    // `<text>`/`<tspan>` labels (and keeps soft wrapping) rather than the
+    // single-line resvg fallback.
+    let config = merman::MermaidConfig::from_value(serde_json::json!({
+        "htmlLabels": false,
+        "flowchart": { "htmlLabels": false },
+    }));
+    merman::render::HeadlessRenderer::new()
+        .with_vendored_text_measurer()
+        .with_diagram_id(&diagram_id)
+        .with_site_config(config)
+        .render_svg_resvg_safe_sync(source)
+        .ok()
+        .flatten()
+}
+
+/// Render Mermaid source to a native SVG image.
 /// The cache keeps streaming transcript frames from recomputing layout.
 pub fn render_mermaid(
     source: &str,
@@ -205,13 +230,8 @@ pub fn render_mermaid(
     {
         return mermaid_image_card(image, viewer_key, source, ix, opts.mermaid.clone(), false);
     }
-    let mut render_options = mermaid_rs_renderer::RenderOptions::default();
-    // The renderer's outer Y padding becomes a conspicuous empty band in a
-    // transcript. The card has no vertical inset either, so a diagram starts
-    // and ends at its actual SVG bounds.
-    render_options.layout.requirement.render_padding_y = 0.0;
-    let Ok(svg) = mermaid_rs_renderer::render_with_options(source, render_options) else {
-        return render_mermaid_fallback(source, theme);
+    let Some(svg) = render_mermaid_svg(source) else {
+        return render_mermaid_fallback(source, &viewer_key, ix, opts.mermaid.clone(), theme);
     };
     let image = Arc::new(Image::from_bytes(ImageFormat::Svg, svg.into_bytes()));
     mermaid_images()
@@ -221,24 +241,16 @@ pub fn render_mermaid(
     mermaid_image_card(image, viewer_key, source, ix, opts.mermaid.clone(), false)
 }
 
-/// The diagram card. `interactive` selects behavior:
-///
-/// - `false` (inline chat message): the diagram is auto-fit to the card with
-///   [`ObjectFit::Contain`] under a `max-height` cap — it never scrolls, never
-///   captures the wheel, and never pans on drag, so wheel/scroll inside the
-///   transcript scrolls the transcript itself. Copy and Open-full-screen
-///   affordances float as a top-right overlay chip on the diagram.
-/// - `true` (full-screen modal): the diagram keeps the persistent zoom/pan
-///   viewer (wheel zoom, pinch zoom, drag-pan) with zoom buttons, so the user
-///   can inspect details.
-pub fn mermaid_image_card(
-    image: Arc<Image>,
-    viewer_key: String,
+/// Build the Copy + Open-full-screen overlay chip for a mermaid card. Returns
+/// `None` when `ui` is `None` (previews outside the transcript). Shared by
+/// [`mermaid_image_card`] (rendered SVG) and [`render_mermaid_fallback`]
+/// (source/flowchart fallback) so both surfaces get the same affordances.
+fn mermaid_action_overlay(
+    viewer_key: &str,
     source: &str,
     ix: usize,
     ui: Option<MermaidUi>,
-    interactive: bool,
-) -> AnyElement {
+) -> Option<AnyElement> {
     // Copy + Open-full-screen affordances. `None` (previews outside the
     // transcript) renders neither.
     let copy_button = ui.clone().map(|ui| {
@@ -259,8 +271,8 @@ pub fn mermaid_image_card(
             .cursor_pointer()
             .bg(crate::motion::hover_blend(
                 &fade_key,
-                crate::theme::white_alpha(0.10),
-                crate::theme::white_alpha(0.18),
+                gpui::transparent_black(),
+                crate::theme::white_alpha(0.16),
             ))
             .on_hover(move |hovered: &bool, window: &mut gpui::Window, cx: &mut gpui::App| {
                 crate::motion::hover_listener(fade_key.clone())(&hovered, window, cx);
@@ -275,7 +287,8 @@ pub fn mermaid_image_card(
                 } else {
                     crate::icons::COPY
                 })
-                .size(px(13.0)),
+                .size(px(13.0))
+                .text_color(gpui::white()),
             )
     });
     let expand_button = ui.map(|ui| {
@@ -294,8 +307,8 @@ pub fn mermaid_image_card(
             .cursor_pointer()
             .bg(crate::motion::hover_blend(
                 &fade_key,
-                crate::theme::white_alpha(0.10),
-                crate::theme::white_alpha(0.18),
+                gpui::transparent_black(),
+                crate::theme::white_alpha(0.16),
             ))
             .on_hover(move |hovered: &bool, window: &mut gpui::Window, cx: &mut gpui::App| {
                 crate::motion::hover_listener(fade_key.clone())(&hovered, window, cx);
@@ -304,16 +317,20 @@ pub fn mermaid_image_card(
             .inspect_click(expand_inspect)
             .text_color(gpui::white())
             .on_click(move |_, window, cx| handler(ix, window, cx))
-            .child(crate::icons::icon(crate::icons::EXPAND).size(px(13.0)))
+            .child(
+                crate::icons::icon(crate::icons::EXPAND)
+                    .size(px(13.0))
+                    .text_color(gpui::white()),
+            )
     });
 
     // Top-right overlay row: Copy + Open-full-screen float over the diagram's
     // top-right corner (matches the code-block affordance placement). When
-    // neither button is present (`None`) the overlay is dropped entirely and
-    // the card is just the diagram. A translucent chip groups the buttons so
-    // they read against any diagram background.
+    // neither button is present (`None`) the overlay is dropped entirely. A
+    // dark semi-opaque chip groups the buttons so they read against any
+    // diagram background (mermaid SVGs are often light/white).
     let has_buttons = copy_button.is_some() || expand_button.is_some();
-    let overlay = has_buttons.then(|| {
+    has_buttons.then(move || {
         div()
             .absolute()
             .top(px(8.0))
@@ -325,12 +342,35 @@ pub fn mermaid_image_card(
             .px(px(4.0))
             .py(px(4.0))
             .rounded(px(6.0))
-            .bg(crate::theme::white_alpha(0.08))
+            .bg(gpui::hsla(0.0, 0.0, 0.0, 0.50))
             .border_1()
-            .border_color(crate::theme::white_alpha(0.12))
+            .border_color(crate::theme::white_alpha(0.10))
             .children(copy_button)
             .children(expand_button)
-    });
+            .into_any_element()
+    })
+}
+
+/// The diagram card. `interactive` selects behavior:
+///
+/// - `false` (inline chat message): the diagram is auto-fit to the card with
+///   [`ObjectFit::Contain`] under a `max-height` cap — it never scrolls, never
+///   captures the wheel, and never pans on drag, so wheel/scroll inside the
+///   transcript scrolls the transcript itself. Copy and Open-full-screen
+///   affordances float as a top-right overlay chip on the diagram.
+/// - `true` (full-screen modal): the diagram keeps the persistent zoom/pan
+///   viewer (wheel zoom, pinch zoom, drag-pan) with zoom buttons, so the user
+///   can inspect details.
+pub fn mermaid_image_card(
+    image: Arc<Image>,
+    viewer_key: String,
+    source: &str,
+    ix: usize,
+    ui: Option<MermaidUi>,
+    interactive: bool,
+) -> AnyElement {
+    // Copy + Open-full-screen overlay (shared with `render_mermaid_fallback`).
+    let overlay = mermaid_action_overlay(&viewer_key, source, ix, ui);
 
     let body = if interactive {
         mermaid_interactive_body(image, &viewer_key)
@@ -483,8 +523,13 @@ pub fn mermaid_interactive_body(image: Arc<Image>, viewer_key: &str) -> AnyEleme
         .into_any_element()
 }
 
-#[allow(dead_code)]
-pub fn render_mermaid_fallback(source: &str, theme: &Theme) -> AnyElement {
+pub fn render_mermaid_fallback(
+    source: &str,
+    viewer_key: &str,
+    ix: usize,
+    ui: Option<MermaidUi>,
+    theme: &Theme,
+) -> AnyElement {
     let chart = parse_mermaid_flowchart(source);
     let title = chart
         .as_ref()
@@ -546,7 +591,9 @@ pub fn render_mermaid_fallback(source: &str, theme: &Theme) -> AnyElement {
                 .child(SharedString::from(source.to_string())),
         );
     }
+    let overlay = mermaid_action_overlay(viewer_key, source, ix, ui);
     div()
+        .relative()
         .rounded(px(10.0))
         .border_1()
         .border_color(theme.border)
@@ -563,6 +610,8 @@ pub fn render_mermaid_fallback(source: &str, theme: &Theme) -> AnyElement {
                 .child(title),
         )
         .child(body)
+        // Overlay LAST so it paints above the fallback body.
+        .children(overlay)
         .into_any_element()
 }
 
@@ -587,22 +636,18 @@ pub fn mermaid_fullscreen(
         .get(source)
         .cloned()
         .or_else(|| {
-            let mut render_options = mermaid_rs_renderer::RenderOptions::default();
-            render_options.layout.requirement.render_padding_y = 0.0;
-            mermaid_rs_renderer::render_with_options(source, render_options)
-                .ok()
-                .map(|svg| {
-                    let image = Arc::new(Image::from_bytes(ImageFormat::Svg, svg.into_bytes()));
-                    mermaid_images()
-                        .lock()
-                        .expect("Mermaid cache poisoned")
-                        .insert(source.to_string(), image.clone());
-                    image
-                })
+            render_mermaid_svg(source).map(|svg| {
+                let image = Arc::new(Image::from_bytes(ImageFormat::Svg, svg.into_bytes()));
+                mermaid_images()
+                    .lock()
+                    .expect("Mermaid cache poisoned")
+                    .insert(source.to_string(), image.clone());
+                image
+            })
         });
     let Some(image) = image else {
         // Renderer failed — show the source fallback card centered.
-        let card = render_mermaid_fallback(source, theme);
+        let card = render_mermaid_fallback(source, "mermaid-fullscreen", 0, None, theme);
         return crate::popover::modal("mermaid-fullscreen", viewport, card);
     };
     // Independent viewer key so the modal's zoom/pan doesn't bleed back into
@@ -611,10 +656,19 @@ pub fn mermaid_fullscreen(
     let viewer_key = "mermaid-fullscreen".to_string();
     let card = mermaid_image_card(image, viewer_key, source, 0, None, true);
     // Wrap in a sized container so the modal fills the viewport (the body's own
-    // max-height is a transcript-only cap).
+    // max-height is a transcript-only cap). The container has its own click
+    // handler that stops propagation — without it, clicks inside the card
+    // (zoom buttons, drag-pan, scroll) bubble to the scrim's `on_click` and
+    // dismiss the modal.
     let max_h = px(f32::from(viewport.height) * 0.86);
     let max_w = px(f32::from(viewport.width) * 0.92);
-    let container = div().max_w(max_w).max_h(max_h).child(card);
+    let container = div()
+        .id("mermaid-fullscreen-card")
+        .max_w(max_w)
+        .max_h(max_h)
+        .occlude()
+        .on_click(|_, _, cx| cx.stop_propagation())
+        .child(card);
     gpui::deferred(
         gpui::anchored()
             .position(gpui::point(px(0.0), px(0.0)))

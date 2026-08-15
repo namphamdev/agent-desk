@@ -46,6 +46,12 @@ import type { SessionStore } from '../sync/SessionStore';
 
 const STICK_THRESHOLD = 70;
 const JUMP_THRESHOLD = 320;
+const STICKY_USER_HEIGHT = 40;
+
+// Type guard for user rows that can be pinned at the top of the transcript.
+function isPinnableUserRow(row: TranscriptRow): row is TranscriptRow & { kind: { kind: 'user'; text: string } } {
+  return row.kind.kind === 'user';
+}
 
 interface TranscriptProps {
   store: SessionStore;
@@ -72,6 +78,14 @@ export function TranscriptView({ store, chatId }: TranscriptProps) {
   const [distanceFromBottom, setDistanceFromBottom] = useState(0);
   const [hydrated, setHydrated] = useState(store.hasRevealed);
   const [settled, setSettled] = useState(store.hasRevealed);
+  // The latest user message that has been scrolled past (sits above the
+  // viewport). Undefined while the topmost visible row is itself a user
+  // message or there is no earlier user turn.
+  const [stickyUserId, setStickyUserId] = useState<string | null>(null);
+
+  // Latest rows snapshot, kept in a ref so the stable viewability callback
+  // can read current data without re-subscribing the FlatList.
+  const rowsRef = useRef<TranscriptRow[]>([]);
 
   const listRef = useRef<FlatList<TranscriptRow>>(null);
   const contentHeightRef = useRef(0);
@@ -81,6 +95,27 @@ export function TranscriptView({ store, chatId }: TranscriptProps) {
   const rows = useMemo(() => {
     return buildRows(store.entries, store.pendingSends, builderRef.current);
   }, [store.entries, store.pendingSends, store.revision]);
+
+  rowsRef.current = rows;
+
+  // Stable viewability tracking so the FlatList doesn't re-subscribe on
+  // every render. The callback reads the latest rows from rowsRef.
+  const viewabilityConfigRef = useRef<{ viewAreaCoveragePercentThreshold: number }>({
+    viewAreaCoveragePercentThreshold: 0,
+  });
+  const onViewableItemsChangedRef = useRef(
+    (info: { viewableItems: Array<{ index: number | null }>; changed: unknown[] }) => {
+      const indices = info.viewableItems
+        .map((v) => v.index)
+        .filter((i): i is number => typeof i === 'number');
+      if (indices.length === 0) return;
+      const first = Math.min(...indices);
+      setStickyUserId((prev) => {
+        const next = computeStickyUserId(rowsRef.current, first);
+        return next === prev ? prev : next;
+      });
+    },
+  );
 
   // Streamed growth signature — drives the auto-scroll.
   const signature = useMemo(() => {
@@ -182,6 +217,8 @@ export function TranscriptView({ store, chatId }: TranscriptProps) {
         keyExtractor={(item) => item.id}
         renderItem={renderItem}
         contentContainerStyle={{ paddingBottom: 44, paddingTop: 4 }}
+        onViewableItemsChanged={onViewableItemsChangedRef.current}
+        viewabilityConfig={viewabilityConfigRef.current}
         onScroll={(e) => {
           const { layoutMeasurement, contentOffset, contentSize } = e.nativeEvent;
           const distance = Math.max(
@@ -207,6 +244,18 @@ export function TranscriptView({ store, chatId }: TranscriptProps) {
         maxToRenderPerBatch={10}
         windowSize={11}
         removeClippedSubviews={Platform.OS === 'android'}
+        onScrollToIndexFailed={(info) => {
+          // The target row is outside the rendered window. Wait a beat for
+          // more rows to render, then retry the scroll.
+          setTimeout(() => {
+            listRef.current?.scrollToIndex({
+              index: Math.min(info.index, rowsRef.current.length - 1),
+              animated: true,
+              viewOffset: STICKY_USER_HEIGHT,
+              viewPosition: 0,
+            });
+          }, 80);
+        }}
       />
       {distanceFromBottom > JUMP_THRESHOLD ? (
         <Pressable
@@ -229,7 +278,81 @@ export function TranscriptView({ store, chatId }: TranscriptProps) {
           <Text style={{ color: Theme.text, fontSize: fs(14) }}>↓</Text>
         </Pressable>
       ) : null}
+      <StickyUserBanner
+        rows={rows}
+        stickyUserId={stickyUserId}
+        onScrollTo={(index) => {
+          listRef.current?.scrollToIndex({
+            index,
+            animated: true,
+            // viewOffset nudges the target just below the banner so it
+            // isn't hidden underneath it after the scroll settles.
+            viewOffset: STICKY_USER_HEIGHT,
+            viewPosition: 0,
+          });
+        }}
+      />
     </View>
+  );
+}
+
+// Returns the id of the latest user row strictly before `firstVisibleIndex`,
+// or null if there isn't one. This is the "previous user message" that stays
+// pinned at the top while the conversation scrolls beneath it.
+function computeStickyUserId(rows: TranscriptRow[], firstVisibleIndex: number): string | null {
+  if (firstVisibleIndex <= 0) return null;
+  for (let i = firstVisibleIndex - 1; i >= 0; i--) {
+    const row = rows[i];
+    if (row && isPinnableUserRow(row)) return row.id;
+  }
+  return null;
+}
+
+function StickyUserBanner({
+  rows,
+  stickyUserId,
+  onScrollTo,
+}: {
+  rows: TranscriptRow[];
+  stickyUserId: string | null;
+  onScrollTo: (index: number) => void;
+}) {
+  const index = stickyUserId ? rows.findIndex((r) => r.id === stickyUserId) : -1;
+  const row = index >= 0 ? rows[index] : null;
+  if (!row || !isPinnableUserRow(row)) return null;
+  return (
+    <Pressable
+      onPress={() => onScrollTo(index)}
+      style={({ pressed }) => [
+        {
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          right: 0,
+          height: STICKY_USER_HEIGHT,
+          paddingHorizontal: 16,
+          paddingVertical: 6,
+          flexDirection: 'row',
+          alignItems: 'center',
+          backgroundColor: pressed ? Theme.elementHover : Theme.surface,
+          borderBottomWidth: 1,
+          borderBottomColor: Theme.border,
+        },
+      ]}
+    >
+      <Text
+        numberOfLines={1}
+        style={{
+          flex: 1,
+          fontFamily: Fonts.sans,
+          fontSize: MD.textSize,
+          color: Theme.textMuted,
+        }}
+      >
+        {row.kind.text}
+      </Text>
+      <Text style={{ color: Theme.textFaint, fontSize: fs(11), marginLeft: 8 }}>↑</Text>
+    </Pressable>
   );
 }
 

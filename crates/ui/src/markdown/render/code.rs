@@ -325,8 +325,10 @@ mod tests {
 
     #[test]
     fn mermaid_renderer_emits_svg_for_sequence_diagrams() {
-        let svg = mermaid_rs_renderer::render("sequenceDiagram\nAlice->>Bob: Hi")
-            .expect("sequence diagram SVG");
+        let svg = merman::render::HeadlessRenderer::new()
+            .render_svg_resvg_safe_sync("sequenceDiagram\nAlice->>Bob: Hi")
+            .expect("sequence diagram SVG")
+            .expect("sequence diagram is renderable");
         assert!(svg.contains("<svg"));
     }
 

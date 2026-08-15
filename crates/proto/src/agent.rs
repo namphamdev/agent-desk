@@ -11,6 +11,9 @@ pub enum HarnessId {
     /// Any Agent Client Protocol compatible CLI configured on this device.
     Acp,
     Cursor,
+    /// In-process mini-swe-agent port: a bash-only coding agent that talks to
+    /// an OpenAI-compatible Chat Completions endpoint. No child process.
+    Minswe,
     /// Test harness; never shown in production pickers.
     Mock,
 }
@@ -450,5 +453,9 @@ mod tests {
             "\"claude-code\""
         );
         assert_eq!(serde_json::to_string(&HarnessId::Acp).unwrap(), "\"acp\"");
+        assert_eq!(
+            serde_json::to_string(&HarnessId::Minswe).unwrap(),
+            "\"minswe\""
+        );
     }
 }

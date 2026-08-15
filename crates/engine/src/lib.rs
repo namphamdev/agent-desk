@@ -211,15 +211,29 @@ impl EngineCore {
         // Wire the custom-provider resolver into the doc host so codex runs
         // inject provider env vars (MODEL_PROVIDER, CODEX_CONFIG, etc.) into
         // the codex-acp subprocess.
-        doc_host.set_provider_resolver(Arc::new({
+        // The shared custom-provider resolver: maps a harness id to its
+        // selected provider (base_url + API key) from device-local storage.
+        // Used by the doc host (real runs) AND the title generator (titling
+        // runs) so both pick the same endpoint + key for a harness.
+        let provider_resolver: Arc<
+            dyn Fn(HarnessId) -> Option<comet_proto::CustomProviderEnv> + Send + Sync,
+        > = {
             let cp = custom_providers.clone();
-            move |harness: HarnessId| cp.selected_provider_for_harness(harness)
-        }));
-        sessions.set_titles(TitleGenerator::new(
-            workspace.clone(),
-            registry.clone(),
-            repos.clone(),
-        ));
+            Arc::new(move |harness: HarnessId| match harness {
+                // mini auto-resolves the app's single compatible custom
+                // provider when none is explicitly selected, so runs use the
+                // same endpoint as the model picker.
+                HarnessId::Minswe => cp.resolve_provider(
+                    harness,
+                    comet_proto::CustomProviderFormat::ChatCompletions,
+                ),
+                _ => cp.selected_provider_for_harness(harness),
+            })
+        };
+        doc_host.set_provider_resolver(provider_resolver.clone());
+        let titles = TitleGenerator::new(workspace.clone(), registry.clone(), repos.clone());
+        titles.set_provider_resolver(provider_resolver);
+        sessions.set_titles(titles);
         // Wire push notifications: if the edge URL and push secret are set,
         // the engine fires /push/send on session status transitions so
         // mobile devices get real APNs/FCM pushes even in background.

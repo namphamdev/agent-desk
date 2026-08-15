@@ -39,6 +39,11 @@ struct Inner {
     workspace: WorkspaceHost,
     registry: Arc<HarnessRegistry>,
     repos: Repos,
+    /// Resolves the custom provider selected for a harness, including the API
+    /// key, from device-local storage. Set by the engine layer (which owns
+    /// `CustomProviders`). Returns `None` when no custom provider is selected.
+    provider_resolver:
+        std::sync::OnceLock<Arc<dyn Fn(HarnessId) -> Option<comet_proto::CustomProviderEnv> + Send + Sync>>,
 }
 
 #[derive(Clone)]
@@ -53,19 +58,48 @@ impl TitleGenerator {
                 workspace,
                 registry,
                 repos,
+                provider_resolver: std::sync::OnceLock::new(),
             }),
         }
     }
 
+    /// Wire the engine's custom-provider resolver so titling runs for a harness
+    /// (e.g. mini) use the same selected provider + API key as real runs,
+    /// instead of falling back to a stale env key. Set once by the engine layer.
+    pub fn set_provider_resolver(
+        &self,
+        resolver: Arc<dyn Fn(HarnessId) -> Option<comet_proto::CustomProviderEnv> + Send + Sync>,
+    ) {
+        let _ = self.inner.provider_resolver.set(resolver);
+    }
+
     /// Fire-and-forget: title `chat_id` if it's still untitled. Called by the run
     /// task after a completed exchange; runs detached so it never delays anything.
-    pub fn maybe_generate(&self, chat_id: &str, harness: HarnessId, prompt: &str, cwd: &str) {
+    ///
+    /// `selected_model` is the routed model id the user picked for this run
+    /// (e.g. `opencode:deepseek-v4-flash`). Titling prefers it so a harness
+    /// whose static `models()` only exposes a placeholder (the mini harness
+    /// advertises `"default"`) still sends a model the provider will accept —
+    /// gateways like antigravity reject bare `"default"` with HTTP 400. When
+    /// `None`, titling falls back to the harness's cheapest advertised model.
+    pub fn maybe_generate(
+        &self,
+        chat_id: &str,
+        harness: HarnessId,
+        selected_model: Option<&str>,
+        prompt: &str,
+        cwd: &str,
+    ) {
         let this = self.clone();
         let chat_id = chat_id.to_string();
+        let selected_model = selected_model.map(str::to_string);
         let prompt = prompt.to_string();
         let cwd = cwd.to_string();
         tokio::spawn(async move {
-            if let Err(err) = this.generate(&chat_id, harness, &prompt, &cwd).await {
+            if let Err(err) = this
+                .generate(&chat_id, harness, selected_model.as_deref(), &prompt, &cwd)
+                .await
+            {
                 tracing::debug!(chat = %chat_id, error = %err, "chat auto-titling skipped");
             }
         });
@@ -75,6 +109,7 @@ impl TitleGenerator {
         &self,
         chat_id: &str,
         harness_id: HarnessId,
+        selected_model: Option<&str>,
         prompt: &str,
         cwd: &str,
     ) -> Result<(), EngineError> {
@@ -88,7 +123,9 @@ impl TitleGenerator {
             return Ok(()); // already named
         }
 
-        let generated = self.run_title_model(harness_id, prompt, cwd).await;
+        let generated = self
+            .run_title_model(harness_id, selected_model, prompt, cwd)
+            .await;
         // Fallback so a chat is always named even if the model run produced nothing.
         let fallback: String = prompt
             .split_whitespace()
@@ -146,6 +183,7 @@ impl TitleGenerator {
     async fn run_title_model(
         &self,
         harness_id: HarnessId,
+        selected_model: Option<&str>,
         prompt: &str,
         cwd: &str,
     ) -> Option<String> {
@@ -156,11 +194,28 @@ impl TitleGenerator {
                 return None;
             }
         };
-        let cheap = cheapest_model(&harness.models(None).await.unwrap_or_default());
+        // Prefer the routed model the run actually used. A harness's static
+        // `models()` may only expose a placeholder (mini advertises `"default"`)
+        // that a remote provider gateway rejects (HTTP 400 "model must be in
+        // '{provider}:{model}' format"). Falling back to `cheapest_model` keeps
+        // the old behavior for harnesses that don't pass a selected model.
+        let cheap = if let Some(model) = selected_model {
+            Some(model.to_string())
+        } else {
+            cheapest_model(&harness.models(None).await.unwrap_or_default())
+        };
         let title_prompt = format!(
             "Reply with ONLY a concise 3-5 word title in Title Case (no quotes, no punctuation) \
              for a coding session that begins with this request:\n\n{prompt}"
         );
+        // Resolve the custom provider selected for this harness so the titling
+        // run uses the same endpoint + key as a real run (without this, a mini
+        // titling run falls back to a stale env key and fails).
+        let provider = self
+            .inner
+            .provider_resolver
+            .get()
+            .and_then(|resolver| resolver(harness_id));
         for attempt in 0..=RETRY_DELAYS_MS.len() {
             let request = RunRequest {
                 prompt: title_prompt.clone(),
@@ -177,7 +232,7 @@ impl TitleGenerator {
                 seed_purpose: None,
                 seed_role: None,
                 acp_agent_id: None,
-                custom_provider: None,
+                custom_provider: provider.clone(),
             };
             match collect_text(harness.as_ref(), request).await {
                 Ok(raw) => {

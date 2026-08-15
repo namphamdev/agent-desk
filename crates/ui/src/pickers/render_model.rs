@@ -487,6 +487,7 @@ pub(crate) fn harness_brand_icon(
         HarnessId::Codex => (crate::icons::OPENAI_MARK, None),
         HarnessId::Acp => acp_brand_icon(acp_agent_id),
         HarnessId::Cursor => (crate::icons::CURSOR_MARK, None),
+        HarnessId::Minswe => (crate::icons::WIDGET, None),
     }
 }
 

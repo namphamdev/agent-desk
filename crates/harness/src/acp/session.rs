@@ -47,6 +47,7 @@ pub(super) async fn run_connection(
     harness_id: HarnessId,
     live_updates: Arc<AtomicBool>,
     last_activity: Arc<Mutex<std::time::Instant>>,
+    pending_request: Arc<AtomicBool>,
 ) -> agent_client_protocol::Result<()> {
     initialize_and_authenticate(&connection).await?;
     let cwd = absolute_cwd(&request.cwd);
@@ -203,6 +204,13 @@ pub(super) async fn run_connection(
                     break prompt.await.map(Some);
                 }
                 _ = &mut watchdog => {
+                    // If the agent has a pending elicitation or permission
+                    // request, it is blocked waiting for user input, not
+                    // idle. Reset the timer and keep waiting.
+                    if pending_request.load(Ordering::Relaxed) {
+                        touch(last_activity.clone());
+                        continue;
+                    }
                     // Re-check in case a notification arrived between
                     // computing `remaining` and the branch firing.
                     let last = *last_activity
@@ -279,9 +287,15 @@ async fn initialize_and_authenticate(
 pub(super) async fn initialize(
     connection: &ConnectionTo<Agent>,
 ) -> agent_client_protocol::Result<InitializeResponse> {
-    let capabilities = ClientCapabilities::new().session(
-        ClientSessionCapabilities::new().config_options(SessionConfigOptionsCapabilities::new()),
-    );
+    let capabilities = ClientCapabilities::new()
+        .session(
+            ClientSessionCapabilities::new()
+                .config_options(SessionConfigOptionsCapabilities::new()),
+        )
+        .elicitation(
+            agent_client_protocol::schema::v1::ElicitationCapabilities::new()
+                .form(agent_client_protocol::schema::v1::ElicitationFormCapabilities::new()),
+        );
     connection
         .send_request(
             InitializeRequest::new(ProtocolVersion::V1)

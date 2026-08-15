@@ -38,6 +38,14 @@ impl Render for Composer {
             self.reset_mention(None, cx);
         }
         let mode = self.button_mode(cx);
+        // Focus drives a flip (focus expands; blur may collapse), so a
+        // transition between frames must re-render even when nothing else
+        // changed — notify on the edge and let the next pass flip.
+        let input_focused = self.input.focus_handle(cx).is_focused(window);
+        if input_focused != self.input_focused {
+            self.input_focused = input_focused;
+            cx.notify();
+        }
         let (text_width, has_newline, content_height, last_width, epoch) = {
             let input = self.input.read(cx);
             (
@@ -109,7 +117,15 @@ impl Render for Composer {
             capacity,
             has_newline,
             resizing,
+            input_focused,
         );
+        // New chats always use the expanded layout (the repo/branch pickers
+        // need the full-width actions row). Force the mode here — before the
+        // morph is considered — so the very first frame renders tall instead
+        // of animating up from a stale compact `expanded_mode`, and so a flip
+        // is never morphed on a canvas that's always expanded anyway.
+        let new_chat = self.state.read(cx).selected_chat.is_none();
+        let next = next || new_chat;
         let committed_flip = next != self.expanded_mode && measured_since_flip;
         if committed_flip {
             self.expanded_mode = next;
@@ -119,9 +135,8 @@ impl Render for Composer {
             // an interactive resize.
             self.last_seen_width = 0.0;
         }
-        // New chats render expanded regardless of `expanded_mode` (see below),
+        // New chats render expanded regardless of `expanded_mode` (see above),
         // so a mode flip there changes nothing visible — never morph it.
-        let new_chat = self.state.read(cx).selected_chat.is_none();
         // Morph clock in ms; dividing by the measurement knob stretches the
         // timeline exactly like shell.rs eval_tween's scaled duration.
         let now_ms = self.morph_clock.elapsed().as_secs_f32() * 1000.0 / motion::speed_scale();

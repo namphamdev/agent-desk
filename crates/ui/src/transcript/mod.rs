@@ -9,6 +9,7 @@ mod impl_core;
 mod impl_rows;
 mod impl_scroll;
 mod render_helpers;
+mod sticky_user;
 #[cfg(test)]
 mod tests;
 
@@ -272,6 +273,7 @@ impl Render for Transcript {
                     .with_sizing_behavior(gpui::ListSizingBehavior::Auto),
             )
             .child(rail)
+            .child(self.render_sticky_user(cx))
             .child(self.render_scrollbar(cx))
             .when_some(drag_listeners, |el, c| el.child(c));
         // Full-size viewer for a clicked user-bubble thumbnail

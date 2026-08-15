@@ -5,6 +5,7 @@ members = [
     "crates/doc",
     "crates/sync",
     "crates/harness",
+    "crates/minswe",
     "crates/engine",
     "crates/rpc",
     "crates/update",
@@ -23,6 +24,7 @@ comet-proto = { path = "crates/proto" }
 comet-doc = { path = "crates/doc" }
 comet-sync = { path = "crates/sync" }
 comet-harness = { path = "crates/harness" }
+comet-minswe = { path = "crates/minswe" }
 comet-engine = { path = "crates/engine" }
 comet-rpc = { path = "crates/rpc" }
 comet-update = { path = "crates/update" }
@@ -63,7 +65,7 @@ windows-sys = "0.59"
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 futures = "0.3"
 async-trait = "0.1"
-agent-client-protocol = "2.0"
+agent-client-protocol = { version = "2.0", features = ["unstable_elicitation"] }
 
 # serialization
 serde = { version = "1", features = ["derive"] }
@@ -92,8 +94,16 @@ portable-pty = "0.8"
 alacritty_terminal = "0.26"
 pulldown-cmark = "0.12"
 unicode-segmentation = "1"
-mermaid-rs-renderer = { version = "0.3.1", default-features = false }
+# Headless Mermaid rendering (parity with mermaid@11.15.0); replaces
+# mermaid-rs-renderer. `render` pulls merman-render for SVG output. The app
+# renders the SVG through gpui/usvg+resvg, which can't draw HTML
+# <foreignObject> labels, so the renderer is asked for resvg-safe SVG.
+merman = { version = "0.7", default-features = false, features = ["render"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
+# mini-swe-agent port: Jinja2-compatible prompt/observation rendering.
+minijinja = "2"
+# mini-swe-agent port: exponential-backoff retries for transient model HTTP errors.
+backon = "1"
 global-hotkey = "0.7"
 arboard = "3.6"
 parking_lot = "0.12"

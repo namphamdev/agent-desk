@@ -166,6 +166,15 @@ impl CustomProviders {
                         bail!("Codex requires a provider supporting the Responses format");
                     }
                 }
+                HarnessId::Minswe => {
+                    // The mini agent speaks OpenAI Chat Completions only.
+                    if !provider
+                        .formats
+                        .contains(&CustomProviderFormat::ChatCompletions)
+                    {
+                        bail!("mini requires a provider supporting the Chat Completions format");
+                    }
+                }
                 _ => {
                     bail!("Harness {:?} does not support custom providers", harness);
                 }
@@ -226,23 +235,36 @@ impl CustomProviders {
         let provider = self.models_provider(provider_id)?;
         let response = reqwest::Client::new()
             .get(openai_endpoint(&provider.base_url, "models")?)
+            // OpenAI-compatible servers use Bearer; Anthropic-compatible
+            // gateways use x-api-key. Sending both makes discovery work for
+            // either format and is harmless for compatible proxies.
             .bearer_auth(provider.api_key.as_deref().unwrap_or_default())
+            .header("x-api-key", provider.api_key.as_deref().unwrap_or_default())
             .send()
             .await
             .context("request provider models")?
             .error_for_status()
             .context("provider models request failed")?;
         let value: serde_json::Value = response.json().await.context("decode provider models")?;
-        let mut models = value
+        // Accept the common /models response shapes: `{"data":[…]}` (OpenAI),
+        // `{"models":[…]}` (some gateways), and a bare JSON array.
+        let empty = Vec::new();
+        let rows = value
             .get("data")
+            .or_else(|| value.get("models"))
             .and_then(serde_json::Value::as_array)
-            .into_iter()
-            .flatten()
+            .or_else(|| value.as_array())
+            .unwrap_or(&empty);
+        let mut models = rows
+            .iter()
             .filter_map(|entry| entry.get("id").and_then(serde_json::Value::as_str))
             .map(str::to_string)
             .collect::<Vec<_>>();
         models.sort();
         models.dedup();
+        if models.is_empty() {
+            bail!("provider returned no models");
+        }
         Ok(models)
     }
 
@@ -307,6 +329,41 @@ impl CustomProviders {
             api_key,
             formats: provider.formats,
             codex_subagent_model: provider.codex_subagent_model,
+        })
+    }
+
+    /// Resolve the provider for a harness that speaks `format`: the explicitly
+    /// selected provider wins; when none is selected, fall back to the single
+    /// compatible provider when exactly one is configured. This lets mini
+    /// "just work" with the app's custom provider without a separate
+    /// per-harness selection, while staying unambiguous (multiple compatible
+    /// providers still require an explicit pick).
+    pub fn resolve_provider(
+        &self,
+        harness: HarnessId,
+        format: CustomProviderFormat,
+    ) -> Option<comet_proto::CustomProviderEnv> {
+        if let Some(provider) = self.selected_provider_for_harness(harness) {
+            return Some(provider);
+        }
+        let config = self.load_config().ok()?;
+        let compatible: Vec<&StoredCustomProvider> = config
+            .providers
+            .iter()
+            .filter(|provider| provider.formats.contains(&format))
+            .collect();
+        if compatible.len() != 1 {
+            return None;
+        }
+        let provider = compatible[0];
+        let api_key = provider.api_key.clone().filter(|key| !key.is_empty())?;
+        Some(comet_proto::CustomProviderEnv {
+            provider_id: provider.id.clone(),
+            name: provider.name.clone(),
+            base_url: provider.base_url.clone(),
+            api_key,
+            formats: provider.formats.clone(),
+            codex_subagent_model: provider.codex_subagent_model.clone(),
         })
     }
 
@@ -608,6 +665,36 @@ mod tests {
                 .map(String::as_str),
             Some("proxy")
         );
+        // mini speaks OpenAI Chat Completions: the Responses-only "proxy"
+        // provider is rejected.
+        assert!(
+            settings
+                .select(HarnessId::Minswe, Some("proxy".into()))
+                .await
+                .is_err()
+        );
+        // A Chat Completions provider is accepted for mini.
+        settings
+            .upsert(
+                "chat-proxy".into(),
+                "Chat Proxy".into(),
+                "https://chat.example.com".into(),
+                Some("secret".into()),
+                vec![CustomProviderFormat::ChatCompletions],
+            )
+            .await
+            .unwrap();
+        let selected = settings
+            .select(HarnessId::Minswe, Some("chat-proxy".into()))
+            .await
+            .unwrap();
+        assert_eq!(
+            selected
+                .selection
+                .get(&HarnessId::Minswe)
+                .map(String::as_str),
+            Some("chat-proxy")
+        );
         let configured = settings
             .set_codex_subagent_model("proxy", Some("worker-model".into()))
             .await
@@ -617,6 +704,7 @@ mod tests {
             Some("worker-model")
         );
         let deleted = settings.delete("proxy").await.unwrap();
+        let deleted = settings.delete("chat-proxy").await.unwrap();
         assert!(deleted.providers.is_empty());
         assert!(deleted.selection.is_empty());
     }

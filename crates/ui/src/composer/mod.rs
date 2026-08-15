@@ -161,6 +161,7 @@ pub const RESIZE_SETTLE_MS: u64 = 150;
 /// input capacity (a layout-stable width: measured while compact, tracked by
 /// container-width deltas while expanded — never the post-flip measured width,
 /// which differs per mode and would feed back into the decision):
+/// - a focused input always expands (and stays expanded while focused);
 /// - a newline always expands;
 /// - while `resizing`, the current mode is kept (no flip until sizes settle);
 /// - a too-narrow pill (`capacity < MIN_COMPACT_INPUT_WIDTH`) always expands;
@@ -172,10 +173,18 @@ pub fn composer_flip(
     capacity: f32,
     has_newline: bool,
     resizing: bool,
+    focused: bool,
 ) -> bool {
+    // A focused input always expands and stays expanded — the blur→collapse
+    // is decided by the width/newline rules below (`focused = false`).
+    if focused {
+        return true;
+    }
     if has_newline {
         return true;
     }
+    // No width-based collapse while a resize is still settling: an unfocused
+    // input that was force-expanded by focus keeps its mode until sizes rest.
     if resizing {
         return expanded;
     }
@@ -547,6 +556,9 @@ pub struct Composer {
     // -- compact/expanded flip state (hysteresis; see `composer_flip`) --
     /// Current layout mode (persisted across frames — never derived fresh).
     expanded_mode: bool,
+    /// Whether the input was focused last frame — a focus change must drive a
+    /// flip (focus expands, blur may collapse), so its transition notifies.
+    input_focused: bool,
     /// `layout_epoch` of the measurement that caused the last flip: the flip is
     /// re-evaluated only after the input has been laid out in the new mode, so
     /// at most one flip can happen per layout pass.

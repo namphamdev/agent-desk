@@ -131,16 +131,18 @@ impl Shell {
     /// One session row (comet session-row.tsx, compact sidebar-tree §3.4):
     /// status rail on the left (a live 2×3 mini spinner while working, a dot
     /// otherwise), title + relative time on the first line, harness mark +
-    /// branch underneath — the folder the row belongs to lives on its space
-    /// parent in the tree, so it is not repeated here. Click selects;
-    /// right-click opens the context menu.
+    /// branch underneath. In Projects mode the folder a row belongs to lives
+    /// on its space parent in the tree, so `space_name` is `None` and is not
+    /// repeated. In Activity mode rows are a flat cross-space feed, so each
+    /// row carries its space name (folder icon + label) as the lead of the
+    /// subline. Click selects; right-click opens the context menu.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn render_chat_row(
         &self,
         id: String,
         title: SharedString,
         time_ago: SharedString,
-        _space_name: SharedString,
+        space_name: Option<SharedString>,
         branch: Option<SharedString>,
         harness: Option<comet_proto::HarnessId>,
         acp_agent_id: Option<String>,
@@ -257,7 +259,9 @@ impl Shell {
                     ),
             )
             // Line 2 (always): harness brand mark; worktree sessions append
-            // the branch icon + name.
+            // the branch icon + name. In Activity mode the space name (folder
+            // icon + label) leads, since the flat feed no longer carries it on
+            // a tree parent.
             .child(
                 div()
                     .w_full()
@@ -266,6 +270,33 @@ impl Shell {
                     .flex_row()
                     .items_center()
                     .gap(px(4.0))
+                    .when_some(space_name, |el, name| {
+                        el.child(
+                            icon(icons::FOLDER)
+                                .size(px(11.0))
+                                .flex_none()
+                                .text_color(subline),
+                        )
+                        .child(
+                            div()
+                                .min_w_0()
+                                .truncate()
+                                .text_size(px(11.0))
+                                .line_height(px(13.0))
+                                .text_color(subline)
+                                .child(name),
+                        )
+                        // Separator between the space and the harness/branch
+                        // marks that follow — a faint middot, hidden once the
+                        // space label truncates and crowds the row.
+                        .child(
+                            div()
+                                .flex_none()
+                                .text_size(px(11.0))
+                                .text_color(theme.text_faint)
+                                .child(SharedString::from("·")),
+                        )
+                    })
                     .when_some(
                         harness.map(|harness| {
                             let brand = crate::pickers::harness_brand_icon(
@@ -421,7 +452,7 @@ impl Shell {
                         .unwrap_or_else(|| "New session".into())
                         .into(),
                     format_time_ago(chat.last_message_at.unwrap_or(chat.created_at), now).into(),
-                    space.into(),
+                    Some(space.into()),
                     branch,
                     chat.config.as_ref().map(|c| c.harness),
                     chat.config.as_ref().and_then(|c| c.acp_agent_id.clone()),
@@ -490,7 +521,7 @@ impl Shell {
                                     now,
                                 )
                                 .into(),
-                                space.into(),
+                                Some(space.into()),
                                 branch,
                                 chat.config.as_ref().map(|c| c.harness),
                                 chat.config.as_ref().and_then(|c| c.acp_agent_id.clone()),

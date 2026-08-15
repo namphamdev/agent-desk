@@ -257,35 +257,49 @@ use std::ops::Range;
     #[test]
     pub(crate) fn flip_decision() {
         // Fits in the pill → compact stays compact.
-        assert!(!composer_flip(false, 150.0, 300.0, false, false));
+        assert!(!composer_flip(false, 150.0, 300.0, false, false, false));
         // Overflow → expand.
-        assert!(composer_flip(false, 320.0, 300.0, false, false));
+        assert!(composer_flip(false, 320.0, 300.0, false, false, false));
         // Newline always expands (either mode, even mid-resize).
-        assert!(composer_flip(false, 10.0, 300.0, true, false));
-        assert!(composer_flip(true, 10.0, 300.0, true, true));
+        assert!(composer_flip(false, 10.0, 300.0, true, false, false));
+        assert!(composer_flip(true, 10.0, 300.0, true, true, false));
         // Narrow column (< MIN_COMPACT_INPUT_WIDTH) always expands.
-        assert!(composer_flip(false, 10.0, 199.0, false, false));
-        assert!(!composer_flip(false, 10.0, 200.0, false, false));
+        assert!(composer_flip(false, 10.0, 199.0, false, false, false));
+        assert!(!composer_flip(false, 10.0, 200.0, false, false, false));
+    }
+
+    #[test]
+    pub(crate) fn flip_focused_input_always_expands() {
+        // Focus expands regardless of mode, width, newline, or resize — even a
+        // tiny, single-line, comfortably-fitting compact pill goes tall.
+        assert!(composer_flip(false, 0.0, 300.0, false, false, true));
+        assert!(composer_flip(false, 10.0, 300.0, false, false, true));
+        // And once expanded by focus, focus keeps it expanded (the blur→
+        // collapse is the only way down).
+        assert!(composer_flip(true, 0.0, 300.0, false, true, true));
+        // Blurring a comfortably-fitting input collapses back to compact.
+        assert!(!composer_flip(true, 10.0, 300.0, false, false, false));
     }
 
     #[test]
     pub(crate) fn flip_hysteresis_band_prevents_oscillation() {
         let cap = 300.0;
         // Text just over capacity expands…
-        assert!(composer_flip(false, cap + 1.0, cap, false, false));
+        assert!(composer_flip(false, cap + 1.0, cap, false, false, false));
         // …and the SAME width, now expanded, does NOT collapse back — the
         // collapse threshold sits COLLAPSE_HYSTERESIS below the expand one.
-        assert!(composer_flip(true, cap + 1.0, cap, false, false));
+        assert!(composer_flip(true, cap + 1.0, cap, false, false, false));
         // Anywhere inside the band the two modes are both stable (no width in
         // (cap - 32, cap] flips in either direction).
         let in_band = cap - COLLAPSE_HYSTERESIS + 1.0;
-        assert!(!composer_flip(false, in_band, cap, false, false));
-        assert!(composer_flip(true, in_band, cap, false, false));
+        assert!(!composer_flip(false, in_band, cap, false, false, false));
+        assert!(composer_flip(true, in_band, cap, false, false, false));
         // Comfortably under the band → collapses.
         assert!(!composer_flip(
             true,
             cap - COLLAPSE_HYSTERESIS - 1.0,
             cap,
+            false,
             false,
             false
         ));
@@ -294,14 +308,14 @@ use std::ops::Range;
     #[test]
     pub(crate) fn flip_frozen_during_interactive_resize() {
         // While resizing, both modes hold even across their thresholds…
-        assert!(!composer_flip(false, 500.0, 300.0, false, true));
-        assert!(composer_flip(true, 0.0, 300.0, false, true));
+        assert!(!composer_flip(false, 500.0, 300.0, false, true, false));
+        assert!(composer_flip(true, 0.0, 300.0, false, true, false));
         // …including the narrow-column force-expand.
-        assert!(!composer_flip(false, 10.0, 150.0, false, true));
+        assert!(!composer_flip(false, 10.0, 150.0, false, true, false));
         // Once settled, the same inputs flip.
-        assert!(composer_flip(false, 500.0, 300.0, false, false));
-        assert!(!composer_flip(true, 0.0, 300.0, false, false));
-        assert!(composer_flip(false, 10.0, 150.0, false, false));
+        assert!(composer_flip(false, 500.0, 300.0, false, false, false));
+        assert!(!composer_flip(true, 0.0, 300.0, false, false, false));
+        assert!(composer_flip(false, 10.0, 150.0, false, false, false));
     }
 
     #[test]

@@ -1,0 +1,36 @@
+[package]
+name = "comet-minswe"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+comet-proto.workspace = true
+comet-harness.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+uuid.workspace = true
+futures.workspace = true
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+reqwest.workspace = true
+minijinja.workspace = true
+backon.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Threading",
+    "Win32_System_JobObjects",
+] }
+
+[dev-dependencies]
+tempfile.workspace = true

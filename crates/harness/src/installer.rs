@@ -93,7 +93,7 @@ fn harness_binary(id: HarnessId) -> Option<HarnessBinary> {
                 url: "https://cursor.com/install",
             },
         }),
-        HarnessId::Acp | HarnessId::Mock => None,
+        HarnessId::Acp | HarnessId::Mock | HarnessId::Minswe => None,
     }
 }
 
@@ -104,6 +104,7 @@ fn harness_name(id: HarnessId) -> &'static str {
         HarnessId::Codex => "Codex",
         HarnessId::Cursor => "Cursor",
         HarnessId::Acp => "ACP Agent",
+        HarnessId::Minswe => "mini",
         HarnessId::Mock => "Mock",
     }
 }

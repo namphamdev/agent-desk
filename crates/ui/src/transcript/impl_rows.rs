@@ -449,13 +449,13 @@ impl Transcript {
         let fs_row_key = row_id.clone();
         let fs_entity = cx.weak_entity();
         let fullscreen: Rc<dyn Fn(usize, &mut Window, &mut gpui::App)> =
-            Rc::new(move |_ix, _window, cx| {
+            Rc::new(move |block_ix, _window, cx| {
                 let row_key = fs_row_key.clone();
                 fs_entity
                     .update(cx, |this, cx| {
-                        // Resolve the source from the row's tree on open —
+                        // Resolve the source from the clicked top-level block —
                         // the modal reads it back from `mermaid_fullscreen`.
-                        this.mermaid_fullscreen_open(&row_key);
+                        this.mermaid_fullscreen_open(&row_key, block_ix);
                         cx.notify();
                     })
                     .ok();
@@ -467,11 +467,11 @@ impl Transcript {
         }
     }
 
-    /// Look up the mermaid source for `row_id`'s currently-rendered block and
-    /// stash it on `mermaid_fullscreen` so the modal can render it. The
+    /// Look up the mermaid source for the clicked top-level block (`block_ix`)
+    /// and stash it on `mermaid_fullscreen` so the modal can render it. The
     /// inline card's click only carries the block index, so we resolve from
     /// the row's parsed tree here.
-    pub(super) fn mermaid_fullscreen_open(&mut self, row_id: &SharedString) {
+    pub(super) fn mermaid_fullscreen_open(&mut self, row_id: &SharedString, block_ix: usize) {
         let Some(row) = self.rows.iter().find(|r| &r.id == row_id).cloned() else {
             return;
         };
@@ -479,11 +479,11 @@ impl Transcript {
             RowKind::Markdown { tree, .. } | RowKind::LiveMarkdown { tree, .. } => tree,
             _ => return,
         };
-        for top in tree.blocks.iter() {
-            if let Block::Mermaid { code } = &top.block {
-                self.mermaid_fullscreen = Some((row_id.clone(), code.clone()));
-                return;
-            }
+        let Some(top) = tree.blocks.get(block_ix) else {
+            return;
+        };
+        if let Block::Mermaid { code } = &top.block {
+            self.mermaid_fullscreen = Some((row_id.clone(), code.clone()));
         }
     }
 

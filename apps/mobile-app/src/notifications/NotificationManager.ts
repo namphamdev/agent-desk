@@ -13,7 +13,7 @@
 
 import * as Notifications from 'expo-notifications';
 import Constants from 'expo-constants';
-import { AppState, AppStateStatus, Platform } from 'react-native';
+import { AppState, AppStateStatus, Linking, Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import {
@@ -104,10 +104,18 @@ export class NotificationManager {
       }
     });
 
-    // When the user taps a notification (push or local), navigate to the chat.
+    // When the user taps a notification (push or local), open the deep link
+    // that resolves to the chat session. Older notifications without a deep
+    // link fall back to direct navigation via the chatId.
     Notifications.addNotificationResponseReceivedListener((response) => {
-      const data = response.notification.request.content.data as { chatId?: string };
-      if (data?.chatId && this.onNotificationTap) {
+      const data = response.notification.request.content.data as {
+        chatId?: string;
+        deepLink?: string;
+      };
+      if (data?.deepLink) {
+        console.info('[notify] notification tapped, opening deep link', data.deepLink);
+        void Linking.openURL(data.deepLink);
+      } else if (data?.chatId && this.onNotificationTap) {
         console.info('[notify] notification tapped, opening chat', data.chatId.slice(0, 8));
         this.onNotificationTap(data.chatId);
       }
@@ -264,7 +272,7 @@ export class NotificationManager {
           title,
           body,
           sound: true,
-          data: { chatId, fallback: true },
+          data: { chatId, deepLink: `agentdeski://chat/${chatId}`, fallback: true },
         },
         trigger: {
           type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL,
@@ -406,7 +414,7 @@ export class NotificationManager {
           title,
           body,
           sound: true,
-          data: { chatId },
+          data: { chatId, deepLink: `agentdeski://chat/${chatId}` },
           ...(Platform.OS === 'android' ? { channelId: 'default' } : {}),
         },
         trigger: null, // immediate
@@ -418,6 +426,3 @@ export class NotificationManager {
 }
 
 export type NotificationPermissionStatus = 'granted' | 'denied' | 'undetermined';
-
-// Silence unused-import lints on Android (where Linking is unused).
-void Platform;

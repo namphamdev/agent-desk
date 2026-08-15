@@ -39,7 +39,21 @@ def send(message):
     print(json.dumps(message), flush=True)
 
 
-for line in sys.stdin:
+def read_response(request_id):
+    """Read stdin until the response whose id matches `request_id` arrives."""
+    while True:
+        line = sys.stdin.readline()
+        if not line:
+            return None
+        message = json.loads(line)
+        if message.get("id") == request_id:
+            return message
+
+
+while True:
+    line = sys.stdin.readline()
+    if not line:
+        break
     message = json.loads(line)
     method = message.get("method")
     request_id = message.get("id")
@@ -261,6 +275,57 @@ for line in sys.stdin:
                 },
             },
         })
+        if os.environ.get("FAKE_ACP_ASK_USER_QUESTION"):
+            ask_id = 9000
+            send({
+                "jsonrpc": "2.0",
+                "id": ask_id,
+                "method": "_x.ai/ask_user_question",
+                "params": {
+                    "sessionId": session_id,
+                    "toolCallId": "tool-ask",
+                    "questions": [
+                        {
+                            "question": "Which database?",
+                            "options": [
+                                {"label": "Redis", "description": "In-memory store"},
+                                {"label": "Postgres", "description": "Relational DB"},
+                            ],
+                            "multiSelect": False,
+                        },
+                        {
+                            "question": "Which features?",
+                            "options": [
+                                {"label": "Auth"},
+                                {"label": "Logging"},
+                            ],
+                            "multiSelect": True,
+                        },
+                    ],
+                    "mode": "default",
+                },
+            })
+            response = read_response(ask_id)
+            if ask_response_log := os.environ.get("FAKE_ACP_ASK_RESPONSE_LOG"):
+                with open(ask_response_log, "w") as log:
+                    json.dump(response if response is not None else {}, log)
+        if os.environ.get("FAKE_ACP_EXIT_PLAN_MODE"):
+            exit_id = 9100
+            send({
+                "jsonrpc": "2.0",
+                "id": exit_id,
+                "method": "_x.ai/exit_plan_mode",
+                "params": {
+                    "sessionId": session_id,
+                    "toolCallId": "tool-exit-plan",
+                    "plan": "## Plan\n1. Refactor foo\n2. Add tests",
+                    "planPath": "plan.md",
+                },
+            })
+            response = read_response(exit_id)
+            if exit_plan_response_log := os.environ.get("FAKE_ACP_EXIT_PLAN_RESPONSE_LOG"):
+                with open(exit_plan_response_log, "w") as log:
+                    json.dump(response if response is not None else {}, log)
         if no_prompt_response:
             # Stream text but never send the prompt response — the harness
             # idle watchdog must synthesize Done(Completed) instead of

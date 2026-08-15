@@ -330,7 +330,7 @@ impl Shell {
                 })
                 .collect();
             for (chat_id, status) in sessions {
-                let prev = self.sound_prev.insert(chat_id, status);
+                let prev = self.sound_prev.insert(chat_id.clone(), status);
                 if let Some(prev) = prev
                     && let Some(sound) = crate::sound::sound_for_transition(prev, status)
                 {
@@ -338,14 +338,17 @@ impl Shell {
                     if self.settings.sound_enabled {
                         crate::sound::play(sound);
                     }
-                    // OS desktop notification on the same transitions.
+                    // OS desktop notification on the same transitions. The
+                    // chat id rides along so a click can deep-link back to the
+                    // exact session that finished / asked for input.
                     if self.settings.notifications_enabled {
-                        crate::notify::show(match sound {
+                        let kind = match sound {
                             crate::sound::Sound::Done => crate::notify::NotificationKind::Done,
                             crate::sound::Sound::Request => {
                                 crate::notify::NotificationKind::Request
                             }
-                        });
+                        };
+                        crate::notify::show(cx, kind, &chat_id);
                     }
                 }
             }

@@ -1,0 +1,30 @@
+{# Verbatim copy of `format_error_template` from
+   src/minisweagent/config/default.yaml @ SWE-agent/mini-swe-agent.
+   `finish_reason` (length/tool_calls) triggers a focused message. #}
+{% if finish_reason is defined and finish_reason in ["length", "tool_calls"] -%}
+Your previous response reached the output token limit (finish_reason={{ finish_reason }}) before you produced a complete action, so it was cut off. Respond more concisely and provide exactly one action in the required format. If you need to think more, do so briefly.
+{%- else -%}
+Format error:
+
+<error>
+{{error}}
+</error>
+
+Here is general guidance on how to format your response:
+
+Please always provide EXACTLY ONE action in triple backticks, found {{actions|length}} actions.
+If you want to end the task, please issue the following command: `echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT`
+without any other command.
+Else, please format your response exactly as follows:
+
+<response_example>
+Here are some thoughts about why you want to perform the action.
+
+```mswea_bash_command
+<action>
+```
+</response_example>
+
+Note: In rare cases, if you need to reference a similar format in your command, you might have
+to proceed in two steps, first writing TRIPLEBACKTICKSBASH, then replacing them with ```mswea_bash_command.
+{%- endif %}

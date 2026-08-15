@@ -11,6 +11,7 @@ use std::path::Path;
 #[cfg(windows)]
 use super::command::resolve_windows_executable;
 use super::agent::instrument_agent_for_memory;
+use super::agent::inject_grok_model_args;
 use super::command::{normalize_acp_command, resolve_agent_command_string};
 use super::events::{normalize_tool_call, normalize_update};
 use super::models::{grok_cached_models, grok_cli_models, parse_grok_models_output};
@@ -586,4 +587,73 @@ Available models:
                 eprintln!("grok_cli_models failed (skipping): {e}");
             }
         }
+    }
+
+    #[test]
+    fn inject_grok_model_args_inserts_flag_before_stdio() {
+        let agent = AcpAgent::new(
+            AcpAgentConfig::new("grok").args(["agent".to_string(), "stdio".to_string()]),
+        );
+        let rebuilt = inject_grok_model_args(agent, Some("Deepseek:deepseek-v4-pro"));
+        let args = rebuilt.into_config().arguments().to_vec();
+        assert_eq!(
+            args,
+            vec!["agent", "-m", "Deepseek:deepseek-v4-pro", "stdio"]
+        );
+    }
+
+    #[test]
+    fn inject_grok_model_args_skips_default_and_none() {
+        let make = || {
+            AcpAgent::new(
+                AcpAgentConfig::new("grok").args(["agent".to_string(), "stdio".to_string()]),
+            )
+        };
+        // `None` → unchanged.
+        let unchanged = inject_grok_model_args(make(), None);
+        assert_eq!(
+            unchanged.into_config().arguments().to_vec(),
+            vec!["agent", "stdio"]
+        );
+        // `"default"` → unchanged.
+        let unchanged = inject_grok_model_args(make(), Some("default"));
+        assert_eq!(
+            unchanged.into_config().arguments().to_vec(),
+            vec!["agent", "stdio"]
+        );
+        // empty string → unchanged.
+        let unchanged = inject_grok_model_args(make(), Some(""));
+        assert_eq!(
+            unchanged.into_config().arguments().to_vec(),
+            vec!["agent", "stdio"]
+        );
+    }
+
+    #[test]
+    fn inject_grok_model_args_appends_when_no_stdio_token() {
+        let agent = AcpAgent::new(AcpAgentConfig::new("grok").args(["agent".to_string()]));
+        let rebuilt = inject_grok_model_args(agent, Some("zai:glm-5.2"));
+        let args = rebuilt.into_config().arguments().to_vec();
+        assert_eq!(args, vec!["agent", "-m", "zai:glm-5.2"]);
+    }
+
+    #[test]
+    fn inject_grok_model_args_preserves_environment() {
+        let mut env = std::collections::BTreeMap::new();
+        env.insert("XAI_API_KEY".to_string(), "secret".to_string());
+        let agent = AcpAgent::new(
+            AcpAgentConfig::new("grok")
+                .args(["agent".to_string(), "stdio".to_string()])
+                .envs(env.clone()),
+        );
+        let rebuilt = inject_grok_model_args(agent, Some("Deepseek:deepseek-v4-pro"));
+        let config = rebuilt.into_config();
+        assert_eq!(
+            config.environment().get("XAI_API_KEY"),
+            Some(&"secret".to_string())
+        );
+        assert_eq!(
+            config.arguments().to_vec(),
+            vec!["agent", "-m", "Deepseek:deepseek-v4-pro", "stdio"]
+        );
     }

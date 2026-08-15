@@ -26,6 +26,7 @@ interface SendBody {
   title: string;
   body: string;
   chatId?: string;
+  deepLink?: string;
   kind?: "done" | "input" | "error";
 }
 
@@ -115,6 +116,7 @@ export async function handlePushSend(
     priority: "high",
     data: {
       chatId: body.chatId ?? "",
+      deepLink: body.deepLink ?? "",
       kind: body.kind ?? "done",
     },
   };

@@ -889,6 +889,7 @@ fn compatible_providers(providers: &[CustomProvider], harness: HarnessId) -> Vec
         .filter(|provider| match harness {
             HarnessId::ClaudeCode => provider.formats.contains(&CustomProviderFormat::Anthropic),
             HarnessId::Codex => provider.formats.contains(&CustomProviderFormat::Responses),
+            HarnessId::Minswe => provider.formats.contains(&CustomProviderFormat::ChatCompletions),
             _ => false,
         })
         .collect()
@@ -1014,6 +1015,14 @@ impl gpui::Render for ProvidersPage {
                                             cx,
                                         ))
                                         .children(self.codex_subagent_row(&snapshot, &theme, cx))
+                                        .child(self.selection_row(
+                                            &snapshot,
+                                            HarnessId::Minswe,
+                                            "mini",
+                                            false,
+                                            &theme,
+                                            cx,
+                                        ))
                                 ),
                         )
                         .child(
@@ -1079,6 +1088,10 @@ mod tests {
         assert_eq!(
             compatible_providers(&providers, HarnessId::Codex)[0].id,
             "responses"
+        );
+        assert_eq!(
+            compatible_providers(&providers, HarnessId::Minswe)[0].id,
+            "chat"
         );
         assert_eq!(compatible_providers(&providers, HarnessId::Acp).len(), 0);
     }

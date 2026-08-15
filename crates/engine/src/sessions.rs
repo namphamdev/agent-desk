@@ -436,7 +436,13 @@ impl SessionsEngine {
         // the Done-time call below stays as the retry for a failed
         // generation).
         if let Some(titles) = self.inner.titles.get() {
-            titles.maybe_generate(chat_id, harness_id, &visible_prompt, &request.cwd);
+            titles.maybe_generate(
+                chat_id,
+                harness_id,
+                request.model.as_deref(),
+                &visible_prompt,
+                &request.cwd,
+            );
         }
 
         tokio::spawn(drive_run(
@@ -667,6 +673,7 @@ impl SessionsEngine {
                 request.resume = None; // dispatch re-injects the remembered session
                 request.attachments = Vec::new();
                 let harness_id = host.harness_for_request(&chat_id, &request);
+                let request = host.inject_custom_provider(request, harness_id);
                 match sessions
                     .dispatch(&chat_id, harness_id, request, Some(user_id))
                     .await
@@ -1078,6 +1085,10 @@ async fn drive_run(
     let harness_id = harness.id();
     let user_prompt = request.prompt.clone();
     let run_cwd = request.cwd.clone();
+    // The routed model the run used — threaded into auto-titling so a harness
+    // that only exposes a placeholder model (mini's `"default"`) still titles
+    // against a model id the provider gateway accepts.
+    let run_model = request.model.clone();
     // Kept whole for the failed-resume retry (fresh session, same user entry).
     // Option so the retry branch (inside the event loop) can take ownership.
     let mut retry_request = Some(RunRequest {
@@ -1423,7 +1434,13 @@ async fn drive_run(
                 && !agent_titled
                 && let Some(titles) = inner.titles.get()
             {
-                titles.maybe_generate(&chat_id, harness_id, &user_prompt, &run_cwd);
+                titles.maybe_generate(
+                    &chat_id,
+                    harness_id,
+                    run_model.as_deref(),
+                    &user_prompt,
+                    &run_cwd,
+                );
             }
             // PERSISTENT SESSION: a cleanly completed turn on a steerable
             // harness PARKS instead of ending — child + mailbox stay warm for

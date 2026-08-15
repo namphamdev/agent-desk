@@ -90,6 +90,7 @@ impl Composer {
             advance_task: None,
             send_task: None,
             expanded_mode: false,
+            input_focused: false,
             flip_epoch: 0,
             compact_capacity: 0.0,
             expanded_anchor: 0.0,

@@ -320,6 +320,22 @@ pub fn default_registry_with_config(
             }
         }),
     );
+    // mini (mini-swe-agent port): an in-process, bash-only coding agent that
+    // talks to an OpenAI-compatible Chat Completions endpoint. No child
+    // process, no ACP adapter. The static descriptor mirrors
+    // MinsweHarness exactly; resolving is cheap (no subprocess discovery).
+    registry.register_lazy(
+        HarnessDescriptor {
+            id: HarnessId::Minswe,
+            name: "mini".into(),
+            supports_steering: true,
+            steering_mode: SteeringMode::TurnBoundary,
+            reasoning_levels: vec![ReasoningLevel::Medium],
+            acp_agent_id: None,
+            icon: None,
+        },
+        Box::new(move || Ok(Arc::new(comet_minswe::MinsweHarness::new()) as Arc<dyn Harness>)),
+    );
     registry
 }
 
@@ -372,10 +388,12 @@ mod tests {
                 HarnessId::Codex,
                 HarnessId::Acp,
                 HarnessId::Cursor,
+                HarnessId::Minswe,
             ]
         );
         assert!(registry.resolve(HarnessId::Mock).is_ok());
         assert!(registry.resolve(HarnessId::ClaudeCode).is_ok());
+        assert!(registry.resolve(HarnessId::Minswe).is_ok());
         // A codex-configured chat resolves the right harness (construction is
         // cheap; CLI discovery is deferred to models()/run()).
         let codex = registry.resolve(HarnessId::Codex).unwrap();

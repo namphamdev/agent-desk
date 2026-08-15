@@ -212,10 +212,18 @@ fn log_acp_line(line: &str, direction: LineDirection) {
     match direction {
         LineDirection::Stderr => tracing::warn!(stderr = %line, "ACP agent stderr"),
         LineDirection::Stdout => {
-            if let Ok(value) = serde_json::from_str::<serde_json::Value>(line)
-                && let Some(error) = value.get("error")
-            {
-                tracing::warn!(error = %error, "ACP agent returned a protocol error");
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(line) {
+                if let Some(method) = value.get("method").and_then(|m| m.as_str()) {
+                    tracing::info!(
+                        target: "comet_harness::acp",
+                        method = %method,
+                        id = ?value.get("id"),
+                        "ACP agent sent JSON-RPC message"
+                    );
+                }
+                if let Some(error) = value.get("error") {
+                    tracing::warn!(error = %error, "ACP agent returned a protocol error");
+                }
             }
         }
         LineDirection::Stdin => {}
@@ -258,6 +266,49 @@ pub(super) fn instrument_agent_for_memory(agent: AcpAgent) -> (AcpAgent, Option<
 /// config), and `CODEX_API_KEY`. The selected model id is included so codex-acp
 /// uses it directly without needing a `session/setConfigOption` round-trip
 /// that the adapter would reject for an unknown model.
+/// Inject the user's selected model into a Grok agent's argv.
+///
+/// Grok's `grok agent stdio` ACP server does **not** implement the standard
+/// `session/setConfigOption` method (it returns JSON-RPC `-32601 Method not
+/// found`), so the app's model pick never reaches it through that path and
+/// Grok falls back to its `[models] default` from `~/.grok/config.toml`. The
+/// model is only honoured when passed on the command line: the parent
+/// `grok agent` subcommand accepts `-m / --model <MODEL>` (and, symmetrically,
+/// `--reasoning-effort <EFFORT>`).
+///
+/// This rewrites the agent's argv from `[…, "agent", "stdio"]` to
+/// `[…, "agent", "-m", <model>, "stdio"]`, inserting the flag immediately
+/// before `stdio` so it lands on the `agent` subcommand rather than the
+/// `stdio` child. Returns the agent unchanged for non-Grok commands or when
+/// no concrete model was selected (`None` / `"default"`).
+pub(super) fn inject_grok_model_args(agent: AcpAgent, model: Option<&str>) -> AcpAgent {
+    let Some(model) = model.filter(|model| {
+        !model.is_empty() && *model != "default"
+    }) else {
+        return agent;
+    };
+    let config = agent.into_config();
+    let mut new_args = config.arguments().to_vec();
+
+    // Insert `-m <model>` immediately before the trailing `stdio` token (the
+    // `agent` subcommand owns the flag). If the args don't match the expected
+    // `["agent", "stdio"]` shape, append at the end as a safe fallback so the
+    // flag is still present.
+    if let Some(pos) = new_args.iter().rposition(|arg| arg.as_str() == "stdio") {
+        new_args.insert(pos, "-m".to_string());
+        new_args.insert(pos + 1, model.to_string());
+    } else {
+        new_args.push("-m".to_string());
+        new_args.push(model.to_string());
+    }
+
+    AcpAgent::new(
+        AcpAgentConfig::new(config.command())
+            .args(new_args)
+            .envs(config.environment().clone()),
+    )
+}
+
 pub(super) fn codex_custom_provider_env(
     provider: &comet_proto::CustomProviderEnv,
     model: Option<&str>,

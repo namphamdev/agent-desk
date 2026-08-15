@@ -20,7 +20,12 @@ async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 pulldown-cmark.workspace = true
-mermaid-rs-renderer.workspace = true
+merman.workspace = true
+# Pin merman-render's transitive roughr fork. merman-render 0.7.0 was released
+# against roughr-merman 0.12.0, but 0.12.2 changed svgtypes 0.11 -> 0.16
+# without a semver bump (and dropped OptionsBuilder::seed), which breaks the
+# merman-render 0.7.0 build. Constrain it back to the compatible 0.12.0.
+roughr-merman = "=0.12.0"
 alacritty_terminal.workspace = true
 reqwest.workspace = true
 parking_lot.workspace = true

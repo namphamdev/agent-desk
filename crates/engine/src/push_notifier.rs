@@ -76,6 +76,7 @@ impl PushNotifier for EdgePushNotifier {
         let config = self.config.clone();
         let client = self.client.clone();
         let chat_id = transition.chat_id.clone();
+        let deep_link = format!("agentdeski://chat/{chat_id}");
 
         self.runtime.spawn(async move {
             let url = format!("{}/push/send", config.edge_url.trim_end_matches('/'));
@@ -84,6 +85,7 @@ impl PushNotifier for EdgePushNotifier {
                 "title": title,
                 "body": body,
                 "chatId": chat_id,
+                "deepLink": deep_link,
                 "kind": kind,
             });
             match client

@@ -1,6 +1,7 @@
 #![cfg(unix)]
 
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 #[cfg(unix)]
@@ -8,7 +9,7 @@ use comet_harness::acp::sample_process_tree_rss_bytes;
 use comet_harness::{AcpHarness, CancellationToken, Harness, RunControls, SteerMessage};
 use comet_proto::{
     AgentEvent, DoneStatus, HarnessId, ReasoningLevel, RunRequest, SandboxLevel, ToolCall,
-    UserInputAnswer,
+    UserInputAnswer, UserInputQuestion,
 };
 use futures::StreamExt;
 use tokio::sync::{mpsc, oneshot};
@@ -391,6 +392,277 @@ async fn streams_and_normalizes_an_acp_session() {
         error: None,
         session_id: Some("acp-session-1".into()),
     }));
+}
+
+/// Grok Build sends its internal `ask_user_question` tool over a private ACP
+/// extension method (`_x.ai/ask_user_question`) rather than the standard
+/// `session/request_permission` or `elicitation/create` methods. The harness
+/// must intercept that raw extension request, route it through the engine
+/// input bridge, and answer with Grok's `accepted`/`cancelled` wire shape.
+#[tokio::test]
+async fn bridges_grok_ask_user_question_extension_method() {
+    let response_log = tempfile::NamedTempFile::new().unwrap();
+    let command = serde_json::json!({
+        "command": fixture_path(),
+        "env": {
+            "FAKE_ACP_ASK_USER_QUESTION": "1",
+            "FAKE_ACP_ASK_RESPONSE_LOG": response_log.path(),
+        },
+    })
+    .to_string();
+    let harness = AcpHarness::new().with_command(command);
+
+    let seen = Arc::new(Mutex::new(Vec::<UserInputQuestion>::new()));
+    let seen_input = seen.clone();
+    let (steer_tx, steer_rx) = mpsc::channel(1);
+    let controls = RunControls {
+        request_input: Box::new(move |questions| {
+            seen_input
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .extend(questions.iter().cloned());
+            let (tx, rx) = oneshot::channel();
+            let answers = questions
+                .into_iter()
+                .map(|question| UserInputAnswer {
+                    question_id: question.id,
+                    labels: if question.question == "Which database?" {
+                        vec!["Redis".into()]
+                    } else if question.question == "Which features?" {
+                        vec!["Auth".into(), "Logging".into()]
+                    } else {
+                        vec![]
+                    },
+                })
+                .collect();
+            let _ = tx.send(answers);
+            rx
+        }),
+        steering: steer_rx,
+        interrupt: CancellationToken::new(),
+        report_memory: Box::new(|_| {}),
+    };
+    let request = RunRequest {
+        prompt: "Ask me something".into(),
+        model: None,
+        reasoning: None,
+        model_options: serde_json::Map::new(),
+        cwd: "/tmp".into(),
+        sandbox: SandboxLevel::WorkspaceWrite,
+        auto_approve: true,
+        resume: None,
+        attachments: vec![],
+        seed: None,
+        seed_role: None,
+        seed_purpose: None,
+        harness: None,
+        acp_agent_id: None,
+        custom_provider: None,
+    };
+
+    let stream = harness.run(request, controls).await.unwrap();
+    drop(steer_tx);
+    let events = tokio::time::timeout(
+        Duration::from_secs(10),
+        stream.map(Result::unwrap).collect::<Vec<_>>(),
+    )
+    .await
+    .expect("ACP fixture should finish after the ask_user_question round-trip");
+
+    let questions = seen
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    assert_eq!(questions.len(), 2, "questions: {questions:#?}");
+    assert_eq!(questions[0].question, "Which database?");
+    assert_eq!(questions[0].options, vec!["Redis", "Postgres"]);
+    assert!(!questions[0].multi_select);
+    assert_eq!(questions[1].question, "Which features?");
+    assert_eq!(questions[1].options, vec!["Auth", "Logging"]);
+    assert!(questions[1].multi_select);
+
+    let recorded: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(response_log.path()).expect("response log should exist"),
+    )
+    .expect("response log should be valid JSON");
+    assert_eq!(recorded["result"]["outcome"], "accepted");
+    assert_eq!(
+        recorded["result"]["answers"]["Which database?"],
+        serde_json::json!(["Redis"])
+    );
+    assert_eq!(
+        recorded["result"]["answers"]["Which features?"],
+        serde_json::json!(["Auth", "Logging"])
+    );
+
+    assert!(events.contains(&AgentEvent::Done {
+        status: DoneStatus::Completed,
+        result: None,
+        error: None,
+        session_id: Some("acp-session-1".into()),
+    }));
+}
+
+/// Grok Build sends its internal `exit_plan_mode` tool over a private ACP
+/// extension method (`_x.ai/exit_plan_mode`) rather than the standard
+/// `session/request_permission` or `elicitation/create` methods. The harness
+/// must intercept that raw extension request, surface the plan through the
+/// engine input bridge as an approve/reject question, and answer with Grok's
+/// `approved`/`rejected` wire shape.
+#[tokio::test]
+async fn bridges_grok_exit_plan_mode_extension_method() {
+    let response_log = tempfile::NamedTempFile::new().unwrap();
+    let command = serde_json::json!({
+        "command": fixture_path(),
+        "env": {
+            "FAKE_ACP_EXIT_PLAN_MODE": "1",
+            "FAKE_ACP_EXIT_PLAN_RESPONSE_LOG": response_log.path(),
+        },
+    })
+    .to_string();
+    let harness = AcpHarness::new().with_command(command);
+
+    let seen = Arc::new(Mutex::new(Vec::<UserInputQuestion>::new()));
+    let seen_input = seen.clone();
+    let (steer_tx, steer_rx) = mpsc::channel(1);
+    let controls = RunControls {
+        request_input: Box::new(move |questions| {
+            seen_input
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .extend(questions.iter().cloned());
+            let (tx, rx) = oneshot::channel();
+            // Approve the plan.
+            let answers = questions
+                .into_iter()
+                .map(|question| UserInputAnswer {
+                    question_id: question.id,
+                    labels: vec!["Approve".into()],
+                })
+                .collect();
+            let _ = tx.send(answers);
+            rx
+        }),
+        steering: steer_rx,
+        interrupt: CancellationToken::new(),
+        report_memory: Box::new(|_| {}),
+    };
+    let request = RunRequest {
+        prompt: "Plan something".into(),
+        model: None,
+        reasoning: None,
+        model_options: serde_json::Map::new(),
+        cwd: "/tmp".into(),
+        sandbox: SandboxLevel::WorkspaceWrite,
+        auto_approve: true,
+        resume: None,
+        attachments: vec![],
+        seed: None,
+        seed_role: None,
+        seed_purpose: None,
+        harness: None,
+        acp_agent_id: None,
+        custom_provider: None,
+    };
+
+    let stream = harness.run(request, controls).await.unwrap();
+    drop(steer_tx);
+    let events = tokio::time::timeout(
+        Duration::from_secs(10),
+        stream.map(Result::unwrap).collect::<Vec<_>>(),
+    )
+    .await
+    .expect("ACP fixture should finish after the exit_plan_mode round-trip");
+
+    let questions = seen
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    assert_eq!(questions.len(), 1, "questions: {questions:#?}");
+    assert_eq!(questions[0].question, "Approve this plan and start implementing?\n\n## Plan\n1. Refactor foo\n2. Add tests");
+    assert_eq!(questions[0].options, vec!["Approve", "Reject"]);
+    assert!(!questions[0].multi_select);
+    drop(questions);
+
+    let recorded: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(response_log.path()).expect("response log should exist"),
+    )
+    .expect("response log should be valid JSON");
+    assert_eq!(recorded["result"]["outcome"], "approved");
+
+    assert!(events.contains(&AgentEvent::Done {
+        status: DoneStatus::Completed,
+        result: None,
+        error: None,
+        session_id: Some("acp-session-1".into()),
+    }));
+}
+
+/// When the user rejects the plan (or dismisses the prompt), the harness must
+/// answer `{"outcome":"rejected"}` so the agent stays in plan mode instead of
+/// silently proceeding to implement.
+#[tokio::test]
+async fn exit_plan_mode_rejection_replies_rejected_outcome() {
+    let response_log = tempfile::NamedTempFile::new().unwrap();
+    let command = serde_json::json!({
+        "command": fixture_path(),
+        "env": {
+            "FAKE_ACP_EXIT_PLAN_MODE": "1",
+            "FAKE_ACP_EXIT_PLAN_RESPONSE_LOG": response_log.path(),
+        },
+    })
+    .to_string();
+    let harness = AcpHarness::new().with_command(command);
+
+    let (steer_tx, steer_rx) = mpsc::channel(1);
+    let controls = RunControls {
+        request_input: Box::new(move |questions| {
+            let (tx, rx) = oneshot::channel();
+            // Reject the plan (or, equivalently, return no labels).
+            let answers = questions
+                .into_iter()
+                .map(|question| UserInputAnswer {
+                    question_id: question.id,
+                    labels: vec!["Reject".into()],
+                })
+                .collect();
+            let _ = tx.send(answers);
+            rx
+        }),
+        steering: steer_rx,
+        interrupt: CancellationToken::new(),
+        report_memory: Box::new(|_| {}),
+    };
+    let request = RunRequest {
+        prompt: "Plan something".into(),
+        model: None,
+        reasoning: None,
+        model_options: serde_json::Map::new(),
+        cwd: "/tmp".into(),
+        sandbox: SandboxLevel::WorkspaceWrite,
+        auto_approve: true,
+        resume: None,
+        attachments: vec![],
+        seed: None,
+        seed_role: None,
+        seed_purpose: None,
+        harness: None,
+        acp_agent_id: None,
+        custom_provider: None,
+    };
+
+    let stream = harness.run(request, controls).await.unwrap();
+    drop(steer_tx);
+    let _ = tokio::time::timeout(
+        Duration::from_secs(10),
+        stream.map(Result::unwrap).collect::<Vec<_>>(),
+    )
+    .await
+    .expect("ACP fixture should finish after the exit_plan_mode round-trip");
+
+    let recorded: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(response_log.path()).expect("response log should exist"),
+    )
+    .expect("response log should be valid JSON");
+    assert_eq!(recorded["result"]["outcome"], "rejected");
 }
 
 #[tokio::test]

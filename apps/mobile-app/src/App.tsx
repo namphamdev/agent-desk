@@ -75,6 +75,7 @@ const linking: LinkingOptions<RootStackParamList> = {
   config: {
     screens: {
       Home: '',
+      Chat: 'chat/:chatId',
     },
   },
 };

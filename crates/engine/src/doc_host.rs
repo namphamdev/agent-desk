@@ -644,16 +644,18 @@ impl DocHost {
         request.harness.unwrap_or_else(|| self.harness_for(chat_id))
     }
 
-    /// When the harness is Codex and a custom provider is selected, inject
-    /// the provider's connection details + API key into the request so the
-    /// ACP harness can build provider env vars for the codex-acp subprocess.
-    fn inject_custom_provider(
+    /// When the harness is Codex or mini and a custom provider is selected,
+    /// inject the provider's connection details + API key into the request.
+    /// For Codex the ACP harness builds provider env vars for the codex-acp
+    /// subprocess; for mini the in-process `OpenAiCompatClient` reads the
+    /// endpoint directly.
+    pub(crate) fn inject_custom_provider(
         &self,
         mut request: comet_proto::RunRequest,
         harness: HarnessId,
     ) -> comet_proto::RunRequest {
         if request.custom_provider.is_none()
-            && harness == HarnessId::Codex
+            && matches!(harness, HarnessId::Codex | HarnessId::Minswe)
             && let Some(resolver) = self.inner.provider_resolver.get()
         {
             if let Some(provider) = resolver(harness) {
@@ -851,6 +853,7 @@ impl DocHost {
                         // ride the prompt text.
                         request.attachments = Vec::new();
                         let harness = self.harness_for_request(chat_id, &request);
+                        let request = self.inject_custom_provider(request, harness);
                         sessions
                             .dispatch(chat_id, harness, request, message_id.clone())
                             .await?;
@@ -925,6 +928,7 @@ impl DocHost {
                         "orphaned input resolve failed");
                 }
                 let harness = self.harness_for_request(chat_id, &request);
+                let request = self.inject_custom_provider(request, harness);
                 sessions.dispatch(chat_id, harness, request, None).await?;
                 Ok((
                     SessionCommandStatus::Applied,

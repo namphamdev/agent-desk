@@ -1202,43 +1202,111 @@ impl RpcService for EngineRpc {
                     })?;
                 eprintln!("[TRACE:LIST_MODELS] got {} models", models.len());
 
-                // When a custom provider is selected for Codex, merge its
-                // available models into the picker so the user can select
-                // a provider-native model id.
-                if p.harness == HarnessId::Codex
-                    && let Some(provider) = self
-                        .custom_providers
-                        .selected_provider_for_harness(p.harness)
-                    && provider
-                        .formats
-                        .contains(&comet_proto::CustomProviderFormat::Responses)
-                    && let Ok(provider_models) = self
-                        .custom_providers
-                        .list_chat_models(&provider.provider_id)
-                        .await
-                {
-                    use comet_proto::{Model, ReasoningLevel};
-                    let ladder = vec![
-                        ReasoningLevel::Low,
-                        ReasoningLevel::Medium,
-                        ReasoningLevel::High,
-                        ReasoningLevel::XHigh,
-                    ];
-                    for model_id in provider_models {
-                        // Skip duplicates: if the static catalog already has
-                        // this model id, don't add a second entry.
-                        if models.iter().any(|m| m.id == model_id) {
-                            continue;
+                // When a custom provider is selected for Codex or mini, merge
+                // its available models into the picker so the user can select
+                // a provider-native model id. Codex requires the Responses
+                // format; mini requires Chat Completions.
+                let provider_format = match p.harness {
+                    HarnessId::Codex => Some(comet_proto::CustomProviderFormat::Responses),
+                    HarnessId::Minswe => Some(comet_proto::CustomProviderFormat::ChatCompletions),
+                    _ => None,
+                };
+                if let Some(format) = provider_format {
+                    // mini auto-resolves the app's single compatible custom
+                    // provider when none is explicitly selected; Codex keeps
+                    // requiring an explicit per-harness selection.
+                    let selected = match p.harness {
+                        HarnessId::Minswe => {
+                            self.custom_providers.resolve_provider(p.harness, format)
                         }
-                        models.push(Model {
-                            id: model_id.clone(),
-                            label: model_id,
-                            description: Some(provider.name.clone()),
-                            reasoning_levels: ladder.clone(),
-                            options: vec![],
-                        });
+                        _ => self.custom_providers.selected_provider_for_harness(p.harness),
+                    };
+                    match selected {
+                        Some(provider) if provider.formats.contains(&format) => {
+                            match self
+                                .custom_providers
+                                .list_chat_models(&provider.provider_id)
+                                .await
+                            {
+                                Ok(provider_models) => {
+                                    use comet_proto::{Model, ReasoningLevel};
+                                    eprintln!(
+                                        "[TRACE:LIST_MODELS] provider={} discovered {} models",
+                                        provider.provider_id,
+                                        provider_models.len()
+                                    );
+                                    // mini surfaces the provider's discovered
+                                    // catalog directly — the static `default`
+                                    // entry is only a fallback for when no
+                                    // provider is configured. Codex keeps its
+                                    // curated static catalog and appends
+                                    // provider-native ids.
+                                    if p.harness == HarnessId::Minswe && !provider_models.is_empty()
+                                    {
+                                        models.clear();
+                                    }
+                                    // mini exposes a single Medium reasoning
+                                    // level; Codex the full ladder. Match each
+                                    // harness's advertised ladder.
+                                    let ladder = match p.harness {
+                                        HarnessId::Minswe => vec![ReasoningLevel::Medium],
+                                        _ => vec![
+                                            ReasoningLevel::Low,
+                                            ReasoningLevel::Medium,
+                                            ReasoningLevel::High,
+                                            ReasoningLevel::XHigh,
+                                        ],
+                                    };
+                                    for model_id in provider_models {
+                                        // Skip duplicates: if the static catalog
+                                        // already has this model id, don't add a
+                                        // second entry.
+                                        if models.iter().any(|m| m.id == model_id) {
+                                            continue;
+                                        }
+                                        models.push(Model {
+                                            id: model_id.clone(),
+                                            label: model_id,
+                                            description: Some(provider.name.clone()),
+                                            reasoning_levels: ladder.clone(),
+                                            options: vec![],
+                                        });
+                                    }
+                                }
+                                Err(err) => {
+                                    // Don't fail the whole model list — just
+                                    // trace so a misconfigured provider (bad
+                                    // key, no /models endpoint) is visible.
+                                    eprintln!(
+                                        "[TRACE:LIST_MODELS] provider discovery ERROR: {err:#}"
+                                    );
+                                    tracing::warn!(
+                                        harness = ?p.harness,
+                                        provider = %provider.provider_id,
+                                        error = %err,
+                                        "custom provider model discovery failed; \
+                                         falling back to the static catalog",
+                                    );
+                                }
+                            }
+                        }
+                        Some(provider) => {
+                            eprintln!(
+                                "[TRACE:LIST_MODELS] provider={} does not support format {:?}; \
+                                 skipping merge",
+                                provider.provider_id, format
+                            );
+                        }
+                        None => {
+                            eprintln!(
+                                "[TRACE:LIST_MODELS] no compatible custom provider resolved for {:?}; \
+                                 static catalog only",
+                                p.harness
+                            );
+                        }
                     }
                 }
+                eprintln!("[TRACE:LIST_MODELS] returning {} models", models.len());
 
                 RpcReply::value(&models)
             }

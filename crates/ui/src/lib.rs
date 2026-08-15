@@ -140,6 +140,9 @@ pub fn run_app(config: UiConfig) {
     app.run(move |cx: &mut App| {
         // NB: pinned-rev API — `gpui_tokio::init(cx)` free function (not `Tokio::init`).
         gpui_tokio::init(cx);
+        // Windows toast notifications need a process AppUserModelID before any
+        // notification is posted (gpui registers it lazily from this identity).
+        cx.set_app_identity("comet", "Comet");
         // Detect the OS "reduce motion" accessibility setting and propagate it
         // to gpui's global flag. On macOS the platform layer already reads
         // NSWorkspace.accessibilityDisplayShouldReduceMotion; on Windows we
@@ -162,6 +165,29 @@ pub fn run_app(config: UiConfig) {
 
         let state = cx.new(|_| state::AppState::new());
         state::AppState::bootstrap(state.clone(), config.boot(), cx);
+
+        // Desktop notification click → open the chat named by the tag. The
+        // notification tag is `chat:<id>` (see `notify.rs`); activating the
+        // toast carries that tag back here.
+        let notify_state = state.clone();
+        let notify_boot = config.boot();
+        cx.on_system_notification_response(move |response, cx| {
+            let Some(chat_id) = response.tag.as_ref().strip_prefix("chat:") else {
+                return;
+            };
+            let chat_id = chat_id.to_string();
+            // Rebuild the main window if the user closed it (⌘W) before
+            // clicking the notification.
+            if cx.windows().is_empty() {
+                open_main_window(notify_state.clone(), notify_boot.clone(), cx);
+            }
+            notify_state.update(cx, |s, cx| s.select_chat(Some(chat_id), cx));
+            let windows = cx.windows();
+            if let Some(window) = windows.first() {
+                let _ = window.update(cx, |_, window, _cx| window.activate_window());
+            }
+        });
+
         let shortcut_settings = settings::UiSettings::load(&config.data_dir);
         let shortcut_runtime = cx.new(|cx| {
             global_shortcuts::GlobalShortcutRuntime::new(
