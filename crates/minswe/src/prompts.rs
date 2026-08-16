@@ -71,7 +71,12 @@ fn uname() -> Option<(String, String, String)> {
         }
         let buf = buf.assume_init();
         let to_string = |c: &[libc::c_char]| {
-            CStr::from_bytes_with_nul_until_nul(c)
+            // SAFETY: `c` is a NUL-terminated utsname field of `c.len()`
+            // one-byte c_chars; reinterpreting it as `u8` is valid on every
+            // cfg(unix) target, and `from_bytes_until_nul` stops at the first
+            // NUL byte.
+            let bytes = unsafe { std::slice::from_raw_parts(c.as_ptr().cast::<u8>(), c.len()) };
+            CStr::from_bytes_until_nul(bytes)
                 .ok()?
                 .to_string_lossy()
                 .into_owned()

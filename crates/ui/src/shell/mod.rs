@@ -169,6 +169,11 @@ pub struct Shell {
     /// Space ids the user expanded past the 5-session cap ("View more");
     /// runtime only — restarts return to the capped view.
     pub(crate) sidebar_space_show_all: std::collections::HashSet<String>,
+    /// The sidebar spaces device filter — `Some(device_id)` shows only spaces
+    /// owned by that device, `None` shows all. Mirrored in
+    /// `settings.space_device_filter` (persisted); kept here so a removed
+    /// device can clear both in one place (sidebar healing).
+    pub(crate) space_device_filter: Option<String>,
     /// Scroll offset saved when a space collapses (space id → offset.y), so
     /// expanding it again restores the view instead of jumping.
     pub(crate) sidebar_space_scroll: std::collections::HashMap<String, f32>,

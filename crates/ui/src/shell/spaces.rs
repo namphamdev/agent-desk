@@ -189,6 +189,22 @@ pub(crate) fn tree_drop_over(tree: &[SidebarTreeNode], content_y: f32) -> usize 
     spaces_seen.saturating_sub(1).min(total - 1)
 }
 
+/// Does a spaces device filter still point at a real device? A filter is
+/// "known" when the device exists in the registry OR a space still references
+/// it (offline registration lag — the space renders with "Unknown device"
+/// until the registry row lands, and the filter must not blink out mid-sync).
+/// Pure — unit-tested (`spaces::tests::filter_*`).
+pub(crate) fn space_device_filter_known(
+    devices: &[Device],
+    spaces: &[Space],
+    filter: Option<&str>,
+) -> bool {
+    let Some(filter) = filter else {
+        return true; // no filter — nothing to heal
+    };
+    devices.iter().any(|d| d.id == filter) || spaces.iter().any(|s| s.device_id == filter)
+}
+
 /// One RECENT-section row (owned — the renderer needs it after the state
 /// borrow ends, so chats are reduced to the few fields the row shows).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -388,15 +404,17 @@ impl Shell {
     // ---- sidebar sections ----
 
     /// The "Spaces" section header: tracked label + add button, plus the
-    /// empty-state ghost row. The space ROWS themselves live in the
-    /// virtualized sidebar tree (`build_sidebar_tree` + `render_tree_space_row`),
-    /// so the whole tree scrolls as one list.
+    /// device-filter chip row and the empty-state ghost row. The space ROWS
+    /// themselves live in the virtualized sidebar tree (`build_sidebar_tree`
+    /// + `render_tree_space_row`), so the whole tree scrolls as one list.
     pub(super) fn render_spaces_section(
         &mut self,
         theme: &Theme,
         cx: &mut Context<Self>,
         spaces_empty: bool,
+        devices: Vec<Device>,
     ) -> AnyElement {
+        let filter = self.space_device_filter.clone();
         let header = div()
             .flex()
             .flex_row()
@@ -442,6 +460,87 @@ impl Shell {
             });
 
         let mut column = div().flex().flex_col().child(header);
+        // Device-filter chips (the Spaces section's own filter, right under
+        // the header): "All" + one chip per device that owns at least one
+        // space. Only rendered when a device owns a space — a single-device
+        // workspace with spaces still gets the chip row so the filter is
+        // discoverable, but an empty workspace (or one whose only device has
+        // no spaces) hides it: there's nothing to filter yet.
+        if !devices.is_empty() {
+            let filter_row = div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(4.0))
+                .px(px(Theme::SPACE_SM))
+                .pb(px(6.0));
+            let chip = |device_id: Option<String>,
+                        label: SharedString,
+                        filter: &Option<String>,
+                        theme: &Theme| {
+                let selected = filter.as_deref() == device_id.as_deref();
+                let key = device_id
+                    .clone()
+                    .unwrap_or_else(|| "all".to_string());
+                let fade_key = format!("space-filter-{key}");
+                let hover_key = fade_key.clone();
+                let inspect = crate::dev_inspector::inspect_meta("space-filter-chip");
+                let hover_tag = inspect.clone();
+                let mut chip = div()
+                    .id(SharedString::from(format!("space-filter-chip-{key}")))
+                    .h(px(22.0))
+                    .px(px(8.0))
+                    .rounded_full()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(5.0))
+                    .text_size(px(11.0))
+                    .cursor_pointer()
+                    .on_hover(move |hovered: &bool, window: &mut Window, cx: &mut App| {
+                        motion::hover_listener(&hover_key)(&hovered, window, cx);
+                        crate::dev_inspector::report_hover(&hover_tag, *hovered, window, cx);
+                    })
+                    .inspect_click(inspect)
+                    .on_click(cx.listener({
+                        let device_id = device_id.clone();
+                        move |this, _, _, cx| this.set_space_device_filter(device_id.clone(), cx)
+                    }));
+                if selected {
+                    chip = chip
+                        .bg(crate::theme::card_selected_bg())
+                        .shadow(crate::theme::card_selected_shadows())
+                        .text_color(theme.text);
+                } else {
+                    chip = chip
+                        .bg(motion::hover_blend(
+                            &fade_key,
+                            crate::theme::wash(0.0),
+                            crate::theme::wash(0.12),
+                        ))
+                        .text_color(motion::hover_blend(
+                            &fade_key,
+                            theme.text_muted.opacity(0.75),
+                            theme.text,
+                        ));
+                }
+                chip.child(label)
+            };
+            let all_chip = chip(
+                None,
+                SharedString::from("All"),
+                &filter,
+                theme,
+            );
+            let mut chips = vec![all_chip.into_any_element()];
+            for device in devices {
+                let name: SharedString = device.name.clone().into();
+                chips.push(
+                    chip(Some(device.id.clone()), name, &filter, theme).into_any_element(),
+                );
+            }
+            column = column.child(filter_row.children(chips));
+        }
         if spaces_empty {
             // Ghost row: the empty-state affordance mirrors a space row.
             column = column.child(
@@ -511,6 +610,38 @@ impl Shell {
                 .or_insert(status);
         }
         attention
+    }
+
+    // ---- spaces device filter ----
+
+    /// The effective spaces device filter. The user picks a device from the
+    /// Spaces-section chips; the choice persists in `settings.space_device_filter`.
+    /// If the picked device no longer exists (removed from the workspace) the
+    /// filter heals to `None` here AND in the persisted settings, so the
+    /// sidebar never renders an empty tree behind a dead chip.
+    pub(super) fn effective_space_device_filter(&mut self, cx: &mut Context<Self>) -> Option<String> {
+        let state = self.state.read(cx);
+        let known = space_device_filter_known(&state.devices, &state.spaces, self.space_device_filter.as_deref());
+        if known {
+            return self.space_device_filter.clone();
+        }
+        // Orphaned — clear both mirrors.
+        self.space_device_filter = None;
+        self.settings.space_device_filter = None;
+        self.schedule_save(cx);
+        None
+    }
+
+    /// Pick a device filter chip: `Some(device_id)` narrows the tree to that
+    /// device's spaces, `None` (the All chip) shows every space. Persisted.
+    pub(super) fn set_space_device_filter(&mut self, device_id: Option<String>, cx: &mut Context<Self>) {
+        if self.space_device_filter == device_id {
+            return;
+        }
+        self.space_device_filter = device_id.clone();
+        self.settings.space_device_filter = device_id;
+        self.schedule_save(cx);
+        cx.notify();
     }
 
     // ---- sidebar tree expand/collapse ----
@@ -2560,9 +2691,13 @@ mod tests {
     use comet_proto::Chat;
 
     fn space(id: &str) -> Space {
+        space_on(id, "d1")
+    }
+
+    fn space_on(id: &str, device_id: &str) -> Space {
         Space {
             id: id.to_string(),
-            device_id: "d1".to_string(),
+            device_id: device_id.to_string(),
             path: format!("/repo/{id}"),
             name: None,
             git_detected: true,
@@ -2977,5 +3112,41 @@ mod tests {
         assert_eq!(rows[0].title, "Title c1");
         assert!(!rows[0].time_ago.is_empty());
         assert_eq!(rows[0].status, ChatIndicator::Completed);
+    }
+
+    // ---- space device filter ----
+
+    #[test]
+    fn filter_known_when_device_registered() {
+        let devices = vec![Device {
+            id: "dev-1".into(),
+            name: "Mac".into(),
+            platform: "macos".into(),
+            last_seen_at: None,
+            created_at: None,
+            version: None,
+            machine_fingerprint: None,
+        }];
+        let spaces = vec![space_on("s1", "dev-1"), space_on("s2", "dev-2")];
+        assert!(space_device_filter_known(&devices, &spaces, Some("dev-1")));
+        // A device with spaces but no registry row (offline registration lag)
+        // still counts as known — the filter must not blink out mid-sync.
+        assert!(space_device_filter_known(&devices, &spaces, Some("dev-2")));
+    }
+
+    #[test]
+    fn filter_orphaned_when_device_and_spaces_gone() {
+        let devices = vec![Device {
+            id: "dev-1".into(),
+            name: "Mac".into(),
+            platform: "macos".into(),
+            last_seen_at: None,
+            created_at: None,
+            version: None,
+            machine_fingerprint: None,
+        }];
+        let spaces = vec![space_on("s1", "dev-1")];
+        assert!(!space_device_filter_known(&devices, &spaces, Some("dev-9")));
+        assert!(space_device_filter_known(&devices, &spaces, None));
     }
 }

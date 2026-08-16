@@ -61,10 +61,24 @@ impl Shell {
         } else {
             let now = Utc::now();
             let attention = self.sidebar_space_attention(cx);
+            // Spaces device filter: `Some(device_id)` narrows the tree to that
+            // device's spaces (the chip row above the tree). `effective_…`
+            // clears a filter whose device vanished, so this can't strand an
+            // empty tree behind a dead chip.
+            let device_filter = self.effective_space_device_filter(cx);
             let (tree, recent) = {
                 let state = self.state.read(cx);
-                let expanded: std::collections::HashSet<String> = state
+                let filtered_spaces: Vec<comet_proto::Space> = state
                     .spaces
+                    .iter()
+                    .filter(|s| {
+                        device_filter
+                            .as_deref()
+                            .is_none_or(|device_id| s.device_id == device_id)
+                    })
+                    .cloned()
+                    .collect();
+                let expanded: std::collections::HashSet<String> = filtered_spaces
                     .iter()
                     .filter(|s| self.space_expanded(&s.id, cx))
                     .map(|s| s.id.clone())
@@ -72,13 +86,12 @@ impl Shell {
                 let sessions_by_space: std::collections::HashMap<
                     String,
                     Vec<&comet_proto::Chat>,
-                > = state
-                    .spaces
+                > = filtered_spaces
                     .iter()
                     .map(|s| (s.id.clone(), state.chats_in_space(&s.id)))
                     .collect();
                 let tree = super::spaces::build_sidebar_tree(
-                    &state.spaces,
+                    &filtered_spaces,
                     &expanded,
                     &sessions_by_space,
                     &attention,
@@ -355,7 +368,42 @@ impl Shell {
             };
 
             let spaces_empty = self.state.read(cx).spaces.is_empty();
-            let spaces_section = self.render_spaces_section(theme, cx, spaces_empty);
+            // The chip row: devices that own at least one space (the filter
+            // target set — a device with no spaces can't hide anything), plus
+            // the currently filtered device if it owns none right now (so its
+            // chip stays visible and can be cleared).
+            let filter_devices = {
+                let filter = self.effective_space_device_filter(cx);
+                let state = self.state.read(cx);
+                let owned: std::collections::HashSet<&str> = state
+                    .spaces
+                    .iter()
+                    .map(|s| s.device_id.as_str())
+                    .collect();
+                let local = state.local_device_id.clone();
+                let mut devices = crate::settings::devices::devices_for_display(
+                    state.devices.clone(),
+                    local.as_deref(),
+                );
+                // The filtered device always gets a chip (so its filter can
+                // be cleared), even when display merging collapsed its
+                // registry row into a same-name representative.
+                if let Some(filter) = &filter
+                    && !devices.iter().any(|d| d.id == *filter)
+                    && let Some(raw) = state.devices.iter().find(|d| d.id == *filter)
+                {
+                    devices.push(raw.clone());
+                }
+                devices
+                    .into_iter()
+                    .filter(|d| {
+                        owned.contains(d.id.as_str())
+                            || filter.as_deref() == Some(d.id.as_str())
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let spaces_section =
+                self.render_spaces_section(theme, cx, spaces_empty, filter_devices);
             let recent_section = self.render_recent_section(&recent, theme, cx);
 
             crate::edge_fade::edge_faded(

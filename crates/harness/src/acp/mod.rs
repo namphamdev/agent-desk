@@ -302,7 +302,7 @@ impl AcpHarness {
         eprintln!("[TRACE:command_for] resolving agent command string...");
         let resolved = resolve_agent_command_string(&command);
         match &resolved {
-            Ok(cmd) => eprintln!("[TRACE:command_for] resolved OK"),
+            Ok(_) => eprintln!("[TRACE:command_for] resolved OK"),
             Err(e) => eprintln!("[TRACE:command_for] resolve ERROR: {e}"),
         }
         resolved
@@ -338,7 +338,7 @@ impl Harness for AcpHarness {
         eprintln!("[TRACE:models] called acp_agent_id={:?}", acp_agent_id);
         let command = self.command_for(acp_agent_id)?;
         eprintln!("[TRACE:models] resolved command: {}", &command[..command.len().min(200)]);
-        let mut cached_models = self.discovered_models.lock().await;
+        let cached_models = self.discovered_models.lock().await;
         if let Some(models) = cached_models.get(&command) {
             eprintln!("[TRACE:models] cache hit: {} models", models.len());
             return Ok(models.clone());

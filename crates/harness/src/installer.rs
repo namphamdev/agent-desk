@@ -55,15 +55,6 @@ enum InstallMethod {
     },
 }
 
-impl InstallMethod {
-    fn label(&self) -> &'static str {
-        match self {
-            Self::Npm { .. } => "npm",
-            Self::Script { .. } => "script",
-        }
-    }
-}
-
 fn harness_binary(id: HarnessId) -> Option<HarnessBinary> {
     match id {
         HarnessId::ClaudeCode => Some(HarnessBinary {

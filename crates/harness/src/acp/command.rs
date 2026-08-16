@@ -166,7 +166,7 @@ pub(super) fn resolve_agent_command_string(command: &str) -> Result<String, Harn
 
     #[cfg(not(windows))]
     {
-        let _ = (args, composed_path);
+        let _ = (program, args, composed_path);
         // On Unix the bare command works; the child inherits our env which
         // already has a complete PATH.
         Ok(command.to_string())

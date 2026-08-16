@@ -143,8 +143,6 @@ async fn run_command_unix(
     timeout_secs: u64,
     interrupt: &CancellationToken,
 ) -> EnvOutput {
-    use std::os::unix::process::CommandExt;
-
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
     let mut cmd = Command::new(shell);
     cmd.arg("-c").arg(command);

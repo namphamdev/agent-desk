@@ -168,6 +168,7 @@ impl Shell {
             sidebar_tree: Vec::new(),
             sidebar_expanded_spaces: std::collections::HashSet::new(),
             sidebar_space_show_all: std::collections::HashSet::new(),
+            space_device_filter: settings.space_device_filter.clone(),
             sidebar_space_scroll: std::collections::HashMap::new(),
             sidebar_tree_scrolled_to: None,
             space_boot_applied: false,
@@ -364,6 +365,25 @@ impl Shell {
                 && state.read(cx).space_row(&last).is_some()
             {
                 state.update(cx, |s, cx| s.select_space(Some(last), cx));
+            }
+        }
+        // Spaces device filter: if the picked device was removed from the
+        // workspace, clear the filter so the sidebar never renders an empty
+        // tree behind a dead chip (the render path heals too, but only when
+        // the sidebar draws — this catches it as soon as the state changes).
+        if self.space_device_filter.is_some() {
+            let known = {
+                let state = state.read(cx);
+                super::spaces::space_device_filter_known(
+                    &state.devices,
+                    &state.spaces,
+                    self.space_device_filter.as_deref(),
+                )
+            };
+            if !known {
+                self.space_device_filter = None;
+                self.settings.space_device_filter = None;
+                self.schedule_save(cx);
             }
         }
         // Track the per-space last chat + persist the selected space.

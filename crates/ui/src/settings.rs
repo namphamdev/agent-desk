@@ -70,6 +70,12 @@ pub struct UiSettings {
     /// renders expanded by default. Empty = all expanded (no migration cost).
     #[serde(default, skip_serializing_if = "std::collections::HashSet::is_empty")]
     pub sidebar_collapsed_spaces: std::collections::HashSet<String>,
+    /// Sidebar spaces filter: only show spaces owned by this device id.
+    /// `None` = show all devices. Device-local, persisted like `space_order`
+    /// (the filter is a UI convenience; a removed device clears it via the
+    /// sidebar's orphaned-filter healing).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub space_device_filter: Option<String>,
     /// Session notification chimes (done / awaiting-input). `COMET_DISABLE_SOUND`
     /// overrides.
     pub sound_enabled: bool,
@@ -107,6 +113,7 @@ impl Default for UiSettings {
             tab_order: std::collections::HashMap::new(),
             space_order: Vec::new(),
             sidebar_collapsed_spaces: std::collections::HashSet::new(),
+            space_device_filter: None,
             sound_enabled: true,
             notifications_enabled: true,
             right_pane_width: RIGHT_PANE_DEFAULT,
@@ -409,6 +416,7 @@ mod tests {
             )]),
             space_order: vec!["space-2".to_string(), "space-1".to_string()],
             sidebar_collapsed_spaces: std::collections::HashSet::from(["space-2".to_string()]),
+            space_device_filter: Some("device-1".into()),
             sound_enabled: false,
             notifications_enabled: false,
             right_pane_width: 700.0,
